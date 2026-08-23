@@ -39,10 +39,15 @@ pub trait EventSink: Send + Sync {
     fn emit(&self, event: GameProcessEvent);
 }
 
+pub struct ProcessOutcome {
+    pub exit_code: i32,
+    pub auxiliary_error: Option<LauncherError>,
+}
+
 #[async_trait]
 pub trait ChildProcess: Send {
     fn pid(&self) -> u32;
-    async fn wait(self: Box<Self>, log: Arc<ProcessLog>) -> Result<i32, LauncherError>;
+    async fn wait(self: Box<Self>, log: Arc<ProcessLog>) -> Result<ProcessOutcome, LauncherError>;
 }
 
 #[async_trait]
@@ -79,7 +84,10 @@ impl ChildProcess for TokioChild {
         self.child.id().unwrap_or(0)
     }
 
-    async fn wait(mut self: Box<Self>, log: Arc<ProcessLog>) -> Result<i32, LauncherError> {
+    async fn wait(
+        mut self: Box<Self>,
+        log: Arc<ProcessLog>,
+    ) -> Result<ProcessOutcome, LauncherError> {
         let stdout = self.child.stdout.take();
         let stderr = self.child.stderr.take();
         let stdout_task = stdout.map(|reader| {
@@ -91,10 +99,21 @@ impl ChildProcess for TokioChild {
             tauri::async_runtime::spawn(async move { stream_output(reader, log).await })
         });
         let status = self.child.wait().await.map_err(|_| wait_failed())?;
+        let mut auxiliary_error = None;
         for task in [stdout_task, stderr_task].into_iter().flatten() {
-            task.await.map_err(|_| wait_failed())??;
+            let error = match task.await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(_) => Some(log_failed()),
+            };
+            if auxiliary_error.is_none() {
+                auxiliary_error = error;
+            }
         }
-        Ok(status.code().unwrap_or(-1))
+        Ok(ProcessOutcome {
+            exit_code: status.code().unwrap_or(-1),
+            auxiliary_error,
+        })
     }
 }
 

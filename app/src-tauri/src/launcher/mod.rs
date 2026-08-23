@@ -32,6 +32,22 @@ pub(crate) trait LaunchContextProvider: Send + Sync {
     async fn prepare(&self, profile_id: &str) -> Result<PreparedLaunch, LauncherError>;
 }
 
+pub(crate) trait LaunchPathInspector: Send + Sync {
+    fn validate(&self, path: &Path) -> Result<(), LauncherError>;
+}
+
+struct FileSystemLaunchPathInspector;
+
+impl LaunchPathInspector for FileSystemLaunchPathInspector {
+    fn validate(&self, path: &Path) -> Result<(), LauncherError> {
+        if path.is_dir() {
+            validate_directory(path)
+        } else {
+            validate_regular_file(path)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameProcessStatus {
@@ -47,6 +63,7 @@ pub struct Launcher {
     spawner: Arc<dyn ProcessSpawner>,
     events: Arc<dyn EventSink>,
     logs_root: PathBuf,
+    path_inspector: Arc<dyn LaunchPathInspector>,
     registry: Arc<Mutex<ProcessRegistry>>,
 }
 
@@ -66,13 +83,41 @@ impl Launcher {
         events: Arc<dyn EventSink>,
         logs_root: PathBuf,
     ) -> Self {
+        Self::with_path_inspector(
+            context,
+            spawner,
+            events,
+            logs_root,
+            Arc::new(FileSystemLaunchPathInspector),
+        )
+    }
+
+    fn with_path_inspector(
+        context: Arc<dyn LaunchContextProvider>,
+        spawner: Arc<dyn ProcessSpawner>,
+        events: Arc<dyn EventSink>,
+        logs_root: PathBuf,
+        path_inspector: Arc<dyn LaunchPathInspector>,
+    ) -> Self {
         Self {
             context,
             spawner,
             events,
             logs_root,
+            path_inspector,
             registry: Arc::new(Mutex::new(ProcessRegistry::default())),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_path_inspector(
+        context: Arc<dyn LaunchContextProvider>,
+        spawner: Arc<dyn ProcessSpawner>,
+        events: Arc<dyn EventSink>,
+        logs_root: PathBuf,
+        path_inspector: Arc<dyn LaunchPathInspector>,
+    ) -> Self {
+        Self::with_path_inspector(context, spawner, events, logs_root, path_inspector)
     }
 
     pub(crate) fn production(
@@ -93,10 +138,10 @@ impl Launcher {
         let operation_id = format!("launch-{:016x}", rand::random::<u64>());
         {
             let mut registry = self.registry.lock().map_err(|_| process_state_error())?;
-            if registry.active_profiles.contains_key(profile_id) {
+            if !registry.active_profiles.is_empty() {
                 return Err(LauncherError::new(
                     "game_already_running",
-                    "Minecraft is already running for this profile.",
+                    "Minecraft is already running.",
                     None,
                     true,
                 ));
@@ -130,11 +175,7 @@ impl Launcher {
         let prepared = self.context.prepare(profile_id).await?;
         let log = ProcessLog::open(&self.logs_root, prepared.secrets.clone())?;
         for path in &prepared.validated_paths {
-            if path.is_dir() {
-                validate_directory(path)?;
-            } else {
-                validate_regular_file(path)?;
-            }
+            self.path_inspector.validate(path)?;
         }
         let child = self.spawner.spawn(prepared.command).await?;
         let pid = child.pid();
@@ -156,18 +197,25 @@ impl Launcher {
         let profile_id = profile_id.to_owned();
         tauri::async_runtime::spawn(async move {
             match child.wait(log).await {
-                Ok(exit_code) => {
+                Ok(outcome) => {
                     let _ = finish_registry(
                         &registry,
                         &profile_id,
                         &operation_id,
-                        Some(exit_code),
-                        None,
+                        Some(outcome.exit_code),
+                        outcome.auxiliary_error.clone(),
                     );
+                    if let Some(error) = outcome.auxiliary_error {
+                        events.emit(GameProcessEvent::Error {
+                            operation_id: operation_id.clone(),
+                            profile_id: profile_id.clone(),
+                            error,
+                        });
+                    }
                     events.emit(GameProcessEvent::Exited {
                         operation_id,
                         profile_id,
-                        exit_code,
+                        exit_code: outcome.exit_code,
                     });
                 }
                 Err(error) => {
@@ -517,7 +565,7 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(argument_invalid)?;
-    if main_class.contains("${") || main_class.chars().any(char::is_whitespace) {
+    if !is_qualified_java_class(main_class) {
         return Err(argument_invalid());
     }
     args.push(main_class.to_owned());
@@ -546,6 +594,17 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
     })
 }
 
+fn is_qualified_java_class(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|segment| {
+            let mut bytes = segment.bytes();
+            bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'))
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
+        })
+}
+
 fn logging_argument(
     game_root: &Path,
     version: &ResolvedVersion,
@@ -561,6 +620,9 @@ fn logging_argument(
         .get("argument")
         .and_then(|value| value.as_str())
         .ok_or_else(argument_invalid)?;
+    if argument != "-Dlog4j.configurationFile=${path}" {
+        return Err(argument_invalid());
+    }
     let id = client
         .get("file")
         .and_then(|value| value.get("id"))
@@ -571,10 +633,7 @@ fn logging_argument(
     }
     let path = game_root.join("assets").join("log_configs").join(id);
     validate_regular_file(&path)?;
-    let resolved = argument.replace("${path}", &path.to_string_lossy());
-    if resolved.contains("${") || !resolved.starts_with("-Dlog4j") {
-        return Err(argument_invalid());
-    }
+    let resolved = format!("-Dlog4j.configurationFile={}", path.to_string_lossy());
     Ok(Some((resolved, path)))
 }
 

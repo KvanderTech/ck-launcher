@@ -69,7 +69,10 @@ pub(super) fn safe_metadata_jvm(
 
 fn is_unsafe_jvm_argument(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    lower.starts_with("-xmx")
+    value.starts_with('@')
+        || matches!(value, "-jar" | "-m" | "--module")
+        || value.starts_with("--module=")
+        || lower.starts_with("-xmx")
         || lower.starts_with("-xms")
         || lower.starts_with("-javaagent")
         || lower.starts_with("-agentlib")
