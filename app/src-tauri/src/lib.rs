@@ -4,6 +4,7 @@ pub mod auth;
 pub mod commands;
 pub mod downloads;
 pub mod error;
+pub mod installer;
 pub mod metadata;
 pub mod paths;
 pub mod profiles;
@@ -43,6 +44,9 @@ pub fn run() {
             commands::runtime::detect_runtime,
             commands::runtime::install_runtime,
             commands::runtime::choose_runtime_path,
+            commands::install::install_version,
+            commands::install::cancel_operation,
+            commands::install::installation_status,
         ])
         .setup(|app| {
             let paths = AppPaths::windows_default()?;
@@ -62,14 +66,23 @@ pub fn run() {
                 credentials,
                 mutations,
             );
-            let metadata =
-                metadata::resolver::MetadataService::production(paths.root.join("metadata-cache"))?;
+            let metadata = Arc::new(metadata::resolver::MetadataService::production(
+                paths.root.join("metadata-cache"),
+            )?);
             let profiles = profiles::ProfileService::new(
                 Arc::new(storage.clone()),
                 Arc::new(profiles::SystemPhysicalMemory),
                 paths.game.to_string_lossy(),
             );
             let runtimes = runtime::RuntimeManager::production(paths.runtime.clone())?;
+            let downloads = Arc::new(downloads::DownloadService::new(paths.game.clone())?);
+            let installer = installer::Installer::production(
+                &paths,
+                metadata.clone(),
+                downloads,
+                Arc::new(storage.clone()),
+            )?;
+            let install_operations = installer::OperationRegistry::default();
 
             app.manage(paths);
             app.manage(storage);
@@ -78,6 +91,8 @@ pub fn run() {
             app.manage(metadata);
             app.manage(profiles);
             app.manage(runtimes);
+            app.manage(installer);
+            app.manage(install_operations);
             Ok(())
         })
         .run(tauri::generate_context!())

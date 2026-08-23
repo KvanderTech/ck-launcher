@@ -224,6 +224,42 @@ impl Storage {
             .await
             .map_err(|_| LauncherError::storage_unavailable())
     }
+
+    pub async fn set_installation_state(
+        &self,
+        version_id: &str,
+        state: &str,
+    ) -> Result<(), LauncherError> {
+        let verified_at = (state == "verified").then(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string()
+        });
+        sqlx::query(
+            "INSERT INTO installations (version_id, state, verified_at) VALUES (?, ?, ?) \
+             ON CONFLICT(version_id) DO UPDATE SET state = excluded.state, verified_at = excluded.verified_at",
+        )
+        .bind(version_id)
+        .bind(state)
+        .bind(verified_at)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|_| LauncherError::storage_unavailable())
+    }
+
+    pub async fn installation_state(
+        &self,
+        version_id: &str,
+    ) -> Result<Option<String>, LauncherError> {
+        sqlx::query_scalar("SELECT state FROM installations WHERE version_id = ?")
+            .bind(version_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
 }
 
 #[async_trait]
@@ -406,6 +442,44 @@ mod tests {
             storage.delete_account("two").await.expect("deletes");
             let accounts = storage.list_accounts().await.expect("lists");
             assert_eq!(accounts, vec![account("one", "One", true)]);
+        });
+    }
+
+    #[test]
+    fn installation_state_round_trips_and_only_verified_has_a_timestamp() {
+        tauri::async_runtime::block_on(async {
+            let storage = Storage::connect("sqlite::memory:").await.expect("storage");
+            storage
+                .set_installation_state("1.21.6", "failed")
+                .await
+                .expect("failed state");
+            assert_eq!(
+                storage
+                    .installation_state("1.21.6")
+                    .await
+                    .expect("state")
+                    .as_deref(),
+                Some("failed")
+            );
+            storage
+                .set_installation_state("1.21.6", "verified")
+                .await
+                .expect("verified state");
+            assert_eq!(
+                storage
+                    .installation_state("1.21.6")
+                    .await
+                    .expect("state")
+                    .as_deref(),
+                Some("verified")
+            );
+            let timestamp: Option<String> =
+                sqlx::query_scalar("SELECT verified_at FROM installations WHERE version_id = ?")
+                    .bind("1.21.6")
+                    .fetch_one(&storage.pool)
+                    .await
+                    .expect("timestamp");
+            assert!(timestamp.is_some());
         });
     }
 }

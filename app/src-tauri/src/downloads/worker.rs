@@ -549,6 +549,12 @@ struct PartLock {
     overlapped: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
 }
 
+// SAFETY: the Windows OVERLAPPED is boxed, so moving PartLock between executor threads does not
+// change the address passed to LockFileEx/UnlockFileEx. The owned file handle and box remain live
+// together until Drop, and no operation accesses them concurrently.
+#[cfg(windows)]
+unsafe impl Send for PartLock {}
+
 impl PartLock {
     #[cfg(windows)]
     fn acquire(root: &Path, relative: &Path) -> Result<Self, LauncherError> {
