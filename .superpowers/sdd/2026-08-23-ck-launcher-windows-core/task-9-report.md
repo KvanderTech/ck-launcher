@@ -50,3 +50,12 @@
 - Backend `update_memory` больше не выполняет read/whole-profile upsert. `ProfileStore::update_active_profile_memory` использует один атомарный SQLite `UPDATE profiles SET memory_mb = ? ... RETURNING`, поэтому не может откатить параллельно сохранённую версию. Отсутствующий профиль возвращает stable `profile_not_found`, а не создаёт default-профиль.
 - Детерминированная Rust-регрессия запускает отложенный memory update, между его стартом и завершением сохраняет новую game version и проверяет итог: новая версия + новая память.
 - Проверки: `npm test -- --run` — PASS, 7 files / 20 tests; `npm run build` — PASS; `cargo test -q` — PASS, 138 tests total (136 unit + 2 integration); `cargo fmt --check` — PASS; `cargo clippy --all-targets -- -D warnings` — PASS.
+
+## Исправления по ревью — round 3
+
+- App-level memory persistence заменена на сериализованную coalescing-очередь: одновременно в backend находится не более одного `updateMemory`, а очередь хранит только самое свежее desired-значение.
+- Каждый успешный ответ всегда обновляет confirmed memory, даже если пользователь уже выбрал следующее. После завершения текущего запроса сразу отправляется последнее queued-значение; промежуточные выборы не сохраняются.
+- Если падает самый свежий запрос, slider возвращается к последнему подтверждённому backend-ответу и показывает safe error. Постановка нового desired в очередь не сбрасывает честный статус «Сохраняем…».
+- Регрессии подтверждают: A success → B failure возвращает UI к A; второй запрос не стартует до завершения первого; A/B/C вызывает backend только с A и C и завершается на C даже после перехода со страницы настроек.
+- Lifecycle-флаг очереди повторно активируется при StrictMode effect replay; отдельная регрессия воспроизводит обёртку реального `main.tsx` и подтверждает, что сохранение после replay не теряется.
+- Проверки: `npm test -- --run` — PASS, 7 files / 23 tests; `npm run build` — PASS. Rust/backend в round 3 не изменялся; полные Rust test/fmt/clippy остаются зелёными по итогам round 2.

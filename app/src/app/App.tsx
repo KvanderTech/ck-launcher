@@ -55,8 +55,10 @@ export default function App({ api = appApi }: AppProps) {
   const bufferedOperationEvents = useRef<BufferedOperationEvent[]>([]);
   const requiredJavaRequest = useRef(0);
   const savedMemory = useRef<number | undefined>(undefined);
+  const desiredMemory = useRef<number | undefined>(undefined);
   const memoryTimer = useRef<number | undefined>(undefined);
-  const memoryRequest = useRef(0);
+  const memoryInFlight = useRef(false);
+  const memoryActive = useRef(true);
 
   function applyOperationEvent(event: BufferedOperationEvent) {
     switch (event.kind) {
@@ -107,6 +109,7 @@ export default function App({ api = appApi }: AppProps) {
         setProfile(nextProfile);
         profileRef.current = nextProfile;
         savedMemory.current = nextProfile.memoryMb;
+        desiredMemory.current = nextProfile.memoryMb;
         setRuntimes(nextRuntimes);
         setBootState("loaded");
       },
@@ -120,9 +123,12 @@ export default function App({ api = appApi }: AppProps) {
     };
   }, [api]);
 
-  useEffect(() => () => {
-    if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
-    memoryRequest.current += 1;
+  useEffect(() => {
+    memoryActive.current = true;
+    return () => {
+      memoryActive.current = false;
+      if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -210,27 +216,50 @@ export default function App({ api = appApi }: AppProps) {
   }
 
   function changeMemory(memoryMb: number) {
+    desiredMemory.current = memoryMb;
     mergeMemory(memoryMb);
-    setMemorySaveState("idle");
     if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
-    const request = ++memoryRequest.current;
-    memoryTimer.current = window.setTimeout(() => {
-      if (request !== memoryRequest.current) return;
-      setMemorySaveState("saving");
-      void api.updateMemory(memoryMb).then(
-        (saved) => {
-          if (request !== memoryRequest.current) return;
-          savedMemory.current = saved.memoryMb;
+    if (memoryInFlight.current) return;
+    setMemorySaveState("idle");
+    memoryTimer.current = window.setTimeout(persistDesiredMemory, 250);
+  }
+
+  function persistDesiredMemory() {
+    if (memoryInFlight.current || !memoryActive.current) return;
+    const requestedMemory = desiredMemory.current;
+    if (requestedMemory === undefined || requestedMemory === savedMemory.current) {
+      setMemorySaveState("idle");
+      return;
+    }
+    memoryInFlight.current = true;
+    setMemorySaveState("saving");
+    void api.updateMemory(requestedMemory).then(
+      (saved) => {
+        memoryInFlight.current = false;
+        if (!memoryActive.current) return;
+        savedMemory.current = saved.memoryMb;
+        if (desiredMemory.current === requestedMemory) {
+          desiredMemory.current = saved.memoryMb;
           mergeMemory(saved.memoryMb);
+        }
+        if (desiredMemory.current !== savedMemory.current) {
+          persistDesiredMemory();
+        } else {
           setMemorySaveState("idle");
-        },
-        () => {
-          if (request !== memoryRequest.current) return;
-          if (savedMemory.current !== undefined) mergeMemory(savedMemory.current);
-          setMemorySaveState("error");
-        },
-      );
-    }, 250);
+        }
+      },
+      () => {
+        memoryInFlight.current = false;
+        if (!memoryActive.current) return;
+        if (desiredMemory.current !== requestedMemory) {
+          persistDesiredMemory();
+          return;
+        }
+        desiredMemory.current = savedMemory.current;
+        if (savedMemory.current !== undefined) mergeMemory(savedMemory.current);
+        setMemorySaveState("error");
+      },
+    );
   }
 
   async function updateRuntime(

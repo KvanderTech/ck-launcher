@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactElement } from "react";
+import { StrictMode, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import RootApp from "../App";
@@ -406,5 +406,114 @@ describe("launcher application", () => {
 
     expect((slider as HTMLInputElement).value).toBe("4096");
     expect(screen.getByRole("alert").textContent).toContain("Значение восстановлено");
+  });
+
+  it("serializes saves and reverts a failed latest value to the preceding confirmation", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    type SavedProfile = Awaited<ReturnType<typeof api.updateMemory>>;
+    let resolveFirst: ((profile: SavedProfile) => void) | undefined;
+    let rejectSecond: ((reason: unknown) => void) | undefined;
+    api.updateMemory
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSecond = reject; }));
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const slider = await screen.findByRole("slider", { name: "Оперативная память" });
+
+    vi.useFakeTimers();
+    fireEvent.change(slider, { target: { value: "5120" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    fireEvent.change(slider, { target: { value: "6144" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(api.updateMemory).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Сохраняем…")).toBeTruthy();
+
+    await act(async () => {
+      resolveFirst?.({
+        id: "default",
+        name: "Основной профиль",
+        versionId: "1.20.1",
+        memoryMb: 5120,
+        gameDir: "C:\\safe\\game",
+        javaOverride: null,
+      });
+      await Promise.resolve();
+    });
+    expect(api.updateMemory).toHaveBeenNthCalledWith(2, 6144);
+
+    await act(async () => {
+      rejectSecond?.(new Error("database unavailable"));
+      await Promise.resolve();
+    });
+    expect((slider as HTMLInputElement).value).toBe("5120");
+    expect(screen.getByRole("alert").textContent).toContain("Значение восстановлено");
+  });
+
+  it("coalesces rapid queued changes across navigation to the latest desired memory", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    type SavedProfile = Awaited<ReturnType<typeof api.updateMemory>>;
+    let resolveFirst: ((profile: SavedProfile) => void) | undefined;
+    let resolveLatest: ((profile: SavedProfile) => void) | undefined;
+    api.updateMemory
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveLatest = resolve; }));
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const slider = await screen.findByRole("slider", { name: "Оперативная память" });
+
+    vi.useFakeTimers();
+    fireEvent.change(slider, { target: { value: "5120" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    fireEvent.change(slider, { target: { value: "6144" } });
+    fireEvent.change(slider, { target: { value: "7168" } });
+    fireEvent.click(screen.getByRole("button", { name: "Главная" }));
+    expect(screen.queryByRole("slider", { name: "Оперативная память" })).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(api.updateMemory).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirst?.({
+        id: "default",
+        name: "Основной профиль",
+        versionId: "1.20.1",
+        memoryMb: 5120,
+        gameDir: "C:\\safe\\game",
+        javaOverride: null,
+      });
+      await Promise.resolve();
+    });
+    expect(api.updateMemory).toHaveBeenNthCalledWith(2, 7168);
+
+    await act(async () => {
+      resolveLatest?.({
+        id: "default",
+        name: "Основной профиль",
+        versionId: "1.20.1",
+        memoryMb: 7168,
+        gameDir: "C:\\safe\\game",
+        javaOverride: null,
+      });
+      await Promise.resolve();
+    });
+    expect(api.updateMemory.mock.calls.map(([memoryMb]) => memoryMb)).toEqual([5120, 7168]);
+    expect(screen.getByText("7168 МБ")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("persists memory after the StrictMode effect replay used by the real entrypoint", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    const AppWithApi = RootApp as unknown as (props: { api: typeof api }) => ReactElement;
+    render(<StrictMode><AppWithApi api={api} /></StrictMode>);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const slider = await screen.findByRole("slider", { name: "Оперативная память" });
+
+    vi.useFakeTimers();
+    fireEvent.change(slider, { target: { value: "5120" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+
+    expect(api.updateMemory).toHaveBeenCalledWith(5120);
   });
 });
