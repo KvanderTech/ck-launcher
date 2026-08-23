@@ -9,7 +9,7 @@ mod webview2;
 
 use paths::AppPaths;
 use std::sync::Arc;
-use storage::{credentials::WindowsCredentialStore, Storage};
+use storage::{credentials::WindowsCredentialStore, AccountMutationCoordinator, Storage};
 use tauri::Manager;
 use webview2::{
     check_availability, missing_runtime_instruction, show_missing_runtime_instruction,
@@ -39,8 +39,17 @@ pub fn run() {
             let storage = tauri::async_runtime::block_on(Storage::connect(&database_url))?;
             let credentials: Arc<dyn storage::credentials::CredentialStore> =
                 Arc::new(WindowsCredentialStore);
-            let auth = auth::AuthService::production(storage.clone(), credentials.clone())?;
-            let accounts = commands::accounts::AccountService::new(storage.clone(), credentials);
+            let mutations = Arc::new(AccountMutationCoordinator::default());
+            let auth = auth::AuthService::production(
+                storage.clone(),
+                credentials.clone(),
+                mutations.clone(),
+            )?;
+            let accounts = commands::accounts::AccountService::new(
+                Arc::new(storage.clone()),
+                credentials,
+                mutations,
+            );
 
             app.manage(paths);
             app.manage(storage);

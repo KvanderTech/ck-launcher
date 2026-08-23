@@ -53,6 +53,15 @@ impl LauncherError {
         )
     }
 
+    pub fn account_state_inconsistent() -> Self {
+        Self::new(
+            "account_state_inconsistent",
+            "Account storage could not be restored consistently. Sign in again or remove the account.",
+            None,
+            true,
+        )
+    }
+
     pub fn code(&self) -> &str {
         &self.code
     }

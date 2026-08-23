@@ -4,7 +4,10 @@ pub mod pkce;
 
 use crate::{
     error::LauncherError,
-    storage::{credentials::CredentialStore, AccountSummary, Storage},
+    storage::{
+        credentials::CredentialStore, AccountMutationCoordinator, AccountStore, AccountSummary,
+        Storage,
+    },
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use client::{minecraft_not_owned, HttpMicrosoftApi, MicrosoftApi};
@@ -36,18 +39,20 @@ impl AuthSession {
 pub struct AuthService {
     client_id: Option<String>,
     api: Arc<dyn MicrosoftApi>,
-    storage: Storage,
+    storage: Arc<dyn AccountStore>,
     credentials: Arc<dyn CredentialStore>,
     opener: Arc<dyn BrowserOpener>,
+    mutations: Arc<AccountMutationCoordinator>,
 }
 
 impl AuthService {
     pub fn new(
         client_id: Option<String>,
         api: Arc<dyn MicrosoftApi>,
-        storage: Storage,
+        storage: Arc<dyn AccountStore>,
         credentials: Arc<dyn CredentialStore>,
         opener: Arc<dyn BrowserOpener>,
+        mutations: Arc<AccountMutationCoordinator>,
     ) -> Self {
         Self {
             client_id: client_id.filter(|value| !value.trim().is_empty()),
@@ -55,12 +60,14 @@ impl AuthService {
             storage,
             credentials,
             opener,
+            mutations,
         }
     }
 
     pub fn production(
         storage: Storage,
         credentials: Arc<dyn CredentialStore>,
+        mutations: Arc<AccountMutationCoordinator>,
     ) -> Result<Self, LauncherError> {
         let client_id = std::env::var("CK_LAUNCHER_MICROSOFT_CLIENT_ID")
             .ok()
@@ -71,9 +78,10 @@ impl AuthService {
         Ok(Self::new(
             client_id,
             api,
-            storage,
+            Arc::new(storage),
             credentials,
             Arc::new(SystemBrowserOpener),
+            mutations,
         ))
     }
 
@@ -141,9 +149,17 @@ impl AuthService {
         })?;
         profile.is_active = true;
 
+        let _mutation = self.mutations.lock().await;
+        let previous = self.credentials.get(&profile.id)?;
         self.credentials.save(&profile.id, oauth.refresh_token())?;
         if let Err(error) = self.storage.upsert_account(&profile).await {
-            let _ = self.credentials.delete(&profile.id);
+            let restoration = match previous.as_ref() {
+                Some(token) => self.credentials.save(&profile.id, token),
+                None => self.credentials.delete(&profile.id),
+            };
+            if restoration.is_err() {
+                return Err(LauncherError::account_state_inconsistent());
+            }
             return Err(error);
         }
         Ok(profile)
@@ -212,14 +228,132 @@ mod tests {
     use super::{AuthService, BrowserOpener};
     use crate::{
         auth::client::{MicrosoftApi, MinecraftAccess, OAuthTokens, XboxToken, XstsToken},
+        commands::accounts::AccountService,
         error::LauncherError,
         storage::{
-            credentials::{CredentialStore, InMemoryCredentialStore},
-            AccountSummary, Storage,
+            credentials::{CredentialStore, InMemoryCredentialStore, RefreshToken},
+            AccountMutationCoordinator, AccountStore, AccountSummary, Storage,
         },
     };
     use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    use tokio::sync::Semaphore;
+
+    struct ControlledAccountStore {
+        accounts: Mutex<Vec<AccountSummary>>,
+        block_upsert: bool,
+        block_delete: bool,
+        upsert_entered: Semaphore,
+        delete_entered: Semaphore,
+        release_upsert: Semaphore,
+        release_delete: Semaphore,
+    }
+
+    impl ControlledAccountStore {
+        fn new(accounts: Vec<AccountSummary>, block_upsert: bool, block_delete: bool) -> Self {
+            Self {
+                accounts: Mutex::new(accounts),
+                block_upsert,
+                block_delete,
+                upsert_entered: Semaphore::new(0),
+                delete_entered: Semaphore::new(0),
+                release_upsert: Semaphore::new(0),
+                release_delete: Semaphore::new(0),
+            }
+        }
+
+        async fn wait_for_upsert(&self) {
+            self.upsert_entered
+                .acquire()
+                .await
+                .expect("upsert signal")
+                .forget();
+        }
+
+        async fn wait_for_delete(&self) {
+            self.delete_entered
+                .acquire()
+                .await
+                .expect("delete signal")
+                .forget();
+        }
+
+        fn release_upsert(&self) {
+            self.release_upsert.add_permits(1);
+        }
+
+        fn release_delete(&self) {
+            self.release_delete.add_permits(1);
+        }
+    }
+
+    #[async_trait]
+    impl AccountStore for ControlledAccountStore {
+        async fn upsert_account(&self, account: &AccountSummary) -> Result<(), LauncherError> {
+            self.upsert_entered.add_permits(1);
+            if self.block_upsert {
+                self.release_upsert
+                    .acquire()
+                    .await
+                    .expect("upsert release")
+                    .forget();
+            }
+            let mut accounts = self.accounts.lock().expect("accounts lock");
+            accounts.retain(|existing| existing.id != account.id);
+            accounts.push(account.clone());
+            Ok(())
+        }
+
+        async fn list_accounts(&self) -> Result<Vec<AccountSummary>, LauncherError> {
+            Ok(self.accounts.lock().expect("accounts lock").clone())
+        }
+
+        async fn set_active_account(&self, _account_id: &str) -> Result<(), LauncherError> {
+            unreachable!("test does not switch accounts")
+        }
+
+        async fn delete_account(&self, account_id: &str) -> Result<(), LauncherError> {
+            self.delete_entered.add_permits(1);
+            if self.block_delete {
+                self.release_delete
+                    .acquire()
+                    .await
+                    .expect("delete release")
+                    .forget();
+            }
+            self.accounts
+                .lock()
+                .expect("accounts lock")
+                .retain(|account| account.id != account_id);
+            Ok(())
+        }
+    }
+
+    struct FailingAccountStore {
+        accounts: Mutex<Vec<AccountSummary>>,
+    }
+
+    #[async_trait]
+    impl AccountStore for FailingAccountStore {
+        async fn upsert_account(&self, _account: &AccountSummary) -> Result<(), LauncherError> {
+            Err(LauncherError::storage_unavailable())
+        }
+
+        async fn list_accounts(&self) -> Result<Vec<AccountSummary>, LauncherError> {
+            Ok(self.accounts.lock().expect("accounts lock").clone())
+        }
+
+        async fn set_active_account(&self, _account_id: &str) -> Result<(), LauncherError> {
+            unreachable!("test does not switch accounts")
+        }
+
+        async fn delete_account(&self, _account_id: &str) -> Result<(), LauncherError> {
+            unreachable!("test does not delete accounts")
+        }
+    }
 
     #[derive(Default)]
     struct RecordingOpener(Mutex<Vec<String>>);
@@ -293,7 +427,7 @@ mod tests {
     #[test]
     fn complete_login_runs_exact_exchange_order_and_splits_persistence() {
         tauri::async_runtime::block_on(async {
-            let storage = Storage::connect("sqlite::memory:").await.expect("storage");
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
             let credentials = Arc::new(InMemoryCredentialStore::default());
             let api = Arc::new(MockMicrosoftApi {
                 calls: Mutex::new(Vec::new()),
@@ -306,6 +440,7 @@ mod tests {
                 storage.clone(),
                 credentials.clone(),
                 opener.clone(),
+                Arc::new(AccountMutationCoordinator::default()),
             );
 
             let session = service.begin_login().expect("login begins");
@@ -344,9 +479,10 @@ mod tests {
                     calls: Mutex::new(Vec::new()),
                     profile_error: true,
                 }),
-                Storage::connect("sqlite::memory:").await.expect("storage"),
+                Arc::new(Storage::connect("sqlite::memory:").await.expect("storage")),
                 Arc::new(InMemoryCredentialStore::default()),
                 Arc::new(RecordingOpener::default()),
+                Arc::new(AccountMutationCoordinator::default()),
             );
 
             let session = service.begin_login().expect("login begins");
@@ -359,6 +495,186 @@ mod tests {
     }
 
     #[test]
+    fn failed_reauthentication_restores_previous_refresh_token_and_public_account() {
+        tauri::async_runtime::block_on(async {
+            let existing = AccountSummary {
+                id: "stable-account-id".to_owned(),
+                minecraft_name: "Old Player".to_owned(),
+                minecraft_uuid: "old-minecraft-uuid".to_owned(),
+                head_url: None,
+                is_active: true,
+            };
+            let storage = Arc::new(FailingAccountStore {
+                accounts: Mutex::new(vec![existing.clone()]),
+            });
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            credentials
+                .save(&existing.id, &RefreshToken::new("old-refresh-secret"))
+                .expect("old credential saves");
+            let service = AuthService::new(
+                Some("public-client-id".to_owned()),
+                Arc::new(MockMicrosoftApi {
+                    calls: Mutex::new(Vec::new()),
+                    profile_error: false,
+                }),
+                storage.clone(),
+                credentials.clone(),
+                Arc::new(RecordingOpener::default()),
+                Arc::new(AccountMutationCoordinator::default()),
+            );
+
+            let session = service.begin_login().expect("login begins");
+            let error = service
+                .complete_login(session, "oauth-code")
+                .await
+                .expect_err("SQLite failure aborts re-authentication");
+
+            assert_eq!(error.code(), "storage_unavailable");
+            assert_eq!(
+                storage.list_accounts().await.expect("accounts"),
+                vec![existing]
+            );
+            assert_eq!(
+                credentials
+                    .get("stable-account-id")
+                    .expect("credential reads")
+                    .expect("old credential remains")
+                    .expose_secret(),
+                "old-refresh-secret"
+            );
+        });
+    }
+
+    #[test]
+    fn removal_waits_for_login_persistence_and_leaves_no_public_or_credential_orphan() {
+        tauri::async_runtime::block_on(async {
+            let storage = Arc::new(ControlledAccountStore::new(Vec::new(), true, false));
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            let mutations = Arc::new(AccountMutationCoordinator::default());
+            let auth = Arc::new(AuthService::new(
+                Some("public-client-id".to_owned()),
+                Arc::new(MockMicrosoftApi {
+                    calls: Mutex::new(Vec::new()),
+                    profile_error: false,
+                }),
+                storage.clone(),
+                credentials.clone(),
+                Arc::new(RecordingOpener::default()),
+                mutations.clone(),
+            ));
+            let accounts = Arc::new(AccountService::new(
+                storage.clone(),
+                credentials.clone(),
+                mutations,
+            ));
+            let session = auth.begin_login().expect("login begins");
+            let login = tauri::async_runtime::spawn({
+                let auth = auth.clone();
+                async move { auth.complete_login(session, "oauth-code").await }
+            });
+            storage.wait_for_upsert().await;
+
+            let removal = tauri::async_runtime::spawn({
+                let accounts = accounts.clone();
+                async move { accounts.remove_account("stable-account-id").await }
+            });
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), storage.wait_for_delete())
+                    .await
+                    .is_err()
+            );
+
+            storage.release_upsert();
+            login.await.expect("login task").expect("login persists");
+            removal
+                .await
+                .expect("removal task")
+                .expect("removal persists");
+
+            assert!(storage.list_accounts().await.expect("accounts").is_empty());
+            assert!(credentials
+                .get("stable-account-id")
+                .expect("credential reads")
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn login_waits_for_removal_persistence_and_leaves_matching_public_and_credential_data() {
+        tauri::async_runtime::block_on(async {
+            let existing = AccountSummary {
+                id: "stable-account-id".to_owned(),
+                minecraft_name: "Old Player".to_owned(),
+                minecraft_uuid: "old-minecraft-uuid".to_owned(),
+                head_url: None,
+                is_active: true,
+            };
+            let storage = Arc::new(ControlledAccountStore::new(
+                vec![existing.clone()],
+                false,
+                true,
+            ));
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            credentials
+                .save(&existing.id, &RefreshToken::new("old-refresh-secret"))
+                .expect("old credential saves");
+            let mutations = Arc::new(AccountMutationCoordinator::default());
+            let auth = Arc::new(AuthService::new(
+                Some("public-client-id".to_owned()),
+                Arc::new(MockMicrosoftApi {
+                    calls: Mutex::new(Vec::new()),
+                    profile_error: false,
+                }),
+                storage.clone(),
+                credentials.clone(),
+                Arc::new(RecordingOpener::default()),
+                mutations.clone(),
+            ));
+            let accounts = Arc::new(AccountService::new(
+                storage.clone(),
+                credentials.clone(),
+                mutations,
+            ));
+            let removal = tauri::async_runtime::spawn({
+                let accounts = accounts.clone();
+                async move { accounts.remove_account("stable-account-id").await }
+            });
+            storage.wait_for_delete().await;
+
+            let session = auth.begin_login().expect("login begins");
+            let login = tauri::async_runtime::spawn({
+                let auth = auth.clone();
+                async move { auth.complete_login(session, "oauth-code").await }
+            });
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), storage.wait_for_upsert())
+                    .await
+                    .is_err()
+            );
+
+            storage.release_delete();
+            removal
+                .await
+                .expect("removal task")
+                .expect("removal persists");
+            let profile = login.await.expect("login task").expect("login persists");
+
+            assert_eq!(
+                storage.list_accounts().await.expect("accounts"),
+                vec![profile]
+            );
+            assert_eq!(
+                credentials
+                    .get("stable-account-id")
+                    .expect("credential reads")
+                    .expect("credential exists")
+                    .expose_secret(),
+                "refresh-secret"
+            );
+        });
+    }
+
+    #[test]
     fn missing_client_id_fails_before_opening_browser() {
         let opener = Arc::new(RecordingOpener::default());
         let service = AuthService::new(
@@ -367,9 +683,13 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 profile_error: false,
             }),
-            tauri::async_runtime::block_on(Storage::connect("sqlite::memory:")).expect("storage"),
+            Arc::new(
+                tauri::async_runtime::block_on(Storage::connect("sqlite::memory:"))
+                    .expect("storage"),
+            ),
             Arc::new(InMemoryCredentialStore::default()),
             opener.clone(),
+            Arc::new(AccountMutationCoordinator::default()),
         );
 
         let error = match service.begin_login() {
