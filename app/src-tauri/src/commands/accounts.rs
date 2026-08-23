@@ -1,21 +1,29 @@
 use crate::{
     auth::AuthService,
     error::LauncherError,
-    storage::{credentials::CredentialStore, AccountSummary, Storage},
+    storage::{
+        credentials::CredentialStore, AccountMutationCoordinator, AccountStore, AccountSummary,
+    },
 };
 use std::sync::Arc;
 use tauri::State;
 
 pub struct AccountService {
-    storage: Storage,
+    storage: Arc<dyn AccountStore>,
     credentials: Arc<dyn CredentialStore>,
+    mutations: Arc<AccountMutationCoordinator>,
 }
 
 impl AccountService {
-    pub fn new(storage: Storage, credentials: Arc<dyn CredentialStore>) -> Self {
+    pub fn new(
+        storage: Arc<dyn AccountStore>,
+        credentials: Arc<dyn CredentialStore>,
+        mutations: Arc<AccountMutationCoordinator>,
+    ) -> Self {
         Self {
             storage,
             credentials,
+            mutations,
         }
     }
 
@@ -28,11 +36,14 @@ impl AccountService {
     }
 
     pub async fn remove_account(&self, account_id: &str) -> Result<(), LauncherError> {
+        let _mutation = self.mutations.lock().await;
         let previous = self.credentials.get(account_id)?;
         self.credentials.delete(account_id)?;
         if let Err(error) = self.storage.delete_account(account_id).await {
             if let Some(token) = previous.as_ref() {
-                let _ = self.credentials.save(account_id, token);
+                if self.credentials.save(account_id, token).is_err() {
+                    return Err(LauncherError::account_state_inconsistent());
+                }
             }
             return Err(error);
         }
@@ -81,11 +92,65 @@ pub async fn set_active_account(
 #[cfg(test)]
 mod tests {
     use super::AccountService;
+    use crate::error::LauncherError;
     use crate::storage::{
         credentials::{CredentialStore, InMemoryCredentialStore, RefreshToken},
-        AccountSummary, Storage,
+        AccountMutationCoordinator, AccountStore, AccountSummary, Storage,
     };
-    use std::sync::Arc;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    struct FailingDeleteAccountStore {
+        account: AccountSummary,
+    }
+
+    #[async_trait]
+    impl AccountStore for FailingDeleteAccountStore {
+        async fn upsert_account(&self, _account: &AccountSummary) -> Result<(), LauncherError> {
+            unreachable!("test does not upsert accounts")
+        }
+
+        async fn list_accounts(&self) -> Result<Vec<AccountSummary>, LauncherError> {
+            Ok(vec![self.account.clone()])
+        }
+
+        async fn set_active_account(&self, _account_id: &str) -> Result<(), LauncherError> {
+            unreachable!("test does not switch accounts")
+        }
+
+        async fn delete_account(&self, _account_id: &str) -> Result<(), LauncherError> {
+            Err(LauncherError::storage_unavailable())
+        }
+    }
+
+    struct FailingRestoreCredentialStore {
+        token: Mutex<Option<String>>,
+    }
+
+    impl CredentialStore for FailingRestoreCredentialStore {
+        fn save(&self, _account_id: &str, _token: &RefreshToken) -> Result<(), LauncherError> {
+            Err(LauncherError::new(
+                "credential_unavailable",
+                "Windows Credential Manager is unavailable.",
+                None,
+                true,
+            ))
+        }
+
+        fn get(&self, _account_id: &str) -> Result<Option<RefreshToken>, LauncherError> {
+            Ok(self
+                .token
+                .lock()
+                .expect("credential lock")
+                .clone()
+                .map(RefreshToken::new))
+        }
+
+        fn delete(&self, _account_id: &str) -> Result<(), LauncherError> {
+            self.token.lock().expect("credential lock").take();
+            Ok(())
+        }
+    }
 
     #[test]
     fn removing_account_clears_public_row_and_refresh_credential() {
@@ -106,13 +171,58 @@ mod tests {
             credentials
                 .save(&account.id, &RefreshToken::new("refresh-secret"))
                 .expect("credential saves");
-            let service = AccountService::new(storage, credentials.clone());
+            let service = AccountService::new(
+                Arc::new(storage),
+                credentials.clone(),
+                Arc::new(AccountMutationCoordinator::default()),
+            );
 
             service.remove_account(&account.id).await.expect("removes");
 
             assert!(service.list_accounts().await.expect("accounts").is_empty());
             assert!(credentials
                 .get(&account.id)
+                .expect("credential reads")
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn failed_credential_compensation_returns_sanitized_inconsistency_error() {
+        tauri::async_runtime::block_on(async {
+            let account = AccountSummary {
+                id: "stable-account-id".to_owned(),
+                minecraft_name: "Player".to_owned(),
+                minecraft_uuid: "minecraft-uuid".to_owned(),
+                head_url: None,
+                is_active: true,
+            };
+            let storage = Arc::new(FailingDeleteAccountStore {
+                account: account.clone(),
+            });
+            let credentials = Arc::new(FailingRestoreCredentialStore {
+                token: Mutex::new(Some("refresh-secret".to_owned())),
+            });
+            let service = AccountService::new(
+                storage.clone(),
+                credentials.clone(),
+                Arc::new(AccountMutationCoordinator::default()),
+            );
+
+            let error = service
+                .remove_account(&account.id)
+                .await
+                .expect_err("failed compensation is reported");
+            let serialized = serde_json::to_string(&error).expect("error serializes");
+
+            assert_eq!(error.code(), "account_state_inconsistent");
+            assert!(!serialized.contains("refresh-secret"));
+            assert_eq!(
+                storage.list_accounts().await.expect("accounts"),
+                vec![account]
+            );
+            assert!(credentials
+                .get("stable-account-id")
                 .expect("credential reads")
                 .is_none());
         });

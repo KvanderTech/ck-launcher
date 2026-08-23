@@ -1,6 +1,7 @@
 pub mod credentials;
 
 use crate::error::LauncherError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, Row, SqlitePool};
 use std::str::FromStr;
@@ -31,6 +32,25 @@ pub struct AccountSummary {
     pub minecraft_uuid: String,
     pub head_url: Option<String>,
     pub is_active: bool,
+}
+
+#[async_trait]
+pub trait AccountStore: Send + Sync {
+    async fn upsert_account(&self, account: &AccountSummary) -> Result<(), LauncherError>;
+    async fn list_accounts(&self) -> Result<Vec<AccountSummary>, LauncherError>;
+    async fn set_active_account(&self, account_id: &str) -> Result<(), LauncherError>;
+    async fn delete_account(&self, account_id: &str) -> Result<(), LauncherError>;
+}
+
+#[derive(Default)]
+pub struct AccountMutationCoordinator {
+    mutation: tokio::sync::Mutex<()>,
+}
+
+impl AccountMutationCoordinator {
+    pub(crate) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutation.lock().await
+    }
 }
 
 impl Storage {
@@ -197,6 +217,25 @@ impl Storage {
             .commit()
             .await
             .map_err(|_| LauncherError::storage_unavailable())
+    }
+}
+
+#[async_trait]
+impl AccountStore for Storage {
+    async fn upsert_account(&self, account: &AccountSummary) -> Result<(), LauncherError> {
+        Storage::upsert_account(self, account).await
+    }
+
+    async fn list_accounts(&self) -> Result<Vec<AccountSummary>, LauncherError> {
+        Storage::list_accounts(self).await
+    }
+
+    async fn set_active_account(&self, account_id: &str) -> Result<(), LauncherError> {
+        Storage::set_active_account(self, account_id).await
+    }
+
+    async fn delete_account(&self, account_id: &str) -> Result<(), LauncherError> {
+        Storage::delete_account(self, account_id).await
     }
 }
 
