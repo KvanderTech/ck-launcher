@@ -2,31 +2,30 @@
 
 mod webview2;
 
-use tauri::Manager;
-use webview2::{check_availability, WebView2Availability, WindowsWebView2Registry};
+use webview2::{
+    check_availability, missing_runtime_instruction, show_missing_runtime_instruction,
+    WindowsWebView2Registry,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let webview2_availability = check_availability(&WindowsWebView2Registry);
 
+    if let Some(instruction) = missing_runtime_instruction(webview2_availability) {
+        show_missing_runtime_instruction(instruction);
+    }
+
     tauri::Builder::default()
         .manage(webview2_availability)
-        .setup(|app| {
-            if *app.state::<WebView2Availability>() == WebView2Availability::Missing {
-                eprintln!(
-                    "Microsoft Edge WebView2 Runtime не найден. Установите Evergreen Runtime для продолжения."
-                );
-            }
-
-            Ok(())
-        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::webview2::{check_availability, WebView2Availability, WebView2Registry};
+    use crate::webview2::{
+        check_availability, missing_runtime_instruction, WebView2Availability, WebView2Registry,
+    };
 
     struct FakeRegistry {
         versions: Vec<Option<String>>,
@@ -57,5 +56,11 @@ mod tests {
         };
 
         assert_eq!(check_availability(&registry), WebView2Availability::Missing);
+    }
+
+    #[test]
+    fn provides_a_user_instruction_only_when_webview2_is_missing() {
+        assert!(missing_runtime_instruction(WebView2Availability::Missing).is_some());
+        assert!(missing_runtime_instruction(WebView2Availability::Available).is_none());
     }
 }
