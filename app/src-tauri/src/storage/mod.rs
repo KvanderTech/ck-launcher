@@ -46,6 +46,10 @@ pub trait AccountStore: Send + Sync {
 pub trait ProfileStore: Send + Sync {
     async fn upsert_profile(&self, profile: &LauncherProfile) -> Result<(), LauncherError>;
     async fn active_profile(&self) -> Result<Option<LauncherProfile>, LauncherError>;
+    async fn update_active_profile_memory(
+        &self,
+        memory_mb: u32,
+    ) -> Result<Option<LauncherProfile>, LauncherError>;
 }
 
 #[derive(Default)]
@@ -109,6 +113,27 @@ impl Storage {
              ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, id \
              LIMIT 1",
         )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| LauncherError::storage_unavailable())?;
+
+        row.map(profile_from_row).transpose()
+    }
+
+    pub async fn update_active_profile_memory(
+        &self,
+        memory_mb: u32,
+    ) -> Result<Option<LauncherProfile>, LauncherError> {
+        let row = sqlx::query(
+            "UPDATE profiles SET memory_mb = ? \
+             WHERE id = (\
+               SELECT id FROM profiles \
+               ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, id \
+               LIMIT 1\
+             ) \
+             RETURNING id, name, version_id, memory_mb, game_dir, java_override",
+        )
+        .bind(i64::from(memory_mb))
         .fetch_optional(&self.pool)
         .await
         .map_err(|_| LauncherError::storage_unavailable())?;
@@ -289,6 +314,13 @@ impl ProfileStore for Storage {
 
     async fn active_profile(&self) -> Result<Option<LauncherProfile>, LauncherError> {
         Storage::active_profile(self).await
+    }
+
+    async fn update_active_profile_memory(
+        &self,
+        memory_mb: u32,
+    ) -> Result<Option<LauncherProfile>, LauncherError> {
+        Storage::update_active_profile_memory(self, memory_mb).await
     }
 }
 

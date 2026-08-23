@@ -42,3 +42,11 @@
 - Память сохраняется узкой командой `update_profile_memory`: backend меняет только memory в самом свежем профиле, UI сливает из ответа только memory. Отказ показывает безопасную ошибку и возвращает slider к последнему сохранённому значению; тест с in-flight сохранением проверяет, что версия не откатывается.
 - «Добавить аккаунт» в menu переиспользует общий `MicrosoftLogin`: loading, безопасная error и retry остаются в popup, rejected Promise обработан.
 - Проверки: `npm test -- --run` — PASS, 7 files / 18 tests; `npm run build` — PASS; `cargo test` — PASS, 136 tests total (134 unit + 2 integration); `cargo fmt --check` — PASS.
+
+## Исправления по ревью — round 2
+
+- Debounce сохранения памяти перенесён в стабильный App-level owner. Переход со страницы настроек больше не уничтожает timer; регрессионный тест меняет slider, сразу переходит на главную и подтверждает запись после 250 мс.
+- `MemorySettings` теперь только загружает backend limits и отображает App-owned memory/save state. App оптимистично сливает только memory, игнорирует stale responses, а при отказе возвращает последнее подтверждённое значение и показывает safe error.
+- Backend `update_memory` больше не выполняет read/whole-profile upsert. `ProfileStore::update_active_profile_memory` использует один атомарный SQLite `UPDATE profiles SET memory_mb = ? ... RETURNING`, поэтому не может откатить параллельно сохранённую версию. Отсутствующий профиль возвращает stable `profile_not_found`, а не создаёт default-профиль.
+- Детерминированная Rust-регрессия запускает отложенный memory update, между его стартом и завершением сохраняет новую game version и проверяет итог: новая версия + новая память.
+- Проверки: `npm test -- --run` — PASS, 7 files / 20 tests; `npm run build` — PASS; `cargo test -q` — PASS, 138 tests total (136 unit + 2 integration); `cargo fmt --check` — PASS; `cargo clippy --all-targets -- -D warnings` — PASS.

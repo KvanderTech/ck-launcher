@@ -369,4 +369,42 @@ describe("launcher application", () => {
     expect((version as HTMLSelectElement).value).toBe("1.21.8");
     expect(screen.getByText("5120 МБ")).toBeTruthy();
   });
+
+  it("persists a debounced memory change after immediate page navigation", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const slider = await screen.findByRole("slider", { name: "Оперативная память" });
+
+    vi.useFakeTimers();
+    fireEvent.change(slider, { target: { value: "6144" } });
+    fireEvent.click(screen.getByRole("button", { name: "Главная" }));
+    expect(screen.queryByRole("slider", { name: "Оперативная память" })).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(api.updateMemory).toHaveBeenCalledWith(6144);
+    expect(screen.getByText("6144 МБ")).toBeTruthy();
+  });
+
+  it("reverts memory and exposes a retryable status when persistence fails", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    api.updateMemory.mockRejectedValueOnce(new Error("database unavailable"));
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const slider = await screen.findByRole("slider", { name: "Оперативная память" });
+
+    vi.useFakeTimers();
+    fireEvent.change(slider, { target: { value: "6144" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect((slider as HTMLInputElement).value).toBe("4096");
+    expect(screen.getByRole("alert").textContent).toContain("Значение восстановлено");
+  });
 });
