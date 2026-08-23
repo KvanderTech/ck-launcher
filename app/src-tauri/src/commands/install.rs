@@ -67,12 +67,14 @@ pub async fn install_version(
                 progress,
             )
             .await;
-        let (state, summary) = match result {
-            Ok(summary) => (OperationState::Completed, Some(summary)),
-            Err(error) if error.code() == "download_cancelled" => (OperationState::Cancelled, None),
-            Err(_) => (OperationState::Failed, None),
+        let (state, summary, error) = match result {
+            Ok(summary) => (OperationState::Completed, Some(summary), None),
+            Err(error) if error.code() == "download_cancelled" => {
+                (OperationState::Cancelled, None, Some(error))
+            }
+            Err(error) => (OperationState::Failed, None, Some(error)),
         };
-        let _ = operations.finish(&spawned_operation_id, state, summary);
+        let _ = operations.finish(&spawned_operation_id, state, summary, error);
     });
     Ok(operation_id)
 }

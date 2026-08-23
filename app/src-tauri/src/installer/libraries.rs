@@ -1,3 +1,4 @@
+use super::path_safety::is_strict_windows_relative_path;
 use crate::{
     error::LauncherError,
     metadata::models::{Library, Rule},
@@ -5,7 +6,7 @@ use crate::{
 use regex::Regex;
 use std::{
     collections::BTreeMap,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 const DEFAULT_LIBRARY_BASE: &str = "https://libraries.minecraft.net/";
@@ -117,23 +118,15 @@ pub fn maven_artifact_path(coordinate: &str) -> Result<PathBuf, LauncherError> {
     path.push(name);
     path.push(version);
     path.push(format!("{name}-{version}{classifier}.{extension}"));
+    if !is_strict_windows_relative_path(&path) {
+        return Err(metadata_invalid());
+    }
     Ok(path)
 }
 
 pub(super) fn validate_metadata_path(path: &str) -> Result<PathBuf, LauncherError> {
     let path = Path::new(path);
-    if path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        || path.components().any(|component| {
-            let Component::Normal(name) = component else {
-                return false;
-            };
-            let name = name.to_string_lossy().to_ascii_lowercase();
-            name.ends_with(".part") || name.ends_with(".part.lock")
-        })
-    {
+    if !is_strict_windows_relative_path(path) {
         return Err(metadata_invalid());
     }
     Ok(path.to_path_buf())

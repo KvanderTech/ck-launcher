@@ -1,4 +1,4 @@
-use super::{validate_version_id, NativeArchive};
+use super::{path_safety::is_strict_windows_relative_path, validate_version_id, NativeArchive};
 use crate::{downloads::DownloadCancellationToken, error::LauncherError, paths::AppPaths};
 use std::{
     fs::{self, File, OpenOptions},
@@ -8,6 +8,9 @@ use std::{
 
 const STAGING_PREFIX: &str = "natives.installing-";
 const BACKUP_PREFIX: &str = "natives.backup-";
+pub(super) const MAX_NATIVE_ENTRIES: usize = 4096;
+const MAX_NATIVE_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const MAX_TOTAL_NATIVE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(super) fn extract_natives_transactional(
     game_root: &Path,
@@ -32,11 +35,12 @@ pub(super) fn extract_natives_transactional(
     safety.safe_join(game_root, &staging_relative)?;
 
     let extracted = (|| {
+        let mut budget = NativeBudget::default();
         for archive in archives {
             if cancel.is_cancelled() {
                 return Err(cancelled());
             }
-            extract_archive(game_root, &staging_relative, archive, cancel)?;
+            extract_archive(game_root, &staging_relative, archive, cancel, &mut budget)?;
         }
         activate_staging(game_root, &version_relative, &staging_relative)
     })();
@@ -53,6 +57,7 @@ fn extract_archive(
     staging_relative: &Path,
     archive: &NativeArchive,
     cancel: &DownloadCancellationToken,
+    budget: &mut NativeBudget,
 ) -> Result<(), LauncherError> {
     let safety = AppPaths::new(game_root.to_path_buf());
     let archive_relative = relative_to_root(game_root, &archive.archive)?;
@@ -65,6 +70,17 @@ fn extract_archive(
     }
     let file = File::open(archive_path).map_err(|_| native_storage_error())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|_| native_archive_invalid())?;
+    if zip.len() > MAX_NATIVE_ENTRIES {
+        return Err(native_archive_invalid());
+    }
+    let sizes = (0..zip.len())
+        .map(|index| {
+            zip.by_index(index)
+                .map(|entry| entry.size())
+                .map_err(|_| native_archive_invalid())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    budget.add(zip.len(), sizes)?;
     let excludes = archive
         .excludes
         .iter()
@@ -102,9 +118,6 @@ fn extract_archive(
             .create_new(true)
             .open(destination)
             .map_err(|_| native_archive_invalid())?;
-        if entry.size() > 256 * 1024 * 1024 {
-            return Err(native_archive_invalid());
-        }
         let expected = entry.size();
         let copied = io::copy(&mut entry.take(expected.saturating_add(1)), &mut output)
             .map_err(|_| native_storage_error())?;
@@ -123,6 +136,17 @@ fn activate_staging(
     game_root: &Path,
     version_relative: &Path,
     staging_relative: &Path,
+) -> Result<PathBuf, LauncherError> {
+    activate_staging_with_cleanup(game_root, version_relative, staging_relative, |path| {
+        fs::remove_dir_all(path)
+    })
+}
+
+pub(super) fn activate_staging_with_cleanup(
+    game_root: &Path,
+    version_relative: &Path,
+    staging_relative: &Path,
+    cleanup: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<PathBuf, LauncherError> {
     let safety = AppPaths::new(game_root.to_path_buf());
     let destination_relative = version_relative.join("natives");
@@ -157,12 +181,17 @@ fn activate_staging(
     }
     if had_destination {
         let backup = safety.safe_join(game_root, &backup_relative)?;
-        fs::remove_dir_all(backup).map_err(|_| native_storage_error())?;
+        // Activation is already complete and verified at this point. A locked backup is
+        // discoverable by its reserved prefix and will be retried by pre-install recovery.
+        let _ = cleanup(&backup);
     }
     Ok(destination)
 }
 
-fn recover_interrupted(game_root: &Path, version_relative: &Path) -> Result<(), LauncherError> {
+pub(super) fn recover_interrupted(
+    game_root: &Path,
+    version_relative: &Path,
+) -> Result<(), LauncherError> {
     let safety = AppPaths::new(game_root.to_path_buf());
     let version_root = safety.safe_join(game_root, version_relative)?;
     let destination_relative = version_relative.join("natives");
@@ -195,6 +224,54 @@ fn recover_interrupted(game_root: &Path, version_relative: &Path) -> Result<(), 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn validate_native_budget(
+    entry_count: usize,
+    sizes: impl IntoIterator<Item = u64>,
+) -> Result<(), LauncherError> {
+    NativeBudget::default().add(entry_count, sizes)
+}
+
+#[derive(Default)]
+struct NativeBudget {
+    entries: usize,
+    bytes: u64,
+}
+
+impl NativeBudget {
+    fn add(
+        &mut self,
+        entry_count: usize,
+        sizes: impl IntoIterator<Item = u64>,
+    ) -> Result<(), LauncherError> {
+        self.entries = self
+            .entries
+            .checked_add(entry_count)
+            .ok_or_else(native_archive_invalid)?;
+        if self.entries > MAX_NATIVE_ENTRIES {
+            return Err(native_archive_invalid());
+        }
+        let mut observed = 0_usize;
+        for size in sizes {
+            observed = observed.checked_add(1).ok_or_else(native_archive_invalid)?;
+            if size > MAX_NATIVE_ENTRY_BYTES {
+                return Err(native_archive_invalid());
+            }
+            self.bytes = self
+                .bytes
+                .checked_add(size)
+                .ok_or_else(native_archive_invalid)?;
+            if self.bytes > MAX_TOTAL_NATIVE_BYTES {
+                return Err(native_archive_invalid());
+            }
+        }
+        if observed != entry_count {
+            return Err(native_archive_invalid());
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn create_directories(root: &Path, relative: &Path) -> Result<(), LauncherError> {
@@ -236,18 +313,7 @@ fn excluded(path: &str, excludes: &[String]) -> bool {
 }
 
 fn validate_archive_relative(path: &Path) -> Result<(), LauncherError> {
-    if path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        || path.components().any(|component| {
-            let Component::Normal(name) = component else {
-                return false;
-            };
-            let text = name.to_string_lossy();
-            text.contains(':') || text.ends_with('.') || text.ends_with(' ')
-        })
-    {
+    if !is_strict_windows_relative_path(path) {
         return Err(native_archive_invalid());
     }
     Ok(())
