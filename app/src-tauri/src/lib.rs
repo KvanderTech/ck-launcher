@@ -37,6 +37,7 @@ pub fn run() {
             commands::versions::list_game_versions,
             commands::versions::get_profile,
             commands::versions::update_profile,
+            commands::versions::memory_status,
             commands::runtime::runtime_statuses,
             commands::runtime::detect_runtime,
             commands::runtime::install_runtime,

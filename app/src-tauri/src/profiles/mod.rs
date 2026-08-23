@@ -2,10 +2,20 @@ use crate::{
     error::LauncherError,
     storage::{LauncherProfile, ProfileStore},
 };
+use serde::Serialize;
 use std::sync::Arc;
 
 const MEMORY_STEP_MB: u32 = 512;
 const MAX_MEMORY_MB: u64 = 32_768;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySettingsStatus {
+    pub memory_mb: u32,
+    pub min_memory_mb: u32,
+    pub max_memory_mb: u32,
+    pub step_memory_mb: u32,
+}
 
 pub fn clamp_memory(requested_mb: u32, physical_mb: u64) -> u32 {
     let safe_max = ((physical_mb.saturating_mul(3) / 4).min(MAX_MEMORY_MB)
@@ -92,6 +102,17 @@ impl ProfileService {
         self.storage.upsert_profile(&profile).await?;
         Ok(profile)
     }
+
+    pub async fn memory_status(&self) -> Result<MemorySettingsStatus, LauncherError> {
+        let profile = self.get_profile().await?;
+        let physical_mb = self.memory.physical_memory_mb();
+        Ok(MemorySettingsStatus {
+            memory_mb: clamp_memory(profile.memory_mb, physical_mb),
+            min_memory_mb: MEMORY_STEP_MB,
+            max_memory_mb: clamp_memory(u32::MAX, physical_mb),
+            step_memory_mb: MEMORY_STEP_MB,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +172,21 @@ mod tests {
                 .await
                 .expect_err("blank profile name is rejected");
             assert_eq!(error.code(), "invalid_profile");
+        });
+    }
+
+    #[test]
+    fn memory_status_exposes_backend_clamped_limits_and_exact_step() {
+        tauri::async_runtime::block_on(async {
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            let service = ProfileService::new(storage, Arc::new(FixedMemory(16_384)), "game");
+
+            let status = service.memory_status().await.expect("memory status");
+
+            assert_eq!(status.memory_mb, 4_096);
+            assert_eq!(status.min_memory_mb, 512);
+            assert_eq!(status.max_memory_mb, 12_288);
+            assert_eq!(status.step_memory_mb, 512);
         });
     }
 }

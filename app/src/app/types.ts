@@ -45,6 +45,13 @@ export interface JavaRuntimeStatus {
   version?: string;
 }
 
+export interface MemorySettingsStatus {
+  memoryMb: number;
+  minMemoryMb: number;
+  maxMemoryMb: number;
+  stepMemoryMb: number;
+}
+
 export function progressLabel(progress: ProgressEvent): string {
   const percent = Math.floor((progress.completedBytes / progress.totalBytes) * 100);
 

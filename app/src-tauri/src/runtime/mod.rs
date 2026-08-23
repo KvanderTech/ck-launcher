@@ -6,8 +6,8 @@ use crate::error::LauncherError;
 use detect::probe_java;
 pub use detect::{parse_java_major, ProcessOutput, ProcessRunner, TokioProcessRunner};
 use install::{
-    BoundedReqwestRuntimeArchiveFetcher, RuntimeArchiveFetcher, RuntimeArchiveManifest,
-    RuntimeInstaller,
+    recover_interrupted_swaps_on_startup, BoundedReqwestRuntimeArchiveFetcher,
+    RuntimeArchiveFetcher, RuntimeArchiveManifest, RuntimeInstaller,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -127,6 +127,7 @@ impl RuntimeManager {
     }
 
     pub fn production(runtime_root: PathBuf) -> Result<Self, LauncherError> {
+        recover_interrupted_swaps_on_startup(&runtime_root)?;
         let system_candidates = system_java_candidates();
         let runner: Arc<dyn ProcessRunner> = Arc::new(TokioProcessRunner);
         let fetcher = Arc::new(BoundedReqwestRuntimeArchiveFetcher::new()?);

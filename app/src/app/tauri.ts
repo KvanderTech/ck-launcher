@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AccountSummary, JavaMajor, JavaRuntimeStatus } from "./types";
+import type {
+  AccountSummary,
+  JavaMajor,
+  JavaRuntimeStatus,
+  MemorySettingsStatus,
+} from "./types";
 
 export interface LauncherApi {
   listAccounts(): Promise<AccountSummary[]>;
@@ -29,4 +34,12 @@ export const runtimeApi: RuntimeApi = {
   detectRuntime: (requirement) => invoke<JavaRuntimeStatus>("detect_runtime", { requirement }),
   installRuntime: (requirement) => invoke<JavaRuntimeStatus>("install_runtime", { requirement }),
   chooseRuntimePath: (requirement) => invoke<JavaRuntimeStatus | null>("choose_runtime_path", { requirement }),
+};
+
+export interface SettingsApi {
+  memoryStatus(): Promise<MemorySettingsStatus>;
+}
+
+export const settingsApi: SettingsApi = {
+  memoryStatus: () => invoke<MemorySettingsStatus>("memory_status"),
 };

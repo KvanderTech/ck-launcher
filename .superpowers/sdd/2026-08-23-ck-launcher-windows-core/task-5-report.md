@@ -51,3 +51,33 @@ All commands were run from the isolated Task 5 worktree with its bundled Rust/No
 - The bundled Temurin artifacts are intentionally pinned. Their URLs and SHA-256 values require an explicit manifest update when upgrading Java security releases.
 - Cleanup of a replaced backup directory is best-effort after the new runtime is live. A file lock can therefore leave a hidden `.backup-java-*` directory, but does not invalidate or roll back the verified runtime.
 - Tests intentionally use fake process runners/fetchers and in-memory ZIP fixtures, so no external network or host Java installation was exercised.
+
+## Fix Round 1
+
+### Reviewer findings addressed
+
+1. Memory limits are now backend-owned. `MemorySettingsStatus` is returned by the narrow `memory_status` command and contains the current clamped value, minimum, safe maximum, and step. `ProfileService` derives all four fields through Task 4's `PhysicalMemory` abstraction and `clamp_memory`. The React component loads this DTO through `SettingsApi`; callers no longer provide an arbitrary maximum or step.
+2. Task 2 path inspection now rejects every Windows object with `FILE_ATTRIBUTE_REPARSE_POINT`, covering symbolic links, junctions, mount points, and other reparse tags. Launcher directory and database paths are revalidated at the write/open boundary. Tests cover a deterministic non-symlink reparse classification, a real junction, and refusal to create launcher directories through an existing junction.
+3. Managed runtime swaps now use a fixed discoverable `.backup-java-{major}` recovery point and an injectable swap filesystem. Activation failure with successful rollback restores the probe-valid old runtime. If rollback itself fails, the stable `runtime_state_inconsistent` error is returned and the backup remains discoverable. Startup restores a missing final directory structurally; pre-install recovery probes final/backup runtimes, keeps a valid activation, or replaces an invalid activation with the probe-valid backup.
+
+### TDD evidence
+
+- The deterministic reparse-point test first failed because `PathKind` had no general reparse classification; after Windows attribute-based inspection it and the real-junction tests passed.
+- The launcher-directory junction test first demonstrated that `create_directories` followed an existing junction; after safe-join checks immediately around creation it passed.
+- The rollback test first failed to compile because no injectable swap filesystem/recovery API existed; after the swap protocol was introduced, injected activation+rollback failure returned `runtime_state_inconsistent` and retained `.backup-java-17`.
+- Invalid-final recovery first returned `runtime_state_inconsistent`; after probing and activating the valid backup it restored the old runtime and passed.
+- Rust and TypeScript memory tests first failed because `memory_status`, `SettingsApi`, and the backend DTO did not exist; after adding the narrow boundary both focused tests passed with a backend maximum of 12,288 MB and a 512 MB step.
+
+### Round verification
+
+- `cargo fmt --all`: passed.
+- `cargo test --all-targets`: passed — 59 library tests plus 2 Task 5 integration tests, 0 failures.
+- `cargo clippy --all-targets -- -D warnings`: passed.
+- `npm test`: passed — 4 files, 5 tests, 0 failures.
+- `npm run build`: passed.
+- `git diff --check`: passed; only Git's LF/CRLF checkout notices were printed.
+
+### Round concerns
+
+- Path validation is performed at the last practical boundary and the runtime staging root is launcher-private. As already documented by Task 2, path-based checks cannot completely eliminate a same-user TOCTOU race without a broader Windows handle-relative/no-follow filesystem layer.
+- A locked obsolete backup may remain after a successful activation, but it is now intentionally named, detected, probed, and recovered or cleaned on the next pre-install pass.

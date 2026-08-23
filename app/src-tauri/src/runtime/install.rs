@@ -2,8 +2,8 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        verify_archive_checksum, RuntimeArchiveEntry, RuntimeArchiveFetcher,
-        RuntimeArchiveManifest, RuntimeInstaller,
+        recover_interrupted_swaps_on_startup, verify_archive_checksum, RuntimeArchiveEntry,
+        RuntimeArchiveFetcher, RuntimeArchiveManifest, RuntimeInstaller, RuntimeSwapFileSystem,
     };
     use crate::{
         error::LauncherError,
@@ -61,6 +61,48 @@ mod tests {
             })
         }
     }
+    struct FileContentRunner;
+    #[async_trait]
+    impl ProcessRunner for FileContentRunner {
+        async fn run(
+            &self,
+            executable: &Path,
+            _args: &[&str],
+            _timeout: Duration,
+        ) -> Result<ProcessOutput, LauncherError> {
+            let valid = std::fs::read(executable).is_ok_and(|bytes| bytes == b"old java");
+            Ok(ProcessOutput {
+                success: valid,
+                stdout: String::new(),
+                stderr: "openjdk version \"17.0.20\"".to_owned(),
+            })
+        }
+    }
+
+    struct FailingSwapFileSystem {
+        fail_activation: bool,
+        fail_rollback: bool,
+    }
+
+    impl RuntimeSwapFileSystem for FailingSwapFileSystem {
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            let from_name = from
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if self.fail_activation && from_name.starts_with(".candidate-java-") {
+                return Err(std::io::Error::other("injected activation failure"));
+            }
+            if self.fail_rollback && from_name == ".backup-java-17" {
+                return Err(std::io::Error::other("injected rollback failure"));
+            }
+            std::fs::rename(from, to)
+        }
+
+        fn remove_path(&self, path: &Path) -> std::io::Result<()> {
+            super::remove_path(path)
+        }
+    }
 
     fn runtime_zip() -> Vec<u8> {
         let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
@@ -91,6 +133,13 @@ mod tests {
         root
     }
 
+    fn create_probe_valid_old_runtime(root: &Path) {
+        let previous = root.join("java-17");
+        std::fs::create_dir_all(previous.join("bin")).expect("previous runtime");
+        std::fs::write(previous.join("bin/java.exe"), b"old java").expect("old Java executable");
+        std::fs::write(previous.join("marker"), b"previous").expect("previous marker");
+    }
+
     #[test]
     fn versioned_manifest_requires_windows_x64_url_and_sha_for_every_supported_major() {
         let manifest = RuntimeArchiveManifest::bundled().expect("bundled manifest is valid");
@@ -113,9 +162,8 @@ mod tests {
     fn checksum_failure_preserves_the_previous_valid_runtime() {
         tauri::async_runtime::block_on(async {
             let root = temporary_root();
+            create_probe_valid_old_runtime(&root);
             let previous = root.join("java-17");
-            std::fs::create_dir_all(previous.join("bin")).expect("previous runtime");
-            std::fs::write(previous.join("marker"), b"previous").expect("previous marker");
             let installer = RuntimeInstaller::new(
                 root.clone(),
                 Arc::new(FixedRunner),
@@ -139,9 +187,8 @@ mod tests {
     fn verified_archive_is_probed_before_replacing_the_previous_runtime() {
         tauri::async_runtime::block_on(async {
             let root = temporary_root();
+            create_probe_valid_old_runtime(&root);
             let previous = root.join("java-17");
-            std::fs::create_dir_all(previous.join("bin")).expect("previous runtime");
-            std::fs::write(previous.join("marker"), b"previous").expect("previous marker");
             let bytes = runtime_zip();
             let sha = format!("{:x}", Sha256::digest(&bytes));
             let installer = RuntimeInstaller::new(
@@ -171,9 +218,8 @@ mod tests {
     fn failed_staged_java_probe_preserves_the_previous_valid_runtime() {
         tauri::async_runtime::block_on(async {
             let root = temporary_root();
+            create_probe_valid_old_runtime(&root);
             let previous = root.join("java-17");
-            std::fs::create_dir_all(previous.join("bin")).expect("previous runtime");
-            std::fs::write(previous.join("marker"), b"previous").expect("previous marker");
             let bytes = runtime_zip();
             let sha = format!("{:x}", Sha256::digest(&bytes));
             let installer = RuntimeInstaller::new(
@@ -197,6 +243,162 @@ mod tests {
             std::fs::remove_dir_all(root).expect("temporary root removed");
         });
     }
+
+    #[test]
+    fn activation_and_rollback_failure_returns_inconsistency_and_retains_discoverable_backup() {
+        tauri::async_runtime::block_on(async {
+            let root = temporary_root();
+            create_probe_valid_old_runtime(&root);
+            let bytes = runtime_zip();
+            let sha = format!("{:x}", Sha256::digest(&bytes));
+            let installer = RuntimeInstaller::with_swap_file_system(
+                root.clone(),
+                Arc::new(FixedRunner),
+                Arc::new(FakeFetcher(bytes)),
+                manifest(sha),
+                Arc::new(FailingSwapFileSystem {
+                    fail_activation: true,
+                    fail_rollback: true,
+                }),
+            );
+
+            let error = installer
+                .install(JavaRequirement::new(17).unwrap())
+                .await
+                .expect_err("failed rollback is surfaced");
+
+            assert_eq!(error.code(), "runtime_state_inconsistent");
+            assert!(root.join(".backup-java-17/bin/java.exe").is_file());
+            assert!(!root.join("java-17").exists());
+            std::fs::remove_dir_all(root).expect("temporary root removed");
+        });
+    }
+
+    #[test]
+    fn activation_failure_with_successful_rollback_restores_probe_valid_old_runtime() {
+        tauri::async_runtime::block_on(async {
+            let root = temporary_root();
+            create_probe_valid_old_runtime(&root);
+            let bytes = runtime_zip();
+            let sha = format!("{:x}", Sha256::digest(&bytes));
+            let installer = RuntimeInstaller::with_swap_file_system(
+                root.clone(),
+                Arc::new(FixedRunner),
+                Arc::new(FakeFetcher(bytes)),
+                manifest(sha),
+                Arc::new(FailingSwapFileSystem {
+                    fail_activation: true,
+                    fail_rollback: false,
+                }),
+            );
+
+            let error = installer
+                .install(JavaRequirement::new(17).unwrap())
+                .await
+                .expect_err("activation failure is returned");
+
+            assert_eq!(error.code(), "runtime_install_failed");
+            assert_eq!(
+                std::fs::read(root.join("java-17/bin/java.exe")).expect("old Java restored"),
+                b"old java"
+            );
+            assert!(!root.join(".backup-java-17").exists());
+            std::fs::remove_dir_all(root).expect("temporary root removed");
+        });
+    }
+
+    #[test]
+    fn startup_and_preinstall_recovery_restore_a_probe_valid_backup() {
+        tauri::async_runtime::block_on(async {
+            let root = temporary_root();
+            let backup = root.join(".backup-java-17");
+            std::fs::create_dir_all(backup.join("bin")).expect("backup runtime");
+            std::fs::write(backup.join("bin/java.exe"), b"old java").expect("old Java executable");
+
+            recover_interrupted_swaps_on_startup(&root)
+                .expect("startup recovery restores missing final");
+            assert!(root.join("java-17/bin/java.exe").is_file());
+            assert!(!backup.exists());
+
+            std::fs::rename(root.join("java-17"), &backup)
+                .expect("simulate second interrupted swap");
+            let installer = RuntimeInstaller::new(
+                root.clone(),
+                Arc::new(FixedRunner),
+                Arc::new(FakeFetcher(Vec::new())),
+                manifest("0".repeat(64)),
+            );
+            installer
+                .recover_interrupted_swap(JavaRequirement::new(17).unwrap())
+                .await
+                .expect("pre-install recovery probes restored backup");
+            assert!(root.join("java-17/bin/java.exe").is_file());
+            assert!(!backup.exists());
+            std::fs::remove_dir_all(root).expect("temporary root removed");
+        });
+    }
+
+    #[test]
+    fn preinstall_recovery_keeps_a_valid_activated_runtime_and_removes_its_backup() {
+        tauri::async_runtime::block_on(async {
+            let root = temporary_root();
+            create_probe_valid_old_runtime(&root);
+            let backup = root.join(".backup-java-17");
+            std::fs::create_dir_all(backup.join("bin")).expect("backup runtime");
+            std::fs::write(backup.join("bin/java.exe"), b"older java")
+                .expect("backup Java executable");
+            let installer = RuntimeInstaller::new(
+                root.clone(),
+                Arc::new(FixedRunner),
+                Arc::new(FakeFetcher(Vec::new())),
+                manifest("0".repeat(64)),
+            );
+
+            installer
+                .recover_interrupted_swap(JavaRequirement::new(17).unwrap())
+                .await
+                .expect("activated runtime wins after probe");
+
+            assert_eq!(
+                std::fs::read(root.join("java-17/bin/java.exe")).expect("activated Java retained"),
+                b"old java"
+            );
+            assert!(!backup.exists());
+            std::fs::remove_dir_all(root).expect("temporary root removed");
+        });
+    }
+
+    #[test]
+    fn preinstall_recovery_replaces_an_invalid_activated_runtime_with_probe_valid_backup() {
+        tauri::async_runtime::block_on(async {
+            let root = temporary_root();
+            std::fs::create_dir_all(root.join("java-17/bin")).expect("broken final runtime");
+            std::fs::write(root.join("java-17/bin/java.exe"), b"broken java")
+                .expect("broken Java executable");
+            let backup = root.join(".backup-java-17");
+            std::fs::create_dir_all(backup.join("bin")).expect("backup runtime");
+            std::fs::write(backup.join("bin/java.exe"), b"old java")
+                .expect("valid backup Java executable");
+            let installer = RuntimeInstaller::new(
+                root.clone(),
+                Arc::new(FileContentRunner),
+                Arc::new(FakeFetcher(Vec::new())),
+                manifest("0".repeat(64)),
+            );
+
+            installer
+                .recover_interrupted_swap(JavaRequirement::new(17).unwrap())
+                .await
+                .expect("valid backup replaces broken activation");
+
+            assert_eq!(
+                std::fs::read(root.join("java-17/bin/java.exe")).expect("valid Java restored"),
+                b"old java"
+            );
+            assert!(!backup.exists());
+            std::fs::remove_dir_all(root).expect("temporary root removed");
+        });
+    }
 }
 use super::{
     archive::extract_zip_archive, detect::probe_java, java_executable, JavaRequirement,
@@ -215,6 +417,23 @@ use std::{
 };
 
 const MAX_RUNTIME_ARCHIVE_BYTES: usize = 536_870_912;
+
+pub(crate) trait RuntimeSwapFileSystem: Send + Sync {
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    fn remove_path(&self, path: &Path) -> std::io::Result<()>;
+}
+
+struct StandardRuntimeSwapFileSystem;
+
+impl RuntimeSwapFileSystem for StandardRuntimeSwapFileSystem {
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        fs::rename(from, to)
+    }
+
+    fn remove_path(&self, path: &Path) -> std::io::Result<()> {
+        remove_path(path)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -319,6 +538,7 @@ pub struct RuntimeInstaller {
     runner: Arc<dyn ProcessRunner>,
     fetcher: Arc<dyn RuntimeArchiveFetcher>,
     manifest: RuntimeArchiveManifest,
+    swap_files: Arc<dyn RuntimeSwapFileSystem>,
 }
 
 impl RuntimeInstaller {
@@ -333,6 +553,24 @@ impl RuntimeInstaller {
             runner,
             fetcher,
             manifest,
+            swap_files: Arc::new(StandardRuntimeSwapFileSystem),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_swap_file_system(
+        runtime_root: PathBuf,
+        runner: Arc<dyn ProcessRunner>,
+        fetcher: Arc<dyn RuntimeArchiveFetcher>,
+        manifest: RuntimeArchiveManifest,
+        swap_files: Arc<dyn RuntimeSwapFileSystem>,
+    ) -> Self {
+        Self {
+            runtime_root,
+            runner,
+            fetcher,
+            manifest,
+            swap_files,
         }
     }
 
@@ -340,6 +578,7 @@ impl RuntimeInstaller {
         &self,
         requirement: JavaRequirement,
     ) -> Result<JavaRuntimeStatus, LauncherError> {
+        self.recover_interrupted_swap(requirement).await?;
         let entry = self
             .manifest
             .entry(requirement.major())
@@ -392,10 +631,13 @@ impl RuntimeInstaller {
             let _ = fs::remove_dir_all(&temp);
             return Err(install_error());
         }
-        if let Err(error) =
-            replace_runtime(&self.runtime_root, requirement.major(), &candidate, nonce)
-        {
-            let _ = remove_path(&candidate);
+        if let Err(error) = replace_runtime(
+            &self.runtime_root,
+            requirement.major(),
+            &candidate,
+            self.swap_files.as_ref(),
+        ) {
+            let _ = self.swap_files.remove_path(&candidate);
             let _ = fs::remove_dir_all(&temp);
             return Err(error);
         }
@@ -414,6 +656,68 @@ impl RuntimeInstaller {
             source: Some(JavaRuntimeSource::Managed),
             version: Some(version),
         })
+    }
+
+    pub async fn recover_interrupted_swap(
+        &self,
+        requirement: JavaRequirement,
+    ) -> Result<(), LauncherError> {
+        let Some(backup) = discover_backup(&self.runtime_root, requirement.major())? else {
+            return Ok(());
+        };
+        let final_name = format!("java-{}", requirement.major());
+        let mut final_path = safe_child(&self.runtime_root, &final_name)?;
+        if !final_path.exists() {
+            let backup = revalidate_child(&self.runtime_root, &backup)?;
+            final_path = safe_child(&self.runtime_root, &final_name)?;
+            self.swap_files
+                .rename(&backup, &final_path)
+                .map_err(|error| runtime_inconsistent(Some(error.to_string())))?;
+        }
+
+        let final_java = java_executable(&final_path);
+        match probe_java(self.runner.as_ref(), &final_java).await {
+            Ok((major, _)) if major == requirement.major() => {
+                if backup.exists() {
+                    let backup = revalidate_child(&self.runtime_root, &backup)?;
+                    let _ = self.swap_files.remove_path(&backup);
+                }
+                Ok(())
+            }
+            _ if backup.exists() => {
+                let backup_java = java_executable(&backup);
+                match probe_java(self.runner.as_ref(), &backup_java).await {
+                    Ok((major, _)) if major == requirement.major() => {}
+                    _ => return Err(runtime_inconsistent(None)),
+                }
+                let failed_name = format!(
+                    ".failed-java-{}-{}",
+                    requirement.major(),
+                    rand::random::<u64>()
+                );
+                let final_path = safe_child(&self.runtime_root, &final_name)?;
+                let failed = safe_child(&self.runtime_root, &failed_name)?;
+                self.swap_files
+                    .rename(&final_path, &failed)
+                    .map_err(|error| runtime_inconsistent(Some(error.to_string())))?;
+                let backup = revalidate_child(&self.runtime_root, &backup)?;
+                let final_path = safe_child(&self.runtime_root, &final_name)?;
+                if let Err(activation_error) = self.swap_files.rename(&backup, &final_path) {
+                    let failed = revalidate_child(&self.runtime_root, &failed)?;
+                    let final_path = safe_child(&self.runtime_root, &final_name)?;
+                    if let Err(rollback_error) = self.swap_files.rename(&failed, &final_path) {
+                        return Err(runtime_inconsistent(Some(format!(
+                            "backup activation failed: {activation_error}; rollback failed: {rollback_error}"
+                        ))));
+                    }
+                    return Err(runtime_inconsistent(Some(activation_error.to_string())));
+                }
+                let failed = revalidate_child(&self.runtime_root, &failed)?;
+                let _ = self.swap_files.remove_path(&failed);
+                Ok(())
+            }
+            _ => Err(runtime_inconsistent(None)),
+        }
     }
 }
 
@@ -435,19 +739,43 @@ fn replace_runtime(
     root: &Path,
     major: u16,
     candidate: &Path,
-    nonce: u64,
+    swap_files: &dyn RuntimeSwapFileSystem,
 ) -> Result<(), LauncherError> {
     let final_name = format!("java-{major}");
     let final_path = safe_child(root, &final_name)?;
-    let backup = safe_child(root, &format!(".backup-java-{major}-{nonce}"))?;
+    let backup_name = format!(".backup-java-{major}");
+    let backup = safe_child(root, &backup_name)?;
+    if backup.exists() {
+        return Err(runtime_inconsistent(None));
+    }
+    let candidate = revalidate_child(root, candidate)?;
     let had_previous = final_path.exists();
     if had_previous {
-        fs::rename(&final_path, &backup).map_err(|_| install_error())?;
+        let final_path = safe_child(root, &final_name)?;
+        let backup = safe_child(root, &backup_name)?;
+        swap_files
+            .rename(&final_path, &backup)
+            .map_err(|_| install_error())?;
     }
+    let candidate = match revalidate_child(root, &candidate) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            if had_previous {
+                restore_backup(root, &backup_name, &final_name, swap_files)?;
+            }
+            return Err(error);
+        }
+    };
     let final_path = safe_child(root, &final_name)?;
-    if let Err(error) = fs::rename(candidate, &final_path) {
+    if let Err(error) = swap_files.rename(&candidate, &final_path) {
         if had_previous {
-            let _ = fs::rename(&backup, &final_path);
+            restore_backup(root, &backup_name, &final_name, swap_files).map_err(
+                |rollback_error| {
+                    runtime_inconsistent(Some(format!(
+                        "activation failed: {error}; rollback failed: {rollback_error}"
+                    )))
+                },
+            )?;
         }
         return Err(LauncherError::new(
             "runtime_install_failed",
@@ -457,9 +785,67 @@ fn replace_runtime(
         ));
     }
     if had_previous {
-        let _ = remove_path(&backup);
+        let backup = safe_child(root, &backup_name)?;
+        let _ = swap_files.remove_path(&backup);
     }
     Ok(())
+}
+
+fn restore_backup(
+    root: &Path,
+    backup_name: &str,
+    final_name: &str,
+    swap_files: &dyn RuntimeSwapFileSystem,
+) -> Result<(), LauncherError> {
+    let backup = safe_child(root, backup_name)?;
+    let final_path = safe_child(root, final_name)?;
+    swap_files
+        .rename(&backup, &final_path)
+        .map_err(|error| runtime_inconsistent(Some(error.to_string())))
+}
+
+pub(crate) fn recover_interrupted_swaps_on_startup(root: &Path) -> Result<(), LauncherError> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let swap_files = StandardRuntimeSwapFileSystem;
+    for major in super::SUPPORTED_JAVA_MAJORS {
+        let Some(backup) = discover_backup(root, major)? else {
+            continue;
+        };
+        let final_name = format!("java-{major}");
+        let final_path = safe_child(root, &final_name)?;
+        if !final_path.exists() {
+            let backup = revalidate_child(root, &backup)?;
+            let final_path = safe_child(root, &final_name)?;
+            swap_files
+                .rename(&backup, &final_path)
+                .map_err(|error| runtime_inconsistent(Some(error.to_string())))?;
+        }
+    }
+    Ok(())
+}
+
+fn discover_backup(root: &Path, major: u16) -> Result<Option<PathBuf>, LauncherError> {
+    let prefix = format!(".backup-java-{major}");
+    let mut backups = fs::read_dir(root)
+        .map_err(|_| install_error())?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    if backups.len() > 1 {
+        return Err(runtime_inconsistent(None));
+    }
+    Ok(backups.pop())
+}
+
+fn revalidate_child(root: &Path, path: &Path) -> Result<PathBuf, LauncherError> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| runtime_inconsistent(None))?;
+    safe_child(root, name)
 }
 
 fn remove_path(path: &Path) -> std::io::Result<()> {
@@ -512,6 +898,15 @@ fn install_error() -> LauncherError {
         "runtime_install_failed",
         "The Java runtime could not be installed.",
         None,
+        true,
+    )
+}
+
+fn runtime_inconsistent(details: Option<String>) -> LauncherError {
+    LauncherError::new(
+        "runtime_state_inconsistent",
+        "The managed Java runtime could not be restored consistently.",
+        details,
         true,
     )
 }

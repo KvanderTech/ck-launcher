@@ -1,7 +1,7 @@
 use crate::{
     error::LauncherError,
     metadata::{models::GameVersionSummary, resolver::MetadataService},
-    profiles::ProfileService,
+    profiles::{MemorySettingsStatus, ProfileService},
     storage::LauncherProfile,
 };
 use tauri::State;
@@ -26,4 +26,11 @@ pub async fn update_profile(
     profiles: State<'_, ProfileService>,
 ) -> Result<LauncherProfile, LauncherError> {
     profiles.update_profile(profile).await
+}
+
+#[tauri::command]
+pub async fn memory_status(
+    profiles: State<'_, ProfileService>,
+) -> Result<MemorySettingsStatus, LauncherError> {
+    profiles.memory_status().await
 }
