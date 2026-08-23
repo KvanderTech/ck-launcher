@@ -17,10 +17,11 @@ pub fn asset_object_path(hash: &str) -> Result<PathBuf, LauncherError> {
     if hash.len() != 40 || !hash.as_bytes().iter().all(u8::is_ascii_hexdigit) {
         return Err(asset_index_invalid());
     }
+    let hash = hash.to_ascii_lowercase();
     Ok(PathBuf::from("assets")
         .join("objects")
         .join(&hash[..2])
-        .join(hash))
+        .join(&hash))
 }
 
 pub(super) fn asset_index_invalid() -> LauncherError {

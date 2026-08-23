@@ -1,14 +1,21 @@
 use super::{
     assets::asset_object_path,
-    libraries::{library_allowed, maven_artifact_path, WindowsRuleContext},
-    natives::extract_natives_transactional,
+    libraries::{library_allowed, maven_artifact_path, validate_metadata_path, WindowsRuleContext},
+    natives::{
+        activate_staging_with_cleanup, extract_natives_transactional, recover_interrupted,
+        validate_native_budget, MAX_NATIVE_ENTRIES, MAX_TOTAL_NATIVE_BYTES,
+    },
     plan_installation, InstallFileKind, InstallationStore, Installer, NativeArchive,
-    OperationRegistry, OperationState, VerifiedDownloader, VersionProvider,
+    OperationRegistry, OperationState, PhaseProgressSink, VerifiedDownloader, VersionProvider,
+    MAX_TERMINAL_OPERATIONS,
 };
 use crate::metadata::models::{ResolvedVersion, VersionJson};
 use crate::{
-    downloads::{DownloadCancellationToken, DownloadService, DownloadSpec, ProgressSink},
+    downloads::{
+        DownloadCancellationToken, DownloadProgress, DownloadService, DownloadSpec, ProgressSink,
+    },
     error::LauncherError,
+    metadata::models::AssetIndex,
 };
 use async_trait::async_trait;
 use sha1::{Digest, Sha1};
@@ -365,7 +372,7 @@ fn registry_rejects_duplicate_version_and_cancellation_is_idempotent() {
     );
 
     registry
-        .finish(&first.operation_id, OperationState::Cancelled, None)
+        .finish(&first.operation_id, OperationState::Cancelled, None, None)
         .expect("finish");
     assert!(registry.begin("fixture-1.0").is_ok());
 }
@@ -528,6 +535,20 @@ fn local_http_install_verifies_downloads_extracts_natives_and_only_then_marks_ve
 
         server.join().expect("server thread");
         assert_eq!(summary.version_id, "local-1.0");
+        let installed_version: serde_json::Value = serde_json::from_slice(
+            &fs::read(game.join("versions/local-1.0/local-1.0.json"))
+                .expect("installed version JSON"),
+        )
+        .expect("installed version JSON parses");
+        assert_eq!(
+            installed_version["minecraftArguments"],
+            "--username ${auth_player_name}"
+        );
+        assert_eq!(installed_version["arguments"]["game"][0], "--demo");
+        assert_eq!(
+            installed_version["arguments"]["game"][1]["value"],
+            serde_json::json!(["--width", "854"])
+        );
         assert_eq!(
             fs::read(game.join("versions/local-1.0/local-1.0.jar")).expect("client"),
             body
@@ -627,4 +648,313 @@ fn unsafe_version_identifiers_never_become_filesystem_components() {
         );
     }
     fs::remove_dir_all(game).expect("cleanup");
+}
+
+#[test]
+fn legacy_lwjgl_fixture_plans_base_and_windows_classifier_with_extract_rules() {
+    let game = temporary_game("legacy-lwjgl-plan");
+    let version: VersionJson = serde_json::from_str(include_str!(
+        "../tests/fixtures/installer_legacy_lwjgl_version.json"
+    ))
+    .expect("old LWJGL fixture");
+
+    let plan = plan_installation(&game, &version.into()).expect("legacy plan");
+    let lwjgl_files = plan
+        .files
+        .iter()
+        .filter(|file| {
+            matches!(
+                file.kind,
+                InstallFileKind::Library | InstallFileKind::Native
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(lwjgl_files.len(), 3);
+    assert!(lwjgl_files.iter().any(|file| {
+        file.kind == InstallFileKind::Library
+            && file
+                .destination
+                .ends_with("org/lwjgl/lwjgl/lwjgl/2.9.3/lwjgl-2.9.3.jar")
+    }));
+    let native = lwjgl_files
+        .iter()
+        .find(|file| file.kind == InstallFileKind::Native)
+        .expect("Windows native classifier");
+    assert!(native.destination.ends_with(
+        "org/lwjgl/lwjgl/lwjgl-platform/2.9.3/lwjgl-platform-2.9.3-natives-windows.jar"
+    ));
+    assert!(native.url.as_deref().is_some_and(|url| {
+        url.ends_with(
+            "org/lwjgl/lwjgl/lwjgl-platform/2.9.3/lwjgl-platform-2.9.3-natives-windows.jar",
+        )
+    }));
+    assert_eq!(plan.natives.len(), 1);
+    assert_eq!(plan.natives[0].excludes, vec!["META-INF/".to_owned()]);
+    fs::remove_dir_all(game).expect("cleanup");
+}
+
+#[test]
+fn shared_asset_hash_is_normalized_and_planned_once() {
+    let game = temporary_game("shared-asset");
+    let index = br#"{"objects":{"first":{"hash":"AABBCCDDEEFF00112233445566778899AABBCCDD","size":7},"second":{"hash":"aabbccddeeff00112233445566778899aabbccdd","size":7}}}"#;
+    let index_path = game.join("assets/indexes/shared.json");
+    fs::create_dir_all(index_path.parent().expect("asset index parent")).expect("parent");
+    fs::write(&index_path, index).expect("asset index");
+    let mut version = resolved_fixture();
+    version.asset_index = Some(AssetIndex {
+        id: "shared".to_owned(),
+        url: "https://example.test/shared.json".to_owned(),
+        sha1: Some(format!("{:x}", Sha1::digest(index))),
+        size: Some(index.len() as u64),
+        total_size: Some(14),
+    });
+
+    let plan = plan_installation(&game, &version).expect("shared objects plan");
+    let objects = plan
+        .files
+        .iter()
+        .filter(|file| file.kind == InstallFileKind::AssetObject)
+        .collect::<Vec<_>>();
+
+    assert_eq!(objects.len(), 1);
+    assert!(objects[0]
+        .destination
+        .ends_with("assets/objects/aa/aabbccddeeff00112233445566778899aabbccdd"));
+    assert_eq!(
+        objects[0].sha1.as_deref(),
+        Some("aabbccddeeff00112233445566778899aabbccdd")
+    );
+    fs::remove_dir_all(game).expect("cleanup");
+}
+
+#[test]
+fn metadata_paths_reject_windows_aliases_ads_trailing_names_and_controls() {
+    for unsafe_path in [
+        "libraries/CON.jar",
+        "libraries/aux",
+        "libraries/COM1.dll",
+        "libraries/lpt9.native",
+        "libraries/file.jar:stream",
+        "libraries/trailing.",
+        "libraries/trailing ",
+        "libraries/control\u{001f}.jar",
+    ] {
+        assert_eq!(
+            validate_metadata_path(unsafe_path)
+                .expect_err("Windows-unsafe path must be rejected")
+                .code(),
+            "metadata_invalid",
+            "{unsafe_path:?}"
+        );
+    }
+    assert_eq!(
+        validate_metadata_path("libraries/safe/name-1.0.jar").expect("safe artifact path"),
+        PathBuf::from("libraries/safe/name-1.0.jar")
+    );
+}
+
+#[test]
+fn asset_and_logging_ids_use_the_same_strict_windows_path_validation() {
+    let game = temporary_game("unsafe-metadata-ids");
+    let mut asset_version = resolved_fixture();
+    asset_version.asset_index.as_mut().expect("asset index").id = "CON".to_owned();
+    assert_eq!(
+        plan_installation(&game, &asset_version)
+            .expect_err("reserved asset index id")
+            .code(),
+        "metadata_invalid"
+    );
+
+    let mut logging_version = resolved_fixture();
+    logging_version.logging = Some(serde_json::json!({
+        "client": {"file": {"id":"aux.xml", "url":"https://example.test/log.xml", "size":1, "sha1":"0000000000000000000000000000000000000000"}}
+    }));
+    assert_eq!(
+        plan_installation(&game, &logging_version)
+            .expect_err("reserved logging id")
+            .code(),
+        "metadata_invalid"
+    );
+    fs::remove_dir_all(game).expect("cleanup");
+}
+
+#[test]
+fn successful_native_activation_is_not_failed_by_backup_cleanup_error() {
+    let game = temporary_game("native-cleanup-failure");
+    let version_relative = PathBuf::from("versions/fixture-1.0");
+    let destination = game.join(&version_relative).join("natives");
+    let staging_relative = version_relative.join("natives.installing-test");
+    fs::create_dir_all(&destination).expect("old natives");
+    fs::write(destination.join("old.dll"), b"old").expect("old native");
+    fs::create_dir_all(game.join(&staging_relative)).expect("new staging");
+    fs::write(game.join(&staging_relative).join("new.dll"), b"new").expect("new native");
+
+    let activated =
+        activate_staging_with_cleanup(&game, &version_relative, &staging_relative, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "locked",
+            ))
+        })
+        .expect("activation success is authoritative");
+
+    assert_eq!(
+        fs::read(activated.join("new.dll")).expect("new active native"),
+        b"new"
+    );
+    assert!(fs::read_dir(game.join(&version_relative))
+        .expect("version entries")
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("natives.backup-")));
+    recover_interrupted(&game, &version_relative).expect("later recovery cleans stale backup");
+    assert!(!fs::read_dir(game.join(&version_relative))
+        .expect("version entries")
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("natives.backup-")));
+    fs::remove_dir_all(game).expect("cleanup");
+}
+
+#[test]
+fn native_archive_budget_bounds_entry_count_total_size_and_overflow() {
+    assert_eq!(
+        validate_native_budget(
+            MAX_NATIVE_ENTRIES + 1,
+            std::iter::repeat_n(0, MAX_NATIVE_ENTRIES + 1)
+        )
+        .expect_err("entry-count bomb")
+        .code(),
+        "native_archive_invalid"
+    );
+    assert_eq!(
+        validate_native_budget(2, [MAX_TOTAL_NATIVE_BYTES, 1])
+            .expect_err("aggregate zip bomb")
+            .code(),
+        "native_archive_invalid"
+    );
+    assert_eq!(
+        validate_native_budget(2, [u64::MAX, 1])
+            .expect_err("size overflow")
+            .code(),
+        "native_archive_invalid"
+    );
+    validate_native_budget(2, [1024, 2048]).expect("small archive budget");
+}
+
+#[test]
+fn native_extractor_rejects_archive_entry_count_bomb_before_writes() {
+    let game = temporary_game("native-entry-count");
+    let archive = game.join("libraries/entry-count.jar");
+    fs::create_dir_all(archive.parent().expect("library parent")).expect("parent");
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..=MAX_NATIVE_ENTRIES {
+        zip.start_file(format!("entry-{index}.dll"), SimpleFileOptions::default())
+            .expect("zip entry");
+    }
+    fs::write(&archive, zip.finish().expect("zip closes").into_inner()).expect("archive");
+
+    let error = extract_natives_transactional(
+        &game,
+        "fixture-1.0",
+        &[NativeArchive {
+            archive,
+            excludes: Vec::new(),
+        }],
+        &DownloadCancellationToken::new(),
+    )
+    .expect_err("entry-count bomb is rejected");
+
+    assert_eq!(error.code(), "native_archive_invalid");
+    assert!(!game.join("versions/fixture-1.0/natives").exists());
+    fs::remove_dir_all(game).expect("cleanup");
+}
+
+#[test]
+fn terminal_operation_exposes_sanitized_stable_error_and_history_is_bounded() {
+    let registry = OperationRegistry::default();
+    let failed = registry.begin("failed-version").expect("failed operation");
+    registry
+        .finish(
+            &failed.operation_id,
+            OperationState::Failed,
+            None,
+            Some(LauncherError::internal("access_token=terminal-secret")),
+        )
+        .expect("terminal state");
+    let status = registry
+        .status(&failed.operation_id)
+        .expect("failed status");
+    let serialized = serde_json::to_string(&status).expect("status serializes");
+    assert_eq!(
+        status.error.as_ref().map(LauncherError::code),
+        Some("internal_error")
+    );
+    assert!(!serialized.contains("terminal-secret"));
+    assert!(serialized.contains("[REDACTED]"));
+
+    for index in 0..MAX_TERMINAL_OPERATIONS {
+        let handle = registry
+            .begin(&format!("version-{index}"))
+            .expect("operation");
+        registry
+            .finish(&handle.operation_id, OperationState::Completed, None, None)
+            .expect("finish");
+    }
+    assert_eq!(
+        registry
+            .status(&failed.operation_id)
+            .expect_err("oldest terminal record is pruned")
+            .code(),
+        "operation_not_found"
+    );
+}
+
+#[derive(Default)]
+struct RecordingProgress(Mutex<Vec<DownloadProgress>>);
+
+impl ProgressSink for RecordingProgress {
+    fn emit(&self, event: DownloadProgress) {
+        self.0.lock().expect("progress").push(event);
+    }
+}
+
+#[test]
+fn phase_progress_offsets_asset_bytes_without_regressing_operation_progress() {
+    let recorded = Arc::new(RecordingProgress::default());
+    let base = PhaseProgressSink::new(recorded.clone(), 0, 10);
+    base.emit(DownloadProgress {
+        operation_id: "install-progress".to_owned(),
+        total_bytes: 10,
+        completed_bytes: 10,
+        current_file: PathBuf::from("client.jar"),
+    });
+    let assets = PhaseProgressSink::new(recorded.clone(), 10, 15);
+    assets.emit(DownloadProgress {
+        operation_id: "install-progress".to_owned(),
+        total_bytes: 5,
+        completed_bytes: 1,
+        current_file: PathBuf::from("asset"),
+    });
+
+    let events = recorded.0.lock().expect("progress");
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.completed_bytes)
+            .collect::<Vec<_>>(),
+        vec![10, 11]
+    );
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.total_bytes)
+            .collect::<Vec<_>>(),
+        vec![10, 15]
+    );
 }

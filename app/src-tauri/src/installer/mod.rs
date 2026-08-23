@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod libraries;
 mod natives;
+mod path_safety;
 
 use crate::{
     downloads::{
@@ -22,7 +23,7 @@ use libraries::{
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -90,6 +91,7 @@ pub struct InstallationStatus {
     pub version_id: String,
     pub state: OperationState,
     pub summary: Option<InstallationSummary>,
+    pub error: Option<LauncherError>,
 }
 
 #[derive(Clone)]
@@ -116,13 +118,17 @@ pub struct OperationRegistry {
 struct OperationRegistryInner {
     operations: HashMap<String, OperationRecord>,
     active_versions: HashMap<String, String>,
+    terminal_order: VecDeque<String>,
 }
+
+pub(super) const MAX_TERMINAL_OPERATIONS: usize = 128;
 
 struct OperationRecord {
     version_id: String,
     state: OperationState,
     cancel_token: crate::downloads::DownloadCancellationToken,
     summary: Option<InstallationSummary>,
+    error: Option<LauncherError>,
 }
 
 impl OperationRegistry {
@@ -149,6 +155,7 @@ impl OperationRegistry {
                 state: OperationState::Running,
                 cancel_token: cancel_token.clone(),
                 summary: None,
+                error: None,
             },
         );
         Ok(OperationHandle {
@@ -176,18 +183,32 @@ impl OperationRegistry {
         operation_id: &str,
         state: OperationState,
         summary: Option<InstallationSummary>,
+        error: Option<LauncherError>,
     ) -> Result<(), LauncherError> {
         let mut inner = self.inner.lock().map_err(|_| operation_state_error())?;
-        let version_id = {
+        let (version_id, newly_terminal) = {
             let record = inner
                 .operations
                 .get_mut(operation_id)
                 .ok_or_else(operation_not_found)?;
+            let newly_terminal = !matches!(
+                record.state,
+                OperationState::Completed | OperationState::Cancelled | OperationState::Failed
+            );
             record.state = state;
             record.summary = summary;
-            record.version_id.clone()
+            record.error = error;
+            (record.version_id.clone(), newly_terminal)
         };
         inner.active_versions.remove(&version_id);
+        if newly_terminal {
+            inner.terminal_order.push_back(operation_id.to_owned());
+            while inner.terminal_order.len() > MAX_TERMINAL_OPERATIONS {
+                if let Some(expired) = inner.terminal_order.pop_front() {
+                    inner.operations.remove(&expired);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -202,6 +223,7 @@ impl OperationRegistry {
             version_id: record.version_id.clone(),
             state: record.state.clone(),
             summary: record.summary.clone(),
+            error: record.error.clone(),
         })
     }
 }
@@ -373,12 +395,15 @@ impl Installer {
         let base = plan_installation_internal(&self.game_root, &version, false)?;
         persist_resolved_version(&self.game_root, &version, cancel)?;
         let base_specs = self.resolve_download_specs(&base, cancel, None).await?;
+        let base_total = total_download_bytes(&base_specs)?;
+        let base_progress: Arc<dyn ProgressSink> =
+            Arc::new(PhaseProgressSink::new(progress.clone(), 0, base_total));
         self.downloads
             .execute(
                 operation_id.to_owned(),
                 base_specs,
                 cancel.clone(),
-                progress.clone(),
+                base_progress,
             )
             .await?;
         if cancel.is_cancelled() {
@@ -388,12 +413,18 @@ impl Installer {
         let object_specs = self
             .resolve_download_specs(&complete, cancel, Some(InstallFileKind::AssetObject))
             .await?;
+        let object_total = total_download_bytes(&object_specs)?;
+        let combined_total = base_total
+            .checked_add(object_total)
+            .ok_or_else(LauncherError::metadata_invalid)?;
+        let object_progress: Arc<dyn ProgressSink> =
+            Arc::new(PhaseProgressSink::new(progress, base_total, combined_total));
         self.downloads
             .execute(
                 operation_id.to_owned(),
                 object_specs,
                 cancel.clone(),
-                progress,
+                object_progress,
             )
             .await?;
         if cancel.is_cancelled() {
@@ -469,6 +500,44 @@ impl Installer {
 struct NoProgress;
 impl ProgressSink for NoProgress {
     fn emit(&self, _event: DownloadProgress) {}
+}
+
+pub(super) struct PhaseProgressSink {
+    inner: Arc<dyn ProgressSink>,
+    offset: u64,
+    total: u64,
+}
+
+impl PhaseProgressSink {
+    pub(super) fn new(inner: Arc<dyn ProgressSink>, offset: u64, total: u64) -> Self {
+        Self {
+            inner,
+            offset,
+            total,
+        }
+    }
+}
+
+impl ProgressSink for PhaseProgressSink {
+    fn emit(&self, event: DownloadProgress) {
+        self.inner.emit(DownloadProgress {
+            operation_id: event.operation_id,
+            total_bytes: self.total,
+            completed_bytes: self
+                .offset
+                .saturating_add(event.completed_bytes)
+                .min(self.total),
+            current_file: event.current_file,
+        });
+    }
+}
+
+fn total_download_bytes(specs: &[DownloadSpec]) -> Result<u64, LauncherError> {
+    specs.iter().try_fold(0_u64, |total, spec| {
+        total
+            .checked_add(spec.expected_size)
+            .ok_or_else(LauncherError::metadata_invalid)
+    })
 }
 
 fn persist_resolved_version(
@@ -659,18 +728,29 @@ fn plan_installation_internal(
             }
             let document: AssetIndexDocument =
                 serde_json::from_slice(&bytes).map_err(|_| asset_index_invalid())?;
+            let mut unique_objects = std::collections::BTreeMap::new();
             for object in document.objects.into_values() {
-                let relative = asset_object_path(&object.hash)?;
+                let hash = object.hash.to_ascii_lowercase();
+                asset_object_path(&hash)?;
+                if unique_objects
+                    .insert(hash, object.size)
+                    .is_some_and(|existing| existing != object.size)
+                {
+                    return Err(asset_index_invalid());
+                }
+            }
+            for (hash, size) in unique_objects {
+                let relative = asset_object_path(&hash)?;
                 plan.files.push(InstallFile {
                     kind: InstallFileKind::AssetObject,
                     url: Some(format!(
                         "https://resources.download.minecraft.net/{}/{}",
-                        &object.hash[..2],
-                        object.hash
+                        &hash[..2],
+                        hash
                     )),
                     destination: safe_destination(game_root, &relative)?,
-                    expected_size: object.size,
-                    sha1: Some(object.hash),
+                    expected_size: size,
+                    sha1: Some(hash),
                 });
             }
         }
@@ -752,6 +832,32 @@ fn add_library(
             expected_size: 0,
             sha1: None,
         });
+        if let Some(template) = library
+            .natives
+            .as_ref()
+            .and_then(|natives| natives.get("windows"))
+        {
+            let classifier = template.replace("${arch}", "64");
+            let coordinate = if let Some((base, extension)) = library.name.split_once('@') {
+                format!("{base}:{classifier}@{extension}")
+            } else {
+                format!("{}:{classifier}", library.name)
+            };
+            let relative = maven_artifact_path(&coordinate)?;
+            let url = library_url(library.url.as_deref(), &relative)?;
+            let destination = safe_destination(game_root, Path::new("libraries").join(relative))?;
+            plan.natives.push(NativeArchive {
+                archive: destination.clone(),
+                excludes: extract_excludes(library)?,
+            });
+            plan.files.push(InstallFile {
+                kind: InstallFileKind::Native,
+                url: Some(url),
+                destination,
+                expected_size: 0,
+                sha1: None,
+            });
+        }
     }
     Ok(())
 }
@@ -778,6 +884,9 @@ fn safe_destination(
     game_root: &Path,
     relative: impl AsRef<Path>,
 ) -> Result<PathBuf, LauncherError> {
+    if !path_safety::is_strict_windows_relative_path(relative.as_ref()) {
+        return Err(LauncherError::metadata_invalid());
+    }
     AppPaths::new(game_root.to_path_buf()).safe_join(game_root, relative.as_ref())
 }
 
