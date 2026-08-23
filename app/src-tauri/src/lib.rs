@@ -36,6 +36,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::accounts::list_accounts,
             commands::accounts::begin_microsoft_login,
+            commands::accounts::create_offline_account,
             commands::accounts::cancel_microsoft_login,
             commands::accounts::remove_account,
             commands::accounts::set_active_account,

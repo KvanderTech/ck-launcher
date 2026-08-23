@@ -315,6 +315,12 @@ impl AuthService {
                     true,
                 )
             })?;
+        if account.id.starts_with("offline:") {
+            return Ok(RefreshedMinecraftAccount {
+                account,
+                access_token: client::MinecraftAccess::offline(),
+            });
+        }
         if let Some(access_token) = self.cached_access(&account.id)? {
             return Ok(RefreshedMinecraftAccount {
                 account,

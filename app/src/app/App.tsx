@@ -4,6 +4,7 @@ import { BackgroundCarousel } from "../components/BackgroundCarousel";
 import { Sidebar, type PageId } from "../components/Sidebar";
 import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
+import { OfflineLogin } from "../features/accounts/OfflineLogin";
 import { HomePage, type LauncherViewState } from "../features/home/HomePage";
 import { JavaSettings } from "../features/settings/JavaSettings";
 import { MemorySettings } from "../features/settings/MemorySettings";
@@ -399,6 +400,8 @@ export default function App({ api = appApi }: AppProps) {
               <h1>Войдите, чтобы продолжить</h1>
               <p>Авторизация откроется в системном браузере. Пароль и refresh-токен не передаются интерфейсу.</p>
               <MicrosoftLogin api={api} onAuthenticated={accountAdded} />
+              <div className="auth-divider"><span>или</span></div>
+              <OfflineLogin api={api} onAuthenticated={accountAdded} />
             </section>
           ) : activePage === "home" ? (
             <HomePage

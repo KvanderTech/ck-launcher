@@ -886,6 +886,15 @@
   margin: 10px 0 0;
 }
 
+.auth-divider { display:flex; align-items:center; gap:12px; margin:16px 0; color:var(--ink-muted); font-size:12px; }
+.auth-divider::before, .auth-divider::after { content:""; height:1px; flex:1; background:var(--line); }
+.offline-login { display:grid; gap:8px; }
+.offline-login label, .offline-login small { color:var(--ink-soft); font-size:11px; }
+.offline-login > div { display:flex; gap:8px; }
+.offline-login input { min-width:0; flex:1; height:42px; padding:0 12px; border:1px solid var(--line); border-radius:10px; color:var(--ink); background:rgba(8,18,33,.78); }
+.offline-login button { min-height:42px; padding:0 16px; border:0; border-radius:10px; color:#fff; background:linear-gradient(135deg,#1ba4ff,#0862d5); cursor:pointer; }
+.offline-login [role="alert"] { margin:0; color:#ff8195; font-size:11px; }
+
 @media (max-width: 900px) {
   :root {
     --sidebar-width: 78px;
