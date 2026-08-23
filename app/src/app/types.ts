@@ -52,8 +52,46 @@ export interface MemorySettingsStatus {
   stepMemoryMb: number;
 }
 
+export interface GameVersionSummary {
+  id: string;
+  type: string;
+  releaseDate: string;
+}
+
+export interface LauncherProfile {
+  id: string;
+  name: string;
+  versionId: string | null;
+  memoryMb: number;
+  gameDir: string;
+  javaOverride: string | null;
+}
+
+export interface GameStartedEvent {
+  kind?: "started";
+  operationId: OperationId;
+  profileId: string;
+  pid: number;
+}
+
+export interface GameExitedEvent {
+  kind?: "exited";
+  operationId: OperationId;
+  profileId: string;
+  exitCode: number;
+}
+
+export interface LauncherErrorEvent {
+  kind?: "error";
+  operationId: OperationId;
+  profileId: string;
+  error: LauncherErrorDto;
+}
+
 export function progressLabel(progress: ProgressEvent): string {
-  const percent = Math.floor((progress.completedBytes / progress.totalBytes) * 100);
+  const percent = progress.totalBytes > 0
+    ? Math.floor((progress.completedBytes / progress.totalBytes) * 100)
+    : 0;
 
   return `Загрузка ${progress.currentFile ?? ""} · ${percent}%`.trim();
 }

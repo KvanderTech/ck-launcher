@@ -1,0 +1,393 @@
+import { useEffect, useRef, useState } from "react";
+
+import { BackgroundCarousel } from "../components/BackgroundCarousel";
+import { Sidebar, type PageId } from "../components/Sidebar";
+import { WindowControls } from "../components/WindowControls";
+import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
+import { HomePage, type LauncherViewState } from "../features/home/HomePage";
+import { JavaSettings } from "../features/settings/JavaSettings";
+import { MemorySettings } from "../features/settings/MemorySettings";
+import "../styles/tokens.css";
+import "../styles/launcher.css";
+import { appApi, type AppApi } from "./tauri";
+import type {
+  AccountSummary,
+  GameExitedEvent,
+  GameStartedEvent,
+  GameVersionSummary,
+  JavaMajor,
+  JavaRuntimeStatus,
+  LauncherErrorDto,
+  LauncherErrorEvent,
+  LauncherProfile,
+  OperationId,
+  ProgressEvent,
+} from "./types";
+
+interface AppProps {
+  api?: AppApi;
+}
+
+type BootState = "loading" | "loaded" | "failed";
+type BufferedOperationEvent =
+  | { kind: "progress"; value: ProgressEvent }
+  | { kind: "started"; value: GameStartedEvent }
+  | { kind: "exited"; value: GameExitedEvent }
+  | { kind: "error"; value: LauncherErrorEvent };
+
+export default function App({ api = appApi }: AppProps) {
+  const [activePage, setActivePage] = useState<PageId>("home");
+  const [accounts, setAccounts] = useState<AccountSummary[]>([]);
+  const [versions, setVersions] = useState<GameVersionSummary[]>([]);
+  const [profile, setProfile] = useState<LauncherProfile>();
+  const [runtimes, setRuntimes] = useState<JavaRuntimeStatus[]>([]);
+  const [bootState, setBootState] = useState<BootState>("loading");
+  const [viewState, setViewState] = useState<LauncherViewState>("ready");
+  const [progress, setProgress] = useState<ProgressEvent>();
+  const [operationError, setOperationError] = useState<LauncherErrorDto>();
+  const [cancelling, setCancelling] = useState(false);
+  const operationId = useRef<OperationId | undefined>(undefined);
+  const profileRef = useRef<LauncherProfile | undefined>(undefined);
+  const memoryTimer = useRef<number | undefined>(undefined);
+  const awaitingOperationId = useRef(false);
+  const bufferedOperationEvents = useRef<BufferedOperationEvent[]>([]);
+
+  function applyOperationEvent(event: BufferedOperationEvent) {
+    switch (event.kind) {
+      case "progress":
+        setProgress(event.value);
+        if (event.value.stage === "downloading") setViewState("installing");
+        if (event.value.stage === "launching") setViewState("launching");
+        if (event.value.stage === "running") setViewState("running");
+        break;
+      case "started":
+        setViewState("running");
+        setProgress(undefined);
+        break;
+      case "exited":
+        operationId.current = undefined;
+        setViewState("ready");
+        setProgress(undefined);
+        break;
+      case "error":
+        setOperationError(event.value.error);
+        setViewState(event.value.error.recoverable ? "recoverable-error" : "fatal-error");
+        setProgress(undefined);
+        break;
+    }
+  }
+
+  function receiveOperationEvent(event: BufferedOperationEvent) {
+    if (event.value.operationId === operationId.current) {
+      applyOperationEvent(event);
+    } else if (awaitingOperationId.current && operationId.current === undefined) {
+      bufferedOperationEvents.current.push(event);
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      api.listAccounts(),
+      api.listGameVersions(),
+      api.getProfile(),
+      api.runtimeStatuses(),
+    ]).then(
+      ([nextAccounts, nextVersions, nextProfile, nextRuntimes]) => {
+        if (!active) return;
+        setAccounts(nextAccounts);
+        setVersions(nextVersions.filter((version) => version.type === "release"));
+        setProfile(nextProfile);
+        profileRef.current = nextProfile;
+        setRuntimes(nextRuntimes);
+        setBootState("loaded");
+      },
+      () => {
+        if (!active) return;
+        setBootState("failed");
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [api]);
+
+  useEffect(() => {
+    let active = true;
+    const registrations = [
+      api.onProgress((event) => {
+        receiveOperationEvent({ kind: "progress", value: event });
+      }),
+      api.onGameStarted((event) => {
+        receiveOperationEvent({ kind: "started", value: event });
+      }),
+      api.onGameExited((event) => {
+        receiveOperationEvent({ kind: "exited", value: event });
+      }),
+      api.onLauncherError((event) => {
+        receiveOperationEvent({ kind: "error", value: event });
+      }),
+    ];
+    void Promise.all(registrations).then((unlisten) => {
+      if (!active) unlisten.forEach((stop) => stop());
+    });
+    return () => {
+      active = false;
+      void Promise.all(registrations).then((unlisten) => unlisten.forEach((stop) => stop()));
+    };
+  }, [api]);
+
+  useEffect(() => () => {
+    if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
+  }, []);
+
+  async function startPlay() {
+    const currentProfile = profileRef.current;
+    if (!currentProfile?.versionId || ["installing", "launching", "running"].includes(viewState)) return;
+    setOperationError(undefined);
+    setProgress(undefined);
+    setViewState("launching");
+    try {
+      await api.updateProfile(currentProfile);
+      operationId.current = undefined;
+      awaitingOperationId.current = true;
+      bufferedOperationEvents.current = [];
+      const nextOperationId = await api.launchOrInstall(currentProfile.id);
+      operationId.current = nextOperationId;
+      awaitingOperationId.current = false;
+      const matchingEvents = bufferedOperationEvents.current.filter(
+        (event) => event.value.operationId === nextOperationId,
+      );
+      bufferedOperationEvents.current = [];
+      matchingEvents.forEach(applyOperationEvent);
+    } catch (error: unknown) {
+      awaitingOperationId.current = false;
+      bufferedOperationEvents.current = [];
+      const safeError = launcherErrorFrom(error);
+      setOperationError(safeError);
+      setViewState(safeError.recoverable ? "recoverable-error" : "fatal-error");
+    }
+  }
+
+  function updateVersion(versionId: string) {
+    const current = profileRef.current;
+    if (!current) return;
+    const next = { ...current, versionId };
+    profileRef.current = next;
+    setProfile(next);
+  }
+
+  function updateMemory(memoryMb: number) {
+    const current = profileRef.current;
+    if (!current) return;
+    const next = { ...current, memoryMb };
+    profileRef.current = next;
+    setProfile(next);
+    if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
+    memoryTimer.current = window.setTimeout(() => {
+      void api.updateProfile(next).then((saved) => {
+        profileRef.current = saved;
+        setProfile(saved);
+      });
+    }, 250);
+  }
+
+  async function updateRuntime(
+    requirement: JavaMajor,
+    action: (requirement: JavaMajor) => Promise<JavaRuntimeStatus | null>,
+  ) {
+    const pending = runtimes.map((runtime) =>
+      runtime.requirement === requirement ? { ...runtime, state: "installing" as const } : runtime,
+    );
+    setRuntimes(pending);
+    try {
+      const result = await action(requirement);
+      if (result) setRuntimes((current) => replaceRuntime(current, result));
+      else setRuntimes(runtimes);
+    } catch {
+      setRuntimes((current) => replaceRuntime(current, { requirement, state: "invalid" }));
+    }
+  }
+
+  async function cancelCurrentOperation() {
+    if (!operationId.current || cancelling) return;
+    setCancelling(true);
+    try {
+      await api.cancelOperation(operationId.current);
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  function accountAdded(account: AccountSummary) {
+    setAccounts((current) => [
+      ...current.map((item) => ({ ...item, isActive: false })),
+      { ...account, isActive: true },
+    ]);
+  }
+
+  function activeAccountChanged(account: AccountSummary) {
+    setAccounts((current) => current.map((item) => ({ ...item, isActive: item.id === account.id })));
+  }
+
+  if (bootState === "loading") {
+    return <main aria-live="polite" className="boot-screen"><span className="boot-mark">ЦК</span><p>Подготавливаем лаунчер…</p></main>;
+  }
+
+  if (bootState === "failed" || !profile) {
+    return (
+      <main className="boot-screen">
+        <span className="boot-mark">ЦК</span>
+        <h1>Не удалось подготовить лаунчер</h1>
+        <p role="alert">Перезапустите приложение. Технические сведения не показываются в интерфейсе.</p>
+      </main>
+    );
+  }
+
+  const signedOut = accounts.length === 0;
+
+  return (
+    <div className="launcher-shell">
+      <BackgroundCarousel />
+      <Sidebar
+        accountApi={api}
+        accounts={accounts}
+        activePage={activePage}
+        onAccountAdded={accountAdded}
+        onActiveAccountChange={activeAccountChanged}
+        onNavigate={setActivePage}
+      />
+      <main className="main-pane">
+        <header className="topbar">
+          <span>ЦК Лаунчер</span>
+          <WindowControls />
+        </header>
+        <div className="page-scroll">
+          {signedOut ? (
+            <section className="signed-out-panel">
+              <span className="eyebrow">Лицензионный аккаунт</span>
+              <h1>Войдите, чтобы продолжить</h1>
+              <p>Авторизация откроется в системном браузере. Пароль и refresh-токен не передаются интерфейсу.</p>
+              <MicrosoftLogin api={api} onAuthenticated={accountAdded} />
+            </section>
+          ) : activePage === "home" ? (
+            <HomePage
+              error={operationError}
+              onCancel={() => void cancelCurrentOperation()}
+              onPlay={() => void startPlay()}
+              onRetry={() => void startPlay()}
+              onVersionChange={updateVersion}
+              profile={profile}
+              progress={progress}
+              runtimes={runtimes}
+              state={viewState}
+              versions={versions}
+            />
+          ) : activePage === "settings" ? (
+            <SettingsPage
+              api={api}
+              onMemoryChange={updateMemory}
+              onRuntimeAction={(requirement, action) => void updateRuntime(requirement, action)}
+              runtimes={runtimes}
+            />
+          ) : activePage === "skins" ? (
+            <SkinsPlaceholder account={accounts.find((account) => account.isActive) ?? accounts[0]} />
+          ) : (
+            <PostMvpPlaceholder page={activePage} />
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+interface SettingsPageProps {
+  api: AppApi;
+  onMemoryChange(memoryMb: number): void;
+  onRuntimeAction(
+    requirement: JavaMajor,
+    action: (requirement: JavaMajor) => Promise<JavaRuntimeStatus | null>,
+  ): void;
+  runtimes: JavaRuntimeStatus[];
+}
+
+function SettingsPage({ api, onMemoryChange, onRuntimeAction, runtimes }: SettingsPageProps) {
+  return (
+    <section className="settings-page">
+      <div className="page-heading"><span className="eyebrow">Параметры запуска</span><h1>Настройки</h1><p>Память и реальные установки Java сохраняются через ядро лаунчера.</p></div>
+      <div className="settings-grid">
+        <div className="settings-column">
+          <MemorySettings api={api} onChange={onMemoryChange} />
+          <section className="settings-card">
+            <h2>Фоновые кадры</h2>
+            <p>Затемнённые кадры меняются каждые 12 секунд. При уменьшенном движении смена отключена.</p>
+          </section>
+        </div>
+        <div className="settings-card java-card-group">
+          <div><h2>Установки Java</h2><p>Лаунчер проверяет только поддерживаемые Java 8, 17, 21 и 25.</p></div>
+          <JavaSettings
+            onChoose={(major) => onRuntimeAction(major, api.chooseRuntimePath)}
+            onDetect={(major) => onRuntimeAction(major, api.detectRuntime)}
+            onInstall={(major) => onRuntimeAction(major, api.installRuntime)}
+            statuses={runtimes}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+const placeholderCopy: Record<Exclude<PageId, "home" | "settings" | "skins">, { title: string; copy: string }> = {
+  builds: { title: "Сборки", copy: "Создание и управление сборками запланировано после первого Vanilla-релиза." },
+  mods: { title: "Моды", copy: "Каталог Modrinth и управление модами появятся на следующем этапе." },
+  library: { title: "Библиотека", copy: "Здесь позже будут собраны установленные версии и сборки." },
+};
+
+function PostMvpPlaceholder({ page }: { page: Exclude<PageId, "home" | "settings" | "skins"> }) {
+  const content = placeholderCopy[page];
+  return (
+    <section className="placeholder-page">
+      <span className="eyebrow">После первого релиза</span>
+      <h1>{content.title}</h1>
+      <p>{content.copy}</p>
+      <div className="placeholder-grid" aria-hidden="true"><span /><span /><span /></div>
+    </section>
+  );
+}
+
+function SkinsPlaceholder({ account }: { account: AccountSummary }) {
+  return (
+    <section className="skins-placeholder">
+      <div className="page-heading"><span className="eyebrow">После первого релиза</span><h1>Скины и плащи</h1><p>Галерея аккаунта {account.minecraftName} появится после подключения Minecraft Services.</p></div>
+      <div className="skin-shell" aria-label="Предпросмотр будущей галереи">
+        <div className="skin-preview"><span aria-hidden="true" className="pixel-person">ЦК</span></div>
+        <div className="skin-gallery"><strong>Сохранённые образы</strong><div><span /><span /><span /></div><button disabled type="button">Управление недоступно в первом релизе</button></div>
+      </div>
+    </section>
+  );
+}
+
+function launcherErrorFrom(error: unknown): LauncherErrorDto {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as Partial<LauncherErrorDto>;
+    if (typeof candidate.code === "string" && typeof candidate.message === "string") {
+      return {
+        code: candidate.code,
+        message: candidate.message,
+        recoverable: candidate.recoverable === true,
+      };
+    }
+  }
+  return {
+    code: "launch_failed",
+    message: "Не удалось начать запуск.",
+    recoverable: true,
+  };
+}
+
+function replaceRuntime(statuses: JavaRuntimeStatus[], next: JavaRuntimeStatus) {
+  const found = statuses.some((status) => status.requirement === next.requirement);
+  return found
+    ? statuses.map((status) => status.requirement === next.requirement ? next : status)
+    : [...statuses, next];
+}
