@@ -516,4 +516,92 @@ describe("launcher application", () => {
 
     expect(api.updateMemory).toHaveBeenCalledWith(5120);
   });
+
+  it("waits for the latest queued memory confirmation before saving and launching", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    type SavedProfile = Awaited<ReturnType<typeof api.updateMemory>>;
+    let resolveFirst: ((profile: SavedProfile) => void) | undefined;
+    let resolveLatest: ((profile: SavedProfile) => void) | undefined;
+    api.updateMemory
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveLatest = resolve; }));
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const slider = await screen.findByRole("slider", { name: "Оперативная память" });
+
+    vi.useFakeTimers();
+    fireEvent.change(slider, { target: { value: "5120" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    fireEvent.change(slider, { target: { value: "6144" } });
+    fireEvent.click(screen.getByRole("button", { name: "Главная" }));
+    fireEvent.click(screen.getByRole("button", { name: "Играть" }));
+
+    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(api.launchOrInstall).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveFirst?.({
+        id: "default",
+        name: "Основной профиль",
+        versionId: "1.20.1",
+        memoryMb: 5120,
+        gameDir: "C:\\safe\\game",
+        javaOverride: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(api.updateMemory).toHaveBeenNthCalledWith(2, 6144);
+    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(api.launchOrInstall).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveLatest?.({
+        id: "default",
+        name: "Основной профиль",
+        versionId: "1.20.1",
+        memoryMb: 6144,
+        gameDir: "C:\\safe\\game",
+        javaOverride: null,
+      });
+      await Promise.resolve();
+    });
+
+    vi.useRealTimers();
+    await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledWith("default"));
+    expect(api.updateProfile).toHaveBeenCalledWith(expect.objectContaining({ memoryMb: 6144 }));
+    expect(api.updateProfile.mock.invocationCallOrder[0]).toBeLessThan(api.launchOrInstall.mock.invocationCallOrder[0]);
+  });
+
+  it("does not launch and shows a recoverable error when the Play memory flush fails", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    let rejectMemory: ((reason: unknown) => void) | undefined;
+    api.updateMemory.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      rejectMemory = reject;
+    }));
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const slider = await screen.findByRole("slider", { name: "Оперативная память" });
+
+    vi.useFakeTimers();
+    fireEvent.change(slider, { target: { value: "6144" } });
+    fireEvent.click(screen.getByRole("button", { name: "Главная" }));
+    fireEvent.click(screen.getByRole("button", { name: "Играть" }));
+
+    expect(api.updateMemory).toHaveBeenCalledWith(6144);
+    expect(api.updateProfile).not.toHaveBeenCalled();
+    await act(async () => {
+      rejectMemory?.({
+        code: "profile_not_found",
+        message: "The launcher profile was not found.",
+        recoverable: false,
+      });
+      await Promise.resolve();
+    });
+
+    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(api.launchOrInstall).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Повторить" })).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Не удалось сохранить память перед запуском");
+  });
 });

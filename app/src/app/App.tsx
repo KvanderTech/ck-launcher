@@ -57,7 +57,7 @@ export default function App({ api = appApi }: AppProps) {
   const savedMemory = useRef<number | undefined>(undefined);
   const desiredMemory = useRef<number | undefined>(undefined);
   const memoryTimer = useRef<number | undefined>(undefined);
-  const memoryInFlight = useRef(false);
+  const memoryPersistence = useRef<Promise<void> | undefined>(undefined);
   const memoryActive = useRef(true);
 
   function applyOperationEvent(event: BufferedOperationEvent) {
@@ -172,17 +172,27 @@ export default function App({ api = appApi }: AppProps) {
   }, [api]);
 
   async function startPlay() {
-    const currentProfile = profileRef.current;
-    if (!currentProfile?.versionId || ["installing", "launching", "running"].includes(viewState)) return;
+    if (!profileRef.current?.versionId || ["installing", "launching", "running"].includes(viewState)) return;
     setOperationError(undefined);
     setProgress(undefined);
     setViewState("launching");
     try {
-      await api.updateProfile(currentProfile);
+      try {
+        await flushDesiredMemory();
+      } catch {
+        throw {
+          code: "memory_save_failed",
+          message: "Не удалось сохранить память перед запуском.",
+          recoverable: true,
+        } satisfies LauncherErrorDto;
+      }
+      const confirmedProfile = profileRef.current;
+      if (!confirmedProfile?.versionId) return;
+      await api.updateProfile(confirmedProfile);
       operationId.current = undefined;
       awaitingOperationId.current = true;
       bufferedOperationEvents.current = [];
-      const nextOperationId = await api.launchOrInstall(currentProfile.id);
+      const nextOperationId = await api.launchOrInstall(confirmedProfile.id);
       operationId.current = nextOperationId;
       awaitingOperationId.current = false;
       const matchingEvents = bufferedOperationEvents.current.filter(
@@ -219,47 +229,57 @@ export default function App({ api = appApi }: AppProps) {
     desiredMemory.current = memoryMb;
     mergeMemory(memoryMb);
     if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
-    if (memoryInFlight.current) return;
+    if (memoryPersistence.current) return;
     setMemorySaveState("idle");
-    memoryTimer.current = window.setTimeout(persistDesiredMemory, 250);
+    memoryTimer.current = window.setTimeout(() => {
+      memoryTimer.current = undefined;
+      void persistDesiredMemory().catch(() => undefined);
+    }, 250);
   }
 
-  function persistDesiredMemory() {
-    if (memoryInFlight.current || !memoryActive.current) return;
-    const requestedMemory = desiredMemory.current;
-    if (requestedMemory === undefined || requestedMemory === savedMemory.current) {
-      setMemorySaveState("idle");
-      return;
-    }
-    memoryInFlight.current = true;
-    setMemorySaveState("saving");
-    void api.updateMemory(requestedMemory).then(
-      (saved) => {
-        memoryInFlight.current = false;
+  function persistDesiredMemory(): Promise<void> {
+    if (memoryPersistence.current) return memoryPersistence.current;
+    const persistence = runMemoryPersistence();
+    memoryPersistence.current = persistence;
+    void persistence.finally(() => {
+      if (memoryPersistence.current === persistence) memoryPersistence.current = undefined;
+    }).catch(() => undefined);
+    return persistence;
+  }
+
+  async function runMemoryPersistence(): Promise<void> {
+    while (memoryActive.current) {
+      const requestedMemory = desiredMemory.current;
+      if (requestedMemory === undefined || requestedMemory === savedMemory.current) {
+        setMemorySaveState("idle");
+        return;
+      }
+      setMemorySaveState("saving");
+      try {
+        const saved = await api.updateMemory(requestedMemory);
         if (!memoryActive.current) return;
         savedMemory.current = saved.memoryMb;
         if (desiredMemory.current === requestedMemory) {
           desiredMemory.current = saved.memoryMb;
           mergeMemory(saved.memoryMb);
         }
-        if (desiredMemory.current !== savedMemory.current) {
-          persistDesiredMemory();
-        } else {
-          setMemorySaveState("idle");
-        }
-      },
-      () => {
-        memoryInFlight.current = false;
+      } catch (error: unknown) {
         if (!memoryActive.current) return;
-        if (desiredMemory.current !== requestedMemory) {
-          persistDesiredMemory();
-          return;
-        }
+        if (desiredMemory.current !== requestedMemory) continue;
         desiredMemory.current = savedMemory.current;
         if (savedMemory.current !== undefined) mergeMemory(savedMemory.current);
         setMemorySaveState("error");
-      },
-    );
+        throw error;
+      }
+    }
+  }
+
+  async function flushDesiredMemory(): Promise<void> {
+    if (memoryTimer.current !== undefined) {
+      window.clearTimeout(memoryTimer.current);
+      memoryTimer.current = undefined;
+    }
+    await persistDesiredMemory();
   }
 
   async function updateRuntime(
