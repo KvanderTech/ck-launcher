@@ -63,7 +63,6 @@ export interface ProfileApi {
 }
 
 export interface OperationApi {
-  /** Task 10 changes this adapter from `launch` to the final orchestrator command. */
   launchOrInstall(profileId: string): Promise<OperationId>;
   cancelOperation(operationId: OperationId): Promise<void>;
   onProgress(handler: (event: ProgressEvent) => void): Promise<UnlistenFn>;
@@ -73,6 +72,15 @@ export interface OperationApi {
 }
 
 export interface AppApi extends LauncherApi, RuntimeApi, SettingsApi, ProfileApi, OperationApi {}
+
+type LaunchInvoke = (command: string, args?: Record<string, unknown>) => Promise<OperationId>;
+
+export function invokeLaunchOrInstall(
+  profileId: string,
+  invokeCommand: LaunchInvoke = invoke,
+): Promise<OperationId> {
+  return invokeCommand("launch_or_install", { profileId });
+}
 
 function listenPayload<T>(eventName: string, handler: (payload: T) => void) {
   return listen<T>(eventName, ({ payload }) => handler(payload));
@@ -86,7 +94,7 @@ export const appApi: AppApi = {
   requiredJavaForVersion: (versionId) => invoke<JavaMajor>("required_java_for_version", { versionId }),
   getProfile: () => invoke<LauncherProfile>("get_profile"),
   updateProfile: (profile) => invoke<LauncherProfile>("update_profile", { profile }),
-  launchOrInstall: (profileId) => invoke<OperationId>("launch", { profileId }),
+  launchOrInstall: (profileId) => invokeLaunchOrInstall(profileId),
   cancelOperation: (operationId) => invoke<void>("cancel_operation", { operationId }),
   onProgress: (handler) => listenPayload("launcher://progress", handler),
   onGameStarted: (handler) => listenPayload("launcher://game-started", handler),

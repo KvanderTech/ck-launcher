@@ -377,6 +377,30 @@ fn registry_rejects_duplicate_version_and_cancellation_is_idempotent() {
     assert!(registry.begin("fixture-1.0").is_ok());
 }
 
+#[test]
+fn registry_never_crosses_the_spawn_boundary_after_cancellation() {
+    let registry = OperationRegistry::default();
+    let operation = registry
+        .begin_launch("default")
+        .expect("launch reservation");
+
+    registry
+        .cancel(&operation.operation_id)
+        .expect("cancellation accepted");
+    let error = registry
+        .mark_spawned(&operation.operation_id)
+        .expect_err("cancelled operation cannot spawn");
+
+    assert_eq!(error.code(), "download_cancelled");
+    assert_eq!(
+        registry
+            .workflow_status(&operation.operation_id)
+            .expect("workflow status")
+            .state,
+        OperationState::Cancelling
+    );
+}
+
 struct FixtureVersions(ResolvedVersion);
 
 #[async_trait]
@@ -417,6 +441,17 @@ impl InstallationStore for RecordingInstallations {
             .expect("states")
             .push((version_id.to_owned(), state.to_owned()));
         Ok(())
+    }
+
+    async fn is_verified(&self, version_id: &str) -> Result<bool, LauncherError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("states")
+            .iter()
+            .rev()
+            .find(|entry| entry.0 == version_id)
+            .is_some_and(|entry| entry.1 == "verified"))
     }
 }
 
@@ -516,9 +551,10 @@ fn local_http_install_verifies_downloads_extracts_natives_and_only_then_marks_ve
         })).expect("legacy and modern metadata");
         let game = temporary_game("local-http-install");
         let store = Arc::new(RecordingInstallations::default());
+        let resolved: ResolvedVersion = version.into();
         let installer = Installer::with_dependencies(
             game.clone(),
-            Arc::new(FixtureVersions(version.into())),
+            Arc::new(FixtureVersions(resolved.clone())),
             Arc::new(DownloadService::new(game.clone()).expect("download service")),
             store.clone(),
         )
@@ -562,6 +598,19 @@ fn local_http_install_verifies_downloads_extracts_natives_and_only_then_marks_ve
                 ("local-1.0".to_owned(), "verified".to_owned())
             ]
         );
+        assert!(installer
+            .is_verified_version(&resolved)
+            .await
+            .expect("verified files are checked"));
+        fs::write(
+            game.join("versions/local-1.0/local-1.0.jar"),
+            b"corrupt-client",
+        )
+        .expect("client is corrupted");
+        assert!(!installer
+            .is_verified_version(&resolved)
+            .await
+            .expect("corruption is detected"));
         fs::remove_dir_all(game).expect("cleanup");
     });
 }

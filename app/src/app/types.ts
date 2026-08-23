@@ -3,9 +3,11 @@ export type OperationId = string;
 export type LauncherStage =
   | "idle"
   | "authenticating"
+  | "resolving-metadata"
   | "resolving-java"
   | "checking"
   | "downloading"
+  | "installing"
   | "launching"
   | "running"
   | "failed";

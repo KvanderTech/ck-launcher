@@ -64,7 +64,14 @@ export default function App({ api = appApi }: AppProps) {
     switch (event.kind) {
       case "progress":
         setProgress(event.value);
-        if (event.value.stage === "downloading") setViewState("installing");
+        if ([
+          "authenticating",
+          "resolving-metadata",
+          "resolving-java",
+          "checking",
+          "downloading",
+          "installing",
+        ].includes(event.value.stage)) setViewState("installing");
         if (event.value.stage === "launching") setViewState("launching");
         if (event.value.stage === "running") setViewState("running");
         break;
