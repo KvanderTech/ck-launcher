@@ -39,7 +39,22 @@ pub(super) fn resolve_legacy(
 pub(super) fn safe_metadata_jvm(
     arguments: Vec<String>,
     expected_classpath: &str,
+    expected_natives: &str,
+    expected_launcher_name: &str,
+    expected_launcher_version: &str,
 ) -> Result<Vec<String>, LauncherError> {
+    let owned_native_path = format!("-Djava.library.path={expected_natives}");
+    let allowed = [
+        "-XstartOnFirstThread".to_owned(),
+        "-Xss1M".to_owned(),
+        "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
+            .to_owned(),
+        format!("-Djna.tmpdir={expected_natives}"),
+        format!("-Dorg.lwjgl.system.SharedLibraryExtractPath={expected_natives}"),
+        format!("-Dio.netty.native.workdir={expected_natives}"),
+        format!("-Dminecraft.launcher.brand={expected_launcher_name}"),
+        format!("-Dminecraft.launcher.version={expected_launcher_version}"),
+    ];
     let mut safe = Vec::new();
     let mut index = 0;
     while index < arguments.len() {
@@ -48,42 +63,24 @@ pub(super) fn safe_metadata_jvm(
             let Some(value) = arguments.get(index + 1) else {
                 return Err(argument_invalid());
             };
-            if value != expected_classpath {
+            if matches!(value.as_bytes().first(), Some(b'@' | b'-')) || value != expected_classpath
+            {
                 return Err(unsafe_argument());
             }
             index += 2;
             continue;
         }
-        if current.starts_with("-Djava.library.path=") {
+        if current == &owned_native_path {
             index += 1;
             continue;
         }
-        if is_unsafe_jvm_argument(current) {
+        if !allowed.contains(current) {
             return Err(unsafe_argument());
         }
         safe.push(current.clone());
         index += 1;
     }
     Ok(safe)
-}
-
-fn is_unsafe_jvm_argument(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    value.starts_with('@')
-        || matches!(value, "-jar" | "-m" | "--module")
-        || value.starts_with("--module=")
-        || lower.starts_with("-xmx")
-        || lower.starts_with("-xms")
-        || lower.starts_with("-javaagent")
-        || lower.starts_with("-agentlib")
-        || lower.starts_with("-agentpath")
-        || lower.starts_with("-xbootclasspath")
-        || lower.starts_with("--module-path")
-        || lower == "-p"
-        || lower.starts_with("-djavax.net.ssl.truststore")
-        || lower.starts_with("-djava.security")
-        || lower.starts_with("-dlog4j.configuration")
-        || lower.starts_with("-dlog4j2.configuration")
 }
 
 fn argument_values(value: &Value) -> Result<Vec<&str>, LauncherError> {
