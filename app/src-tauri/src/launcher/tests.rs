@@ -131,8 +131,19 @@ fn strings(args: &[OsString]) -> Vec<String> {
 fn modern_arguments_substitute_every_required_launch_value_and_owned_jvm_settings() {
     let mut request = fixture_request("modern");
     request.version.arguments.jvm = vec![
-        Argument::Literal("-Dlauncher.test=true".to_owned()),
+        Argument::Literal(
+            "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
+                .to_owned(),
+        ),
+        Argument::Literal("-Xss1M".to_owned()),
         Argument::Literal("-Djava.library.path=${natives_directory}".to_owned()),
+        Argument::Literal("-Djna.tmpdir=${natives_directory}".to_owned()),
+        Argument::Literal(
+            "-Dorg.lwjgl.system.SharedLibraryExtractPath=${natives_directory}".to_owned(),
+        ),
+        Argument::Literal("-Dio.netty.native.workdir=${natives_directory}".to_owned()),
+        Argument::Literal("-Dminecraft.launcher.brand=${launcher_name}".to_owned()),
+        Argument::Literal("-Dminecraft.launcher.version=${launcher_version}".to_owned()),
         Argument::Literal("-cp".to_owned()),
         Argument::Literal("${classpath}".to_owned()),
     ];
@@ -152,7 +163,25 @@ fn modern_arguments_substitute_every_required_launch_value_and_owned_jvm_setting
 
     let prepared = build_launch(request).expect("modern command builds");
     let args = strings(&prepared.command.args);
-    assert_eq!(args[0], "-Dlauncher.test=true");
+    assert_eq!(
+        args[0],
+        "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
+    );
+    assert_eq!(args[1], "-Xss1M");
+    assert!(args
+        .iter()
+        .any(|arg| arg.starts_with("-Djna.tmpdir=") && arg.ends_with("natives")));
+    assert!(args.iter().any(|arg| {
+        arg.starts_with("-Dorg.lwjgl.system.SharedLibraryExtractPath=") && arg.ends_with("natives")
+    }));
+    assert!(args
+        .iter()
+        .any(|arg| { arg.starts_with("-Dio.netty.native.workdir=") && arg.ends_with("natives") }));
+    assert!(args.contains(&"-Dminecraft.launcher.brand=CKLauncher".to_owned()));
+    assert!(args.contains(&format!(
+        "-Dminecraft.launcher.version={}",
+        env!("CARGO_PKG_VERSION")
+    )));
     assert!(args.contains(&"-Xms512M".to_owned()));
     assert!(args.contains(&"-Xmx12288M".to_owned()));
     assert_eq!(args.iter().filter(|arg| arg.as_str() == "-cp").count(), 1);
@@ -301,6 +330,7 @@ fn metadata_cannot_override_memory_classpath_natives_or_security_arguments() {
         "@@nested.args",
         "-javaagent=C:\\evil.jar",
         "-agentlib:jdwp=transport=dt_socket,server=y",
+        "-Djava.library.path=C:\\evil",
         "-Djavax.net.ssl.trustStore=C:\\evil",
         "-Djava.security.manager=allow",
     ] {
@@ -308,6 +338,38 @@ fn metadata_cannot_override_memory_classpath_natives_or_security_arguments() {
         request.version.arguments.jvm = vec![Argument::Literal(malicious.to_owned())];
         let error = build_launch(request).expect_err("owned or security argument is rejected");
         assert_eq!(error.code(), "unsafe_launch_argument", "{malicious}");
+    }
+}
+
+#[test]
+fn metadata_jvm_rejects_source_file_mode_and_every_unexpected_operand() {
+    let malicious_sequences = [
+        vec![
+            "--source",
+            "21",
+            r"${game_directory}\libraries\evil\Evil.java",
+        ],
+        vec!["--source=21", r"${game_directory}\libraries\evil\Evil.java"],
+        vec![r"${game_directory}\libraries\evil\Evil.java"],
+        vec!["Evil.java"],
+        vec!["evil/Evil.java"],
+        vec!["net.evil.Evil"],
+        vec!["21"],
+        vec!["unexpected-operand"],
+        vec!["-Dlauncher.test=true"],
+        vec!["-cp", "@evil.args"],
+        vec!["--class-path", "-jar"],
+        vec!["-classpath", "net.evil.Evil"],
+    ];
+
+    for malicious in malicious_sequences {
+        let mut request = fixture_request("malicious-source-mode");
+        request.version.arguments.jvm = malicious
+            .iter()
+            .map(|value| Argument::Literal((*value).to_owned()))
+            .collect();
+        let error = build_launch(request).expect_err("unexpected JVM input is rejected");
+        assert_eq!(error.code(), "unsafe_launch_argument", "{malicious:?}");
     }
 }
 

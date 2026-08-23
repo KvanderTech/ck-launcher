@@ -528,6 +528,9 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         .map(|index| index.id.clone())
         .or_else(|| request.version.assets.clone())
         .unwrap_or_default();
+    let natives_argument = natives.to_string_lossy().into_owned();
+    let launcher_name = "CKLauncher";
+    let launcher_version = env!("CARGO_PKG_VERSION");
     let mut variables = BTreeMap::from([
         ("auth_player_name", request.account.player_name.clone()),
         ("auth_uuid", request.account.uuid.clone()),
@@ -536,23 +539,29 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         ("game_directory", cwd.to_string_lossy().into_owned()),
         ("assets_root", assets_root.to_string_lossy().into_owned()),
         ("assets_index_name", asset_index),
-        ("natives_directory", natives.to_string_lossy().into_owned()),
+        ("natives_directory", natives_argument.clone()),
         ("classpath", classpath.clone()),
-        ("launcher_name", "CKLauncher".to_owned()),
-        ("launcher_version", env!("CARGO_PKG_VERSION").to_owned()),
+        ("launcher_name", launcher_name.to_owned()),
+        ("launcher_version", launcher_version.to_owned()),
         ("user_type", "msa".to_owned()),
         ("version_type", "release".to_owned()),
         ("auth_xuid", String::new()),
         ("clientid", String::new()),
     ]);
     let modern_jvm = resolve_modern(&request.version.arguments.jvm, &variables)?;
-    let mut args = safe_metadata_jvm(modern_jvm, &classpath)?;
+    let mut args = safe_metadata_jvm(
+        modern_jvm,
+        &classpath,
+        &natives_argument,
+        launcher_name,
+        launcher_version,
+    )?;
     args.push("-Xms512M".to_owned());
     args.push(format!(
         "-Xmx{}M",
         clamp_memory(request.profile.memory_mb, request.physical_memory_mb)
     ));
-    args.push(format!("-Djava.library.path={}", natives.to_string_lossy()));
+    args.push(format!("-Djava.library.path={natives_argument}"));
     if let Some((argument, path)) = logging_argument(&request.game_root, &request.version)? {
         args.push(argument);
         validated_paths.push(path);

@@ -40,6 +40,7 @@ Fresh verification from the Task 8 worktree:
 - `cargo fmt --manifest-path app/src-tauri/Cargo.toml --check`: passed.
 - `cargo test --manifest-path app/src-tauri/Cargo.toml`: passed — 125 library tests and 2 integration tests, 0 failures.
 - `cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed with 0 warnings/errors.
+
 - `git diff --check`: passed before writing this report and is repeated immediately before commit.
 
 Frontend checks were not required because Task 8 adds Rust commands/events without changing TypeScript DTOs or frontend source.
@@ -71,4 +72,25 @@ Fresh Round 1 verification:
 
 - `cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check`: passed.
 - `cargo test --manifest-path app/src-tauri/Cargo.toml`: passed — 130 library tests and 2 integration tests, 0 failures.
+- `cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed with 0 warnings/errors.
+
+## Fix 2 review remediation
+
+Closed the Java source-file-mode bypass by replacing the JVM denylist with an exact known-safe Mojang allowlist:
+
+- The only retained metadata JVM options are Mojang's fixed Windows heap-dump option, `-Xss1M`, `-XstartOnFirstThread`, the three native work-directory properties bound exactly to the launcher-validated natives directory, and launcher brand/version properties bound exactly to backend values.
+- Metadata's `-Djava.library.path` is accepted only when its value exactly equals the validated natives directory and is then discarded in favor of the backend-owned option.
+- The only accepted two-token forms are the classpath aliases, whose operand must exactly equal the backend-built classpath and cannot begin with `@` or `-`. Missing operands remain a stable malformed-argument error; hostile or unexpected operands return `unsafe_launch_argument`.
+- All unrecognized options and all non-option JVM operands before the backend main class are rejected. This explicitly covers `--source`, `--source=...`, Java source paths, premature class-name operands, numeric operands, arbitrary words, argument files, and unknown system properties.
+
+Fix 2 TDD evidence:
+
+1. The exact sequence `--source 21 ${game_directory}\\libraries\\evil\\Evil.java` initially produced a valid `PreparedLaunch`; the strict parser now rejects it before command construction.
+2. Regression cases cover `--source=21`, absolute/substituted and relative `.java` operands, slash paths, main-class-like operands, numbers, arbitrary non-options, unknown properties, and classpath values beginning with `@`/`-` or differing from the verified classpath.
+3. The modern builder fixture now exercises Mojang's valid heap-dump, stack, native-workdir, launcher identity, owned native-path, and exact classpath metadata forms and confirms they retain safe precedence.
+
+Fresh Fix 2 verification:
+
+- `cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check`: passed.
+- `cargo test --quiet --manifest-path app/src-tauri/Cargo.toml`: passed — 131 library tests and 2 integration tests, 0 failures.
 - `cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed with 0 warnings/errors.
