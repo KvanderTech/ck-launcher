@@ -80,7 +80,6 @@ impl MinecraftAccess {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn token(&self) -> &str {
         &self.token
     }
@@ -93,6 +92,10 @@ pub trait MicrosoftApi: Send + Sync {
         code: &str,
         verifier: &str,
         redirect_uri: &str,
+    ) -> Result<OAuthTokens, LauncherError>;
+    async fn refresh_token(
+        &self,
+        refresh_token: &crate::storage::credentials::RefreshToken,
     ) -> Result<OAuthTokens, LauncherError>;
     async fn xbox_live(&self, access_token: &str) -> Result<XboxToken, LauncherError>;
     async fn xsts(&self, xbox: &XboxToken) -> Result<XstsToken, LauncherError>;
@@ -141,6 +144,31 @@ impl MicrosoftApi for HttpMicrosoftApi {
                 .await
                 .map_err(|_| auth_network_error())?,
             "auth_exchange_failed",
+        )
+        .await?;
+        Ok(OAuthTokens::new(
+            response.access_token,
+            response.refresh_token,
+        ))
+    }
+
+    async fn refresh_token(
+        &self,
+        refresh_token: &crate::storage::credentials::RefreshToken,
+    ) -> Result<OAuthTokens, LauncherError> {
+        let response: OAuthResponse = response_json(
+            self.client
+                .post(TOKEN_ENDPOINT)
+                .form(&[
+                    ("client_id", self.client_id.as_str()),
+                    ("refresh_token", refresh_token.expose_secret()),
+                    ("grant_type", "refresh_token"),
+                    ("scope", "XboxLive.signin offline_access"),
+                ])
+                .send()
+                .await
+                .map_err(|_| auth_network_error())?,
+            "auth_refresh_failed",
         )
         .await?;
         Ok(OAuthTokens::new(
