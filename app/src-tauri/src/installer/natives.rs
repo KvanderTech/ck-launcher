@@ -1,5 +1,7 @@
 use super::{path_safety::is_strict_windows_relative_path, validate_version_id, NativeArchive};
 use crate::{downloads::DownloadCancellationToken, error::LauncherError, paths::AppPaths};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
@@ -8,6 +10,9 @@ use std::{
 
 const STAGING_PREFIX: &str = "natives.installing-";
 const BACKUP_PREFIX: &str = "natives.backup-";
+const MANIFEST_NAME: &str = ".ck-native-manifest.json";
+const MANIFEST_VERSION: u8 = 1;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub(super) const MAX_NATIVE_ENTRIES: usize = 4096;
 const MAX_NATIVE_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const MAX_TOTAL_NATIVE_BYTES: u64 = 512 * 1024 * 1024;
@@ -42,6 +47,9 @@ pub(super) fn extract_natives_transactional(
             }
             extract_archive(game_root, &staging_relative, archive, cancel, &mut budget)?;
         }
+        if !archives.is_empty() {
+            persist_native_inventory(game_root, &staging_relative)?;
+        }
         activate_staging(game_root, &version_relative, &staging_relative)
     })();
     if extracted.is_err() {
@@ -50,6 +58,139 @@ pub(super) fn extract_natives_transactional(
         }
     }
     extracted
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct NativeManifest {
+    version: u8,
+    files: Vec<NativeManifestEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct NativeManifestEntry {
+    path: String,
+    size: u64,
+    sha256: String,
+}
+
+fn persist_native_inventory(
+    game_root: &Path,
+    staging_relative: &Path,
+) -> Result<(), LauncherError> {
+    let mut files = collect_inventory(game_root, staging_relative, Path::new(""))?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    if files.is_empty() {
+        return Err(native_archive_invalid());
+    }
+    let manifest = serde_json::to_vec(&NativeManifest {
+        version: MANIFEST_VERSION,
+        files,
+    })
+    .map_err(|_| native_storage_error())?;
+    let safety = AppPaths::new(game_root.to_path_buf());
+    let path = safety.safe_join(game_root, &staging_relative.join(MANIFEST_NAME))?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| native_storage_error())?;
+    output
+        .write_all(&manifest)
+        .and_then(|_| output.flush())
+        .and_then(|_| output.sync_all())
+        .map_err(|_| native_storage_error())
+}
+
+pub(super) fn verify_native_inventory(
+    game_root: &Path,
+    version_id: &str,
+) -> Result<bool, LauncherError> {
+    validate_version_id(version_id)?;
+    let natives_relative = Path::new("versions").join(version_id).join("natives");
+    let safety = AppPaths::new(game_root.to_path_buf());
+    let natives = safety.safe_join(game_root, &natives_relative)?;
+    if !natives
+        .metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_dir())
+    {
+        return Ok(false);
+    }
+    let manifest_path = safety.safe_join(game_root, &natives_relative.join(MANIFEST_NAME))?;
+    match manifest_path.metadata() {
+        Ok(metadata) if metadata.file_type().is_file() && metadata.len() <= MAX_MANIFEST_BYTES => {}
+        _ => return Ok(false),
+    }
+    let body = fs::read(manifest_path).map_err(|_| native_storage_error())?;
+    let mut expected: NativeManifest = match serde_json::from_slice(&body) {
+        Ok(manifest) => manifest,
+        Err(_) => return Ok(false),
+    };
+    if expected.version != MANIFEST_VERSION || expected.files.is_empty() {
+        return Ok(false);
+    }
+    expected
+        .files
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    for (index, entry) in expected.files.iter().enumerate() {
+        let relative = Path::new(&entry.path);
+        if !is_strict_windows_relative_path(relative)
+            || entry.path == MANIFEST_NAME
+            || entry.sha256.len() != 64
+            || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || index > 0 && expected.files[index - 1].path == entry.path
+        {
+            return Ok(false);
+        }
+    }
+    let mut actual = collect_inventory(game_root, &natives_relative, Path::new(""))?;
+    actual.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(actual == expected.files)
+}
+
+fn collect_inventory(
+    game_root: &Path,
+    directory_relative: &Path,
+    inventory_relative: &Path,
+) -> Result<Vec<NativeManifestEntry>, LauncherError> {
+    let safety = AppPaths::new(game_root.to_path_buf());
+    let directory = safety.safe_join(game_root, &directory_relative.join(inventory_relative))?;
+    let mut files = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|_| native_storage_error())? {
+        let entry = entry.map_err(|_| native_storage_error())?;
+        let relative = inventory_relative.join(entry.file_name());
+        validate_archive_relative(&relative)?;
+        if relative == Path::new(MANIFEST_NAME) {
+            continue;
+        }
+        let path = safety.safe_join(game_root, &directory_relative.join(&relative))?;
+        let metadata = path.metadata().map_err(|_| native_storage_error())?;
+        if metadata.file_type().is_dir() {
+            files.extend(collect_inventory(game_root, directory_relative, &relative)?);
+        } else if metadata.file_type().is_file() {
+            files.push(NativeManifestEntry {
+                path: relative.to_string_lossy().replace('\\', "/"),
+                size: metadata.len(),
+                sha256: hash_file(&path)?,
+            });
+        } else {
+            return Err(LauncherError::invalid_path());
+        }
+    }
+    Ok(files)
+}
+
+fn hash_file(path: &Path) -> Result<String, LauncherError> {
+    let mut file = File::open(path).map_err(|_| native_storage_error())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|_| native_storage_error())?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn extract_archive(

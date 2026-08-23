@@ -36,3 +36,11 @@
 
 - Отдельной команды принудительного завершения Minecraft нет; отмена после spawn намеренно не убивает процесс.
 - Packaging/signing остаются в Task 11.
+
+## Исправления по ревью — Fix1
+
+- Ошибка `mark_spawned` теперь проходит через единый terminal path: отмена на атомарной spawn-boundary переводит workflow в `Cancelled`, освобождает reservation и выдаёт ровно одно launch-stage событие. Синхронная ошибка orchestrated spawn возвращается Launcher без второго process-terminal события; orchestrator всегда выдаёт stage-tagged workflow error, даже если общий registry уже terminal.
+- Native extraction атомарно активирует `.ck-native-manifest.json` с относительным путём, размером и SHA-256 каждого файла. Verified-skip повторно хеширует полный inventory и отклоняет отсутствующий, пустой/повреждённый manifest, изменённый файл и любой extra file.
+- Frontend DTO разделяет workflow и process errors. `terminal: false` сохраняет running-state, показывает неблокирующее предупреждение без Retry и очищается после exit.
+- Startup больше не преобразует Windows `file:///C:/...` в несовместимый SQLx URL. `Storage::connect_file` создаёт отсутствующие parent directories, открывает/создаёт SQLite по проверенному `Path` и выполняет migrations.
+- Проверки: Rust — 151 unit + 2 integration tests, strict clippy и fmt PASS; frontend — 8 files / 27 tests и production build PASS. Clean-profile `npm run tauri dev` smoke создал 45,056-byte SQLite, оставался живым с responding window `ЦК Лаунчер`, после проверки процесс остановлен и временный APPDATA удалён.

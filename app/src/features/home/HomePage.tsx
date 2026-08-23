@@ -19,6 +19,7 @@ export type LauncherViewState =
 interface HomePageProps {
   cancelling: boolean;
   error?: LauncherErrorDto;
+  warning?: LauncherErrorDto;
   onCancel(): void;
   onPlay(): void;
   onRetry(): void;
@@ -43,6 +44,7 @@ const stateLabels: Record<LauncherViewState, string> = {
 export function HomePage({
   cancelling,
   error,
+  warning,
   onCancel,
   onPlay,
   onRetry,
@@ -126,6 +128,15 @@ export function HomePage({
               Открыть очищенный журнал
             </button>
           )}
+        </section>
+      ) : null}
+
+      {warning ? (
+        <section aria-live="polite" className="error-panel is-recoverable" role="status">
+          <div>
+            <span className="eyebrow">Предупреждение · {warning.code}</span>
+            <strong>{warning.message}</strong>
+          </div>
         </section>
       ) : null}
     </section>

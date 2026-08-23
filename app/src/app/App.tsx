@@ -47,6 +47,7 @@ export default function App({ api = appApi }: AppProps) {
   const [viewState, setViewState] = useState<LauncherViewState>("ready");
   const [progress, setProgress] = useState<ProgressEvent>();
   const [operationError, setOperationError] = useState<LauncherErrorDto>();
+  const [operationWarning, setOperationWarning] = useState<LauncherErrorDto>();
   const [cancelling, setCancelling] = useState(false);
   const [memorySaveState, setMemorySaveState] = useState<MemorySaveState>("idle");
   const operationId = useRef<OperationId | undefined>(undefined);
@@ -77,15 +78,21 @@ export default function App({ api = appApi }: AppProps) {
         break;
       case "started":
         setViewState("running");
+        setOperationError(undefined);
         setProgress(undefined);
         break;
       case "exited":
         operationId.current = undefined;
         setOperationError(undefined);
+        setOperationWarning(undefined);
         setViewState("ready");
         setProgress(undefined);
         break;
       case "error":
+        if ("terminal" in event.value && event.value.terminal === false) {
+          setOperationWarning(event.value.error);
+          break;
+        }
         setOperationError(event.value.error);
         setViewState(event.value.error.recoverable ? "recoverable-error" : "fatal-error");
         setProgress(undefined);
@@ -181,6 +188,7 @@ export default function App({ api = appApi }: AppProps) {
   async function startPlay() {
     if (!profileRef.current?.versionId || ["installing", "launching", "running"].includes(viewState)) return;
     setOperationError(undefined);
+    setOperationWarning(undefined);
     setProgress(undefined);
     setViewState("launching");
     try {
@@ -372,6 +380,7 @@ export default function App({ api = appApi }: AppProps) {
           ) : activePage === "home" ? (
             <HomePage
               error={operationError}
+              warning={operationWarning}
               cancelling={cancelling}
               onCancel={() => void cancelCurrentOperation()}
               onPlay={() => void startPlay()}

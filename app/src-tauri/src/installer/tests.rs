@@ -3,7 +3,8 @@ use super::{
     libraries::{library_allowed, maven_artifact_path, validate_metadata_path, WindowsRuleContext},
     natives::{
         activate_staging_with_cleanup, extract_natives_transactional, recover_interrupted,
-        validate_native_budget, MAX_NATIVE_ENTRIES, MAX_TOTAL_NATIVE_BYTES,
+        validate_native_budget, verify_native_inventory, MAX_NATIVE_ENTRIES,
+        MAX_TOTAL_NATIVE_BYTES,
     },
     plan_installation, InstallFileKind, InstallationStore, Installer, NativeArchive,
     OperationRegistry, OperationState, PhaseProgressSink, VerifiedDownloader, VersionProvider,
@@ -257,6 +258,31 @@ fn native_extraction_excludes_metadata_and_configured_prefixes() {
     );
     assert!(!destination.join("META-INF").exists());
     assert!(!destination.join("skip").exists());
+    assert!(verify_native_inventory(&game, "fixture-1.0").expect("manifest verifies"));
+
+    fs::write(destination.join("good.dll"), b"corrupt").expect("corrupt native");
+    assert!(!verify_native_inventory(&game, "fixture-1.0").expect("hash mismatch"));
+
+    let destination = extract_natives_transactional(
+        &game,
+        "fixture-1.0",
+        &[NativeArchive {
+            archive: game.join("libraries/native.jar"),
+            excludes: vec!["skip/".to_owned()],
+        }],
+        &DownloadCancellationToken::new(),
+    )
+    .expect("repair extraction");
+    fs::write(destination.join("unexpected.dll"), b"extra").expect("extra native");
+    assert!(!verify_native_inventory(&game, "fixture-1.0").expect("extra is rejected"));
+
+    fs::remove_file(destination.join("unexpected.dll")).expect("remove extra");
+    fs::write(
+        destination.join(".ck-native-manifest.json"),
+        b"{\"files\":[]}",
+    )
+    .expect("empty manifest");
+    assert!(!verify_native_inventory(&game, "fixture-1.0").expect("empty is rejected"));
     fs::remove_dir_all(game).expect("cleanup");
 }
 

@@ -166,7 +166,13 @@ impl Launcher {
             .start_prepared(profile_id, operation_id, prepared)
             .await;
         if let Err(error) = &result {
-            self.finish_error(profile_id, operation_id, error.clone())?;
+            finish_registry(
+                &self.registry,
+                profile_id,
+                operation_id,
+                None,
+                Some(error.clone()),
+            )?;
         }
         result
     }

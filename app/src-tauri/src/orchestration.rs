@@ -288,7 +288,7 @@ impl LaunchOrchestrator {
             }
         };
         self.ensure_not_cancelled(&profile_id, &handle, WorkflowStage::Launching)?;
-        self.operations.mark_spawned(&handle.operation_id)?;
+        self.enter_spawn_boundary(&profile_id, &handle.operation_id)?;
         if let Err(error) = self
             .backend
             .spawn(&profile_id, &handle.operation_id, prepared)
@@ -302,6 +302,17 @@ impl LaunchOrchestrator {
             );
         }
         Ok(())
+    }
+
+    fn enter_spawn_boundary(
+        &self,
+        profile_id: &str,
+        operation_id: &str,
+    ) -> Result<(), LauncherError> {
+        match self.operations.mark_spawned(operation_id) {
+            Ok(()) => Ok(()),
+            Err(error) => self.terminate(profile_id, operation_id, WorkflowStage::Launching, error),
+        }
     }
 
     fn ensure_not_cancelled(
@@ -324,18 +335,6 @@ impl LaunchOrchestrator {
         stage: WorkflowStage,
         error: LauncherError,
     ) -> Result<(), LauncherError> {
-        if self
-            .operations
-            .workflow_status(operation_id)
-            .is_ok_and(|status| {
-                matches!(
-                    status.state,
-                    OperationState::Completed | OperationState::Cancelled | OperationState::Failed
-                )
-            })
-        {
-            return Err(error);
-        }
         let state = if error.code() == "download_cancelled" {
             OperationState::Cancelled
         } else {
@@ -590,6 +589,7 @@ mod tests {
         fail_once: Mutex<Option<FailurePoint>>,
         cancel_at: Option<WorkflowStage>,
         cancel: Mutex<Option<DownloadCancellationToken>>,
+        terminalize_spawn: Mutex<Option<OperationRegistry>>,
     }
 
     impl MockBackend {
@@ -600,6 +600,7 @@ mod tests {
                 fail_once: Mutex::new(None),
                 cancel_at: None,
                 cancel: Mutex::new(None),
+                terminalize_spawn: Mutex::new(None),
             }
         }
 
@@ -618,6 +619,13 @@ mod tests {
 
         fn attach_cancel(&self, cancel: DownloadCancellationToken) {
             *self.cancel.lock().expect("cancel lock") = Some(cancel);
+        }
+
+        fn terminalize_spawn_with(&self, operations: OperationRegistry) {
+            *self
+                .terminalize_spawn
+                .lock()
+                .expect("terminal registry lock") = Some(operations);
         }
 
         fn record(&self, call: &'static str, stage: WorkflowStage) -> Result<(), LauncherError> {
@@ -739,10 +747,28 @@ mod tests {
         async fn spawn(
             &self,
             _profile_id: &str,
-            _operation_id: &str,
+            operation_id: &str,
             _prepared: PreparedLaunch,
         ) -> Result<(), LauncherError> {
             self.calls.lock().expect("calls lock").push("spawn");
+            if let Some(operations) = self
+                .terminalize_spawn
+                .lock()
+                .expect("terminal registry lock")
+                .as_ref()
+            {
+                operations.finish(
+                    operation_id,
+                    OperationState::Failed,
+                    None,
+                    Some(LauncherError::new(
+                        "process_spawn_failed",
+                        "The game process could not start.",
+                        None,
+                        true,
+                    )),
+                )?;
+            }
             self.maybe_fail(FailurePoint::Spawn)
         }
     }
@@ -1012,6 +1038,68 @@ mod tests {
                 .state,
             OperationState::Running
         );
+    }
+
+    #[test]
+    fn cancellation_at_the_atomic_spawn_boundary_terminates_and_releases_the_reservation() {
+        let operations = OperationRegistry::default();
+        let events = Arc::new(RecordingEvents::default());
+        let orchestrator = LaunchOrchestrator::new(
+            Arc::new(MockBackend::new(true)),
+            operations.clone(),
+            events.clone(),
+        );
+        let handle = orchestrator.reserve("default").expect("reservation");
+        operations
+            .cancel(&handle.operation_id)
+            .expect("race cancellation");
+
+        let error = orchestrator
+            .enter_spawn_boundary("default", &handle.operation_id)
+            .expect_err("cancel wins before spawn boundary");
+
+        assert_eq!(error.code(), "download_cancelled");
+        assert_eq!(
+            operations
+                .workflow_status(&handle.operation_id)
+                .expect("terminal status")
+                .state,
+            OperationState::Cancelled
+        );
+        assert!(orchestrator.reserve("default").is_ok());
+        let errors = events
+            .snapshot()
+            .into_iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::Error(error) => Some(error),
+                WorkflowEvent::Progress(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].stage, WorkflowStage::Launching);
+    }
+
+    #[test]
+    fn spawn_failure_emits_workflow_stage_even_if_process_sink_finished_the_registry_first() {
+        let operations = OperationRegistry::default();
+        let backend = Arc::new(MockBackend::failing(FailurePoint::Spawn));
+        backend.terminalize_spawn_with(operations.clone());
+        let events = Arc::new(RecordingEvents::default());
+
+        let error = execute(backend, events.clone(), operations)
+            .expect_err("spawn failure remains an orchestration failure");
+
+        assert_eq!(error.code(), "workflow_fixture_failure");
+        let errors = events
+            .snapshot()
+            .into_iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::Error(error) => Some(error),
+                WorkflowEvent::Progress(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].stage, WorkflowStage::Launching);
     }
 
     #[test]

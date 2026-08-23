@@ -4,7 +4,7 @@ use crate::error::LauncherError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, Row, SqlitePool};
-use std::str::FromStr;
+use std::{fs, path::Path, str::FromStr};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -68,6 +68,21 @@ impl Storage {
         let options = SqliteConnectOptions::from_str(database_url)
             .map_err(|_| LauncherError::storage_unavailable())?
             .create_if_missing(true);
+        Self::connect_options(options).await
+    }
+
+    pub async fn connect_file(database: &Path) -> Result<Self, LauncherError> {
+        let parent = database
+            .parent()
+            .ok_or_else(LauncherError::storage_unavailable)?;
+        fs::create_dir_all(parent).map_err(|_| LauncherError::storage_unavailable())?;
+        let options = SqliteConnectOptions::new()
+            .filename(database)
+            .create_if_missing(true);
+        Self::connect_options(options).await
+    }
+
+    async fn connect_options(options: SqliteConnectOptions) -> Result<Self, LauncherError> {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)
@@ -372,6 +387,10 @@ fn account_from_row(row: sqlx::sqlite::SqliteRow) -> Result<AccountSummary, Laun
 #[cfg(test)]
 mod tests {
     use super::{AccountSummary, LauncherProfile, Storage};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn account(id: &str, name: &str, active: bool) -> AccountSummary {
         AccountSummary {
@@ -381,6 +400,31 @@ mod tests {
             head_url: Some(format!("https://example.test/{id}.png")),
             is_active: active,
         }
+    }
+
+    #[test]
+    fn file_storage_creates_a_clean_profile_parent_database_and_migrations() {
+        tauri::async_runtime::block_on(async {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("ck-launcher-clean-storage-{unique}"));
+            let database = root.join("nested/launcher.sqlite3");
+
+            let storage = Storage::connect_file(&database)
+                .await
+                .expect("clean profile storage initializes");
+
+            assert!(database.is_file());
+            assert!(storage
+                .active_profile()
+                .await
+                .expect("migration query")
+                .is_none());
+            drop(storage);
+            fs::remove_dir_all(root).expect("cleanup");
+        });
     }
 
     #[test]
