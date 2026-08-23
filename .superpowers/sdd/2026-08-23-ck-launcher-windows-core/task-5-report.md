@@ -81,3 +81,26 @@ All commands were run from the isolated Task 5 worktree with its bundled Rust/No
 
 - Path validation is performed at the last practical boundary and the runtime staging root is launcher-private. As already documented by Task 2, path-based checks cannot completely eliminate a same-user TOCTOU race without a broader Windows handle-relative/no-follow filesystem layer.
 - A locked obsolete backup may remain after a successful activation, but it is now intentionally named, detected, probed, and recovered or cleaned on the next pre-install pass.
+
+## Fix Round 2
+
+### Reviewer findings addressed
+
+1. Recovery now derives each `bin/java.exe` probe target as a root-relative path and passes the complete runtime-home, `bin`, and executable component chain through hardened `AppPaths::safe_join` immediately before invoking the process runner. A reparse point on the runtime directory, `bin`, or `java.exe` therefore returns the stable `invalid_path` error instead of probing through it.
+2. Backup discovery no longer accepts arbitrary prefix matches. It recognizes only the current exact `.backup-java-{major}` name and the validated legacy `.backup-java-{major}-{u64}` grammar. Textual, empty, compound, and numeric-overflow suffix lookalikes are ignored.
+
+### TDD evidence
+
+- A Windows regression test first showed that recovery successfully followed `.backup-java-17/bin` when `bin` was a junction to an external executable. After full executable-path validation was added, the same recovery attempt returned `invalid_path` without probing through the junction.
+- A discovery regression test first selected `.backup-java-17-attacker`. After the grammar was restricted, attacker, empty, compound, and out-of-range numeric suffixes were ignored, while the exact current name and maximum valid legacy `u64` suffix remained discoverable.
+
+### Round verification
+
+- `cargo fmt --all`: passed.
+- `cargo test --all-targets`: passed — 62 library tests plus 2 Task 5 integration tests, 0 failures.
+- `cargo clippy --all-targets -- -D warnings`: passed.
+- `git diff --check`: passed; only Git's LF/CRLF checkout notices were printed.
+
+### Round concerns
+
+- Complete component validation is performed immediately before each recovery probe, but the existing documented same-user path-based TOCTOU limitation still applies until a broader Windows handle-relative/no-follow process-launch layer exists.
