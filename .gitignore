@@ -1,5 +1,6 @@
 .worktrees/
 .superpowers/
+.toolchain/
 
 # Application build output and local runtime data
 app/node_modules/
