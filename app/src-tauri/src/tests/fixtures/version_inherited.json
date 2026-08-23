@@ -1,0 +1,12 @@
+{
+  "id": "parent",
+  "mainClass": "example.Parent",
+  "assets": "legacy",
+  "downloads": { "client": { "url": "https://example.test/parent.jar" } },
+  "libraries": [
+    { "name": "com.example:replace:1.0" },
+    { "name": "com.example:parent:1.0" }
+  ],
+  "arguments": { "game": ["--parent"], "jvm": ["-Dparent=true"] },
+  "minecraftArguments": "--legacy-parent"
+}

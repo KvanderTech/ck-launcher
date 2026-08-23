@@ -42,6 +42,12 @@ pub trait AccountStore: Send + Sync {
     async fn delete_account(&self, account_id: &str) -> Result<(), LauncherError>;
 }
 
+#[async_trait]
+pub trait ProfileStore: Send + Sync {
+    async fn upsert_profile(&self, profile: &LauncherProfile) -> Result<(), LauncherError>;
+    async fn active_profile(&self) -> Result<Option<LauncherProfile>, LauncherError>;
+}
+
 #[derive(Default)]
 pub struct AccountMutationCoordinator {
     mutation: tokio::sync::Mutex<()>,
@@ -236,6 +242,17 @@ impl AccountStore for Storage {
 
     async fn delete_account(&self, account_id: &str) -> Result<(), LauncherError> {
         Storage::delete_account(self, account_id).await
+    }
+}
+
+#[async_trait]
+impl ProfileStore for Storage {
+    async fn upsert_profile(&self, profile: &LauncherProfile) -> Result<(), LauncherError> {
+        Storage::upsert_profile(self, profile).await
+    }
+
+    async fn active_profile(&self) -> Result<Option<LauncherProfile>, LauncherError> {
+        Storage::active_profile(self).await
     }
 }
 

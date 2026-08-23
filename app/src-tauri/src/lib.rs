@@ -3,7 +3,9 @@
 pub mod auth;
 pub mod commands;
 pub mod error;
+pub mod metadata;
 pub mod paths;
+pub mod profiles;
 pub mod storage;
 mod webview2;
 
@@ -31,6 +33,9 @@ pub fn run() {
             commands::accounts::begin_microsoft_login,
             commands::accounts::remove_account,
             commands::accounts::set_active_account,
+            commands::versions::list_game_versions,
+            commands::versions::get_profile,
+            commands::versions::update_profile,
         ])
         .setup(|app| {
             let paths = AppPaths::windows_default()?;
@@ -50,11 +55,20 @@ pub fn run() {
                 credentials,
                 mutations,
             );
+            let metadata =
+                metadata::resolver::MetadataService::production(paths.root.join("metadata-cache"))?;
+            let profiles = profiles::ProfileService::new(
+                Arc::new(storage.clone()),
+                Arc::new(profiles::SystemPhysicalMemory),
+                paths.game.to_string_lossy(),
+            );
 
             app.manage(paths);
             app.manage(storage);
             app.manage(auth);
             app.manage(accounts);
+            app.manage(metadata);
+            app.manage(profiles);
             Ok(())
         })
         .run(tauri::generate_context!())
