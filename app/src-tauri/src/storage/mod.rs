@@ -1,3 +1,5 @@
+pub mod credentials;
+
 use crate::error::LauncherError;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, Row, SqlitePool};
@@ -19,6 +21,16 @@ pub struct LauncherProfile {
     pub memory_mb: u32,
     pub game_dir: String,
     pub java_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSummary {
+    pub id: String,
+    pub minecraft_name: String,
+    pub minecraft_uuid: String,
+    pub head_url: Option<String>,
+    pub is_active: bool,
 }
 
 impl Storage {
@@ -77,6 +89,115 @@ impl Storage {
 
         row.map(profile_from_row).transpose()
     }
+
+    pub async fn upsert_account(&self, account: &AccountSummary) -> Result<(), LauncherError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        if account.is_active {
+            sqlx::query("UPDATE accounts SET is_active = 0")
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        sqlx::query(
+            "INSERT INTO accounts (id, minecraft_name, minecraft_uuid, head_url, is_active) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+               minecraft_name = excluded.minecraft_name, \
+               minecraft_uuid = excluded.minecraft_uuid, \
+               head_url = excluded.head_url, \
+               is_active = excluded.is_active",
+        )
+        .bind(&account.id)
+        .bind(&account.minecraft_name)
+        .bind(&account.minecraft_uuid)
+        .bind(&account.head_url)
+        .bind(account.is_active)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| LauncherError::storage_unavailable())?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
+
+    pub async fn list_accounts(&self) -> Result<Vec<AccountSummary>, LauncherError> {
+        let rows = sqlx::query(
+            "SELECT id, minecraft_name, minecraft_uuid, head_url, is_active \
+             FROM accounts ORDER BY is_active DESC, minecraft_name, id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| LauncherError::storage_unavailable())?;
+
+        rows.into_iter().map(account_from_row).collect()
+    }
+
+    pub async fn set_active_account(&self, account_id: &str) -> Result<(), LauncherError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("UPDATE accounts SET is_active = 0")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        let updated = sqlx::query("UPDATE accounts SET is_active = 1 WHERE id = ?")
+            .bind(account_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        if updated.rows_affected() != 1 {
+            return Err(LauncherError::new(
+                "account_not_found",
+                "The selected Minecraft account was not found.",
+                None,
+                false,
+            ));
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
+
+    pub async fn delete_account(&self, account_id: &str) -> Result<(), LauncherError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        let was_active =
+            sqlx::query_scalar::<_, bool>("SELECT is_active FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?
+                .unwrap_or(false);
+        sqlx::query("DELETE FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        if was_active {
+            sqlx::query(
+                "UPDATE accounts SET is_active = 1 WHERE id = \
+                 (SELECT id FROM accounts ORDER BY minecraft_name, id LIMIT 1)",
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
 }
 
 fn profile_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LauncherProfile, LauncherError> {
@@ -104,9 +225,39 @@ fn profile_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LauncherProfile, Lau
     })
 }
 
+fn account_from_row(row: sqlx::sqlite::SqliteRow) -> Result<AccountSummary, LauncherError> {
+    Ok(AccountSummary {
+        id: row
+            .try_get("id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        minecraft_name: row
+            .try_get("minecraft_name")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        minecraft_uuid: row
+            .try_get("minecraft_uuid")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        head_url: row
+            .try_get("head_url")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        is_active: row
+            .try_get("is_active")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LauncherProfile, Storage};
+    use super::{AccountSummary, LauncherProfile, Storage};
+
+    fn account(id: &str, name: &str, active: bool) -> AccountSummary {
+        AccountSummary {
+            id: id.to_owned(),
+            minecraft_name: name.to_owned(),
+            minecraft_uuid: format!("uuid-{id}"),
+            head_url: Some(format!("https://example.test/{id}.png")),
+            is_active: active,
+        }
+    }
 
     #[test]
     fn migrations_persist_and_read_the_default_profile() {
@@ -151,6 +302,54 @@ mod tests {
             assert_eq!(error.code(), "storage_unavailable");
             assert!(!serialized.contains("top-secret"));
             assert!(!serialized.contains(database_url));
+        });
+    }
+
+    #[test]
+    fn switching_accounts_transactionally_leaves_exactly_one_active() {
+        tauri::async_runtime::block_on(async {
+            let storage = Storage::connect("sqlite::memory:").await.expect("storage");
+            storage
+                .upsert_account(&account("one", "One", true))
+                .await
+                .expect("first");
+            storage
+                .upsert_account(&account("two", "Two", true))
+                .await
+                .expect("second");
+
+            storage.set_active_account("one").await.expect("switches");
+            let accounts = storage.list_accounts().await.expect("lists");
+            assert_eq!(
+                accounts.iter().filter(|account| account.is_active).count(),
+                1
+            );
+            assert!(
+                accounts
+                    .iter()
+                    .find(|account| account.id == "one")
+                    .expect("one")
+                    .is_active
+            );
+        });
+    }
+
+    #[test]
+    fn deleting_active_account_removes_the_row_and_activates_one_remaining_account() {
+        tauri::async_runtime::block_on(async {
+            let storage = Storage::connect("sqlite::memory:").await.expect("storage");
+            storage
+                .upsert_account(&account("one", "One", false))
+                .await
+                .expect("first");
+            storage
+                .upsert_account(&account("two", "Two", true))
+                .await
+                .expect("second");
+
+            storage.delete_account("two").await.expect("deletes");
+            let accounts = storage.list_accounts().await.expect("lists");
+            assert_eq!(accounts, vec![account("one", "One", true)]);
         });
     }
 }

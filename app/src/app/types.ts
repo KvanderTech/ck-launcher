@@ -25,6 +25,14 @@ export interface LauncherErrorDto {
   recoverable: boolean;
 }
 
+export interface AccountSummary {
+  id: string;
+  minecraftName: string;
+  minecraftUuid: string;
+  headUrl?: string;
+  isActive: boolean;
+}
+
 export function progressLabel(progress: ProgressEvent): string {
   const percent = Math.floor((progress.completedBytes / progress.totalBytes) * 100);
 

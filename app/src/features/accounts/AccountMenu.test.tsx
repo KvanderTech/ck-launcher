@@ -1,0 +1,76 @@
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+import type { AccountSummary } from "../../app/types";
+import type { LauncherApi } from "../../app/tauri";
+import { AccountMenu } from "./AccountMenu";
+import { MicrosoftLogin } from "./MicrosoftLogin";
+
+const accounts: AccountSummary[] = [
+  {
+    id: "one",
+    minecraftName: "Alex",
+    minecraftUuid: "uuid-one",
+    headUrl: "https://example.test/alex.png",
+    isActive: true,
+  },
+  {
+    id: "two",
+    minecraftName: "Steve",
+    minecraftUuid: "uuid-two",
+    headUrl: "https://example.test/steve.png",
+    isActive: false,
+  },
+];
+
+function mockApi(overrides: Partial<LauncherApi> = {}): LauncherApi {
+  return {
+    listAccounts: vi.fn(async () => accounts),
+    beginMicrosoftLogin: vi.fn(async () => accounts[0]),
+    removeAccount: vi.fn(async () => undefined),
+    setActiveAccount: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+describe("AccountMenu", () => {
+  it("switches to the clicked account and updates the lower account panel", async () => {
+    const api = mockApi();
+    render(<AccountMenu accounts={accounts} api={api} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Steve/ }));
+    });
+
+    expect(api.setActiveAccount).toHaveBeenCalledWith("two");
+    expect(screen.getByTestId("active-account-panel").textContent).toContain("Steve");
+  });
+});
+
+describe("MicrosoftLogin", () => {
+  it("shows idle, loading, and safe error states without token props", async () => {
+    let rejectLogin: ((reason: unknown) => void) | undefined;
+    const pending = new Promise<AccountSummary>((_resolve, reject) => {
+      rejectLogin = reject;
+    });
+    const api = mockApi({ beginMicrosoftLogin: vi.fn(() => pending) });
+    render(<MicrosoftLogin api={api} />);
+
+    const idleButton = screen.getByRole("button", { name: "Войти через Microsoft" });
+    expect((idleButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(idleButton);
+    expect(screen.getByRole("button", { name: "Входим…" })).toBeTruthy();
+
+    await act(async () => {
+      rejectLogin?.({
+        code: "auth_network_error",
+        message: "Не удалось войти.",
+        recoverable: true,
+      });
+      await pending.catch(() => undefined);
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe("Не удалось войти.");
+    expect(screen.getByRole("button", { name: "Повторить вход" })).toBeTruthy();
+  });
+});
