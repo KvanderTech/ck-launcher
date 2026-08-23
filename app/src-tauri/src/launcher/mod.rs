@@ -639,7 +639,14 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         ("classpath", classpath.clone()),
         ("launcher_name", launcher_name.to_owned()),
         ("launcher_version", launcher_version.to_owned()),
-        ("user_type", "msa".to_owned()),
+        (
+            "user_type",
+            if request.account.access_token == "0" {
+                "legacy".to_owned()
+            } else {
+                "msa".to_owned()
+            },
+        ),
         ("version_type", "release".to_owned()),
         ("auth_xuid", String::new()),
         ("clientid", String::new()),

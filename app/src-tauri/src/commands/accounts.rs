@@ -5,6 +5,7 @@ use crate::{
         credentials::CredentialStore, AccountMutationCoordinator, AccountStore, AccountSummary,
     },
 };
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tauri::State;
 
@@ -29,6 +30,40 @@ impl AccountService {
 
     pub async fn list_accounts(&self) -> Result<Vec<AccountSummary>, LauncherError> {
         self.storage.list_accounts().await
+    }
+
+    pub async fn create_offline_account(
+        &self,
+        player_name: &str,
+    ) -> Result<AccountSummary, LauncherError> {
+        let name = player_name.trim();
+        if !(3..=16).contains(&name.len())
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(LauncherError::new(
+                "offline_name_invalid",
+                "Имя должно содержать 3–16 латинских букв, цифр или _.",
+                None,
+                true,
+            ));
+        }
+        let mut bytes: [u8; 16] = Sha256::digest(format!("OfflinePlayer:{name}").as_bytes())[..16]
+            .try_into()
+            .expect("SHA-256 prefix has fixed length");
+        bytes[6] = (bytes[6] & 0x0f) | 0x30;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        let uuid = format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]);
+        let account = AccountSummary {
+            id: format!("offline:{}", name.to_ascii_lowercase()),
+            minecraft_name: name.to_owned(),
+            minecraft_uuid: uuid,
+            head_url: None,
+            is_active: true,
+        };
+        let _mutation = self.mutations.lock().await;
+        self.storage.upsert_account(&account).await?;
+        self.storage.set_active_account(&account.id).await?;
+        Ok(account)
     }
 
     pub async fn set_active_account(&self, account_id: &str) -> Result<(), LauncherError> {
@@ -72,6 +107,14 @@ pub async fn begin_microsoft_login(
     .await
     .map_err(|_| LauncherError::internal("Microsoft callback task failed"))?;
     auth.complete_login(session, &code?).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn create_offline_account(
+    player_name: String,
+    accounts: State<'_, AccountService>,
+) -> Result<AccountSummary, LauncherError> {
+    accounts.create_offline_account(&player_name).await
 }
 
 #[tauri::command]

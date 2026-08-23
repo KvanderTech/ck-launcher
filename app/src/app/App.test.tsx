@@ -49,6 +49,7 @@ function createApi(handlers: EventHandlers) {
   return {
     listAccounts: vi.fn(async () => accounts),
     beginMicrosoftLogin: vi.fn(async () => accounts[0]),
+    createOfflineAccount: vi.fn(async () => accounts[0]),
     cancelMicrosoftLogin: vi.fn(async () => undefined),
     removeAccount: vi.fn(async () => undefined),
     setActiveAccount: vi.fn(async () => undefined),

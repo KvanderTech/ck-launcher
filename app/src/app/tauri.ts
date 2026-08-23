@@ -19,6 +19,7 @@ import type {
 export interface LauncherApi {
   listAccounts(): Promise<AccountSummary[]>;
   beginMicrosoftLogin(): Promise<AccountSummary>;
+  createOfflineAccount(playerName: string): Promise<AccountSummary>;
   cancelMicrosoftLogin(): Promise<void>;
   removeAccount(accountId: string): Promise<void>;
   setActiveAccount(accountId: string): Promise<void>;
@@ -27,6 +28,7 @@ export interface LauncherApi {
 export const launcherApi: LauncherApi = {
   listAccounts: () => invoke<AccountSummary[]>("list_accounts"),
   beginMicrosoftLogin: () => invoke<AccountSummary>("begin_microsoft_login"),
+  createOfflineAccount: (playerName) => invoke<AccountSummary>("create_offline_account", { playerName }),
   cancelMicrosoftLogin: () => invoke<void>("cancel_microsoft_login"),
   removeAccount: (accountId) => invoke<void>("remove_account", { accountId }),
   setActiveAccount: (accountId) =>
