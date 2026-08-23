@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod commands;
+pub mod downloads;
 pub mod error;
 pub mod metadata;
 pub mod paths;

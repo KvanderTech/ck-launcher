@@ -481,7 +481,11 @@ use super::{
     archive::extract_zip_archive, detect::probe_java, java_executable, JavaRequirement,
     JavaRuntimeSource, JavaRuntimeState, JavaRuntimeStatus, ProcessRunner,
 };
-use crate::{error::LauncherError, paths::AppPaths};
+use crate::{
+    downloads::{DownloadHttpClient, DownloadTimeouts},
+    error::LauncherError,
+    paths::AppPaths,
+};
 use async_trait::async_trait;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -490,7 +494,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 const MAX_RUNTIME_ARCHIVE_BYTES: usize = 536_870_912;
@@ -563,17 +566,13 @@ pub trait RuntimeArchiveFetcher: Send + Sync {
 }
 
 pub struct BoundedReqwestRuntimeArchiveFetcher {
-    client: reqwest::Client,
+    client: DownloadHttpClient,
 }
 
 impl BoundedReqwestRuntimeArchiveFetcher {
     pub fn new() -> Result<Self, LauncherError> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(300))
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()
-            .map_err(|_| fetch_error())?;
+        let client =
+            DownloadHttpClient::new(DownloadTimeouts::default()).map_err(|_| fetch_error())?;
         Ok(Self { client })
     }
 }
@@ -581,32 +580,10 @@ impl BoundedReqwestRuntimeArchiveFetcher {
 #[async_trait]
 impl RuntimeArchiveFetcher for BoundedReqwestRuntimeArchiveFetcher {
     async fn fetch(&self, url: &str, max_bytes: usize) -> Result<Vec<u8>, LauncherError> {
-        let mut response = self
-            .client
-            .get(url)
-            .send()
+        self.client
+            .fetch_bytes_bounded(url, max_bytes)
             .await
-            .map_err(|_| fetch_error())?
-            .error_for_status()
-            .map_err(|_| fetch_error())?;
-        if response
-            .content_length()
-            .is_some_and(|size| size > max_bytes as u64)
-        {
-            return Err(fetch_error());
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| fetch_error())? {
-            let next = bytes
-                .len()
-                .checked_add(chunk.len())
-                .ok_or_else(fetch_error)?;
-            if next > max_bytes {
-                return Err(fetch_error());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(bytes)
+            .map_err(|_| fetch_error())
     }
 }
 
