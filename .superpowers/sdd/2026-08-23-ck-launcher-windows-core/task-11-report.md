@@ -11,6 +11,19 @@ provided Entra public-client ID or licensed test account.
 
 ## Hardening completed
 
+- Closed the final integration gaps: Entra uses an exact
+  `http://localhost:<ephemeral-port>/callback` redirect with an IPv4 loopback listener;
+  cancellation reaches OAuth, metadata HTTP, Java discovery/download/extraction, and the
+  Minecraft installer; all pre-spawn cancellations release their operation reservation.
+- Nonzero or unavailable game exit codes now terminate as retryable `game_exit` failures,
+  preserve the exit code and sanitized log path, and expose only a no-argument backend action
+  for opening `%APPDATA%\CKLauncher\logs\latest.log`.
+- The backend-owned folder picker is the only way to change `gameDir`. Selected absolute
+  directories are created, canonicalized, persisted, and checked component-by-component for
+  links/reparse points; direct install, orchestrated install, and launch share the profile root.
+- Active-account switching now takes the same `AccountMutationCoordinator` lock used by
+  login/removal and launch token snapshots.
+
 - Replaced Tauri's broad `core:default` capability with only event `listen`/`unlisten` and
   the four custom-title-bar window actions used by the frontend. No shell, HTTP,
   filesystem, dialog, or opener plugin capability is granted to the webview.
@@ -30,11 +43,11 @@ provided Entra public-client ID or licensed test account.
 
 ## Verification
 
-- `npm.cmd test` — PASS: 8 files, 27 tests.
+- `npm.cmd test` — PASS: 8 files, 31 tests.
 - `npm.cmd run build` — PASS: TypeScript check and Vite production build (51 modules).
 - `cargo fmt --all --check` — PASS.
 - `cargo clippy --all-targets -- -D warnings` — PASS.
-- `cargo test --all-targets --quiet` — PASS: 151 library tests and 2 integration tests,
+- `cargo test --all-targets --quiet` — PASS: 160 library tests and 2 integration tests,
   0 failures.
 - `npm.cmd run tauri -- build` — PASS: release `ck-launcher.exe` and NSIS bundle created.
 - `git diff --check` — PASS before commit.
@@ -47,11 +60,11 @@ same local Tauri CLI (`npm.cmd run tauri -- build`).
 
 ## Artifacts
 
-- `app/src-tauri/target/release/ck-launcher.exe` — 18,485,760 bytes —
-  SHA-256 `28EBCF60619575E520952C147D780E75929814F5DF947DEA654970CE7BDBCB1C`
+- `app/src-tauri/target/release/ck-launcher.exe` — 18,724,352 bytes —
+  SHA-256 `41B9A1FF55B919F9936CEF5FDC77C581060A746F0738AA4BE22677D3250477F3`
 - `app/src-tauri/target/release/bundle/nsis/ЦК Лаунчер_0.1.0_x64-setup.exe` —
-  5,191,698 bytes — SHA-256
-  `77ED58ABA31D26B06FC194BA1F643A5E67854082A849C171E732670F8EF2C2CF`
+  5,238,832 bytes — SHA-256
+  `5D3D3D4AF95B5BE9379D8B3968221B4C0DD3F3DD2954098AA50143D03B3C6704`
 
 ## Clean-profile smoke
 

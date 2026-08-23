@@ -33,6 +33,8 @@ pub enum GameProcessEvent {
         profile_id: String,
         error: LauncherError,
         terminal: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        log_path: Option<PathBuf>,
     },
 }
 

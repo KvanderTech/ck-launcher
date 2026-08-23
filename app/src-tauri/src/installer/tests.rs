@@ -143,6 +143,44 @@ fn fixture_plan_contains_verified_vanilla_files_and_only_windows_native() {
 }
 
 #[test]
+fn retargeted_installer_plans_every_file_below_the_selected_profile_directory() {
+    let original = temporary_game("retarget-source");
+    let selected = temporary_game("retarget-selected");
+    let index_path = selected.join("assets/indexes/fixture-assets.json");
+    fs::create_dir_all(index_path.parent().expect("asset index parent")).expect("parent");
+    fs::write(
+        &index_path,
+        include_bytes!("../tests/fixtures/installer_asset_index.json"),
+    )
+    .expect("verified fixture index");
+    let installer = Installer::with_dependencies(
+        original.clone(),
+        Arc::new(FixtureVersions(resolved_fixture())),
+        Arc::new(FailingDownloads),
+        Arc::new(RecordingInstallations::default()),
+    )
+    .expect("base installer")
+    .for_game_root(selected.clone())
+    .expect("selected directory is accepted");
+
+    let canonical = selected
+        .canonicalize()
+        .expect("selected root canonicalizes");
+    let plan = installer.plan(&resolved_fixture()).expect("custom plan");
+
+    assert!(plan
+        .files
+        .iter()
+        .all(|file| file.destination.starts_with(&canonical)));
+    assert!(plan
+        .natives
+        .iter()
+        .all(|native| native.archive.starts_with(&canonical)));
+    fs::remove_dir_all(original).expect("original root cleanup");
+    fs::remove_dir_all(selected).expect("selected root cleanup");
+}
+
+#[test]
 fn rules_use_last_matching_action_for_windows_x64_and_features() {
     let context = WindowsRuleContext::default();
     let no_rules = serde_json::from_str(r#"{"name":"a:b:1"}"#).expect("library");

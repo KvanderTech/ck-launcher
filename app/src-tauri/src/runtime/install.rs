@@ -23,7 +23,12 @@ mod tests {
     struct FakeFetcher(Vec<u8>);
     #[async_trait]
     impl RuntimeArchiveFetcher for FakeFetcher {
-        async fn fetch(&self, _url: &str, _max_bytes: usize) -> Result<Vec<u8>, LauncherError> {
+        async fn fetch(
+            &self,
+            _url: &str,
+            _max_bytes: usize,
+            _cancel: &crate::downloads::DownloadCancellationToken,
+        ) -> Result<Vec<u8>, LauncherError> {
             Ok(self.0.clone())
         }
     }
@@ -478,11 +483,11 @@ mod tests {
     }
 }
 use super::{
-    archive::extract_zip_archive, detect::probe_java, java_executable, JavaRequirement,
+    archive::extract_zip_archive_cancellable, detect::probe_java, java_executable, JavaRequirement,
     JavaRuntimeSource, JavaRuntimeState, JavaRuntimeStatus, ProcessRunner,
 };
 use crate::{
-    downloads::{DownloadHttpClient, DownloadTimeouts},
+    downloads::{DownloadCancellationToken, DownloadHttpClient, DownloadTimeouts},
     error::LauncherError,
     paths::AppPaths,
 };
@@ -562,7 +567,12 @@ impl RuntimeArchiveManifest {
 
 #[async_trait]
 pub trait RuntimeArchiveFetcher: Send + Sync {
-    async fn fetch(&self, url: &str, max_bytes: usize) -> Result<Vec<u8>, LauncherError>;
+    async fn fetch(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        cancel: &DownloadCancellationToken,
+    ) -> Result<Vec<u8>, LauncherError>;
 }
 
 pub struct BoundedReqwestRuntimeArchiveFetcher {
@@ -579,11 +589,22 @@ impl BoundedReqwestRuntimeArchiveFetcher {
 
 #[async_trait]
 impl RuntimeArchiveFetcher for BoundedReqwestRuntimeArchiveFetcher {
-    async fn fetch(&self, url: &str, max_bytes: usize) -> Result<Vec<u8>, LauncherError> {
+    async fn fetch(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        cancel: &DownloadCancellationToken,
+    ) -> Result<Vec<u8>, LauncherError> {
         self.client
-            .fetch_bytes_bounded(url, max_bytes)
+            .fetch_bytes_bounded_cancellable(url, max_bytes, cancel)
             .await
-            .map_err(|_| fetch_error())
+            .map_err(|error| {
+                if error.code() == "download_cancelled" {
+                    error
+                } else {
+                    fetch_error()
+                }
+            })
     }
 }
 
@@ -632,7 +653,17 @@ impl RuntimeInstaller {
         &self,
         requirement: JavaRequirement,
     ) -> Result<JavaRuntimeStatus, LauncherError> {
-        self.recover_interrupted_swap(requirement).await?;
+        self.install_cancellable(requirement, DownloadCancellationToken::new())
+            .await
+    }
+
+    pub async fn install_cancellable(
+        &self,
+        requirement: JavaRequirement,
+        cancel: DownloadCancellationToken,
+    ) -> Result<JavaRuntimeStatus, LauncherError> {
+        ensure_not_cancelled(&cancel)?;
+        await_runtime_or_cancel(&cancel, self.recover_interrupted_swap(requirement)).await?;
         let entry = self
             .manifest
             .entry(requirement.major())
@@ -640,8 +671,9 @@ impl RuntimeInstaller {
             .clone();
         let bytes = self
             .fetcher
-            .fetch(&entry.url, MAX_RUNTIME_ARCHIVE_BYTES)
+            .fetch(&entry.url, MAX_RUNTIME_ARCHIVE_BYTES, &cancel)
             .await?;
+        ensure_not_cancelled(&cancel)?;
         verify_archive_checksum(&bytes, &entry.sha256)?;
         fs::create_dir_all(&self.runtime_root).map_err(|_| install_error())?;
         let nonce = rand::random::<u64>();
@@ -649,7 +681,7 @@ impl RuntimeInstaller {
         let temp = safe_child(&self.runtime_root, &temp_name)?;
         fs::create_dir(&temp).map_err(|_| install_error())?;
 
-        let extraction = extract_zip_archive(&bytes, &temp);
+        let extraction = extract_zip_archive_cancellable(&bytes, &temp, &cancel);
         if let Err(error) = extraction {
             let _ = fs::remove_dir_all(&temp);
             return Err(error);
@@ -658,13 +690,18 @@ impl RuntimeInstaller {
             let _ = fs::remove_dir_all(&temp);
             return Err(install_error());
         };
-        let (major, version) = match probe_java(self.runner.as_ref(), &java).await {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&temp);
-                return Err(error);
-            }
-        };
+        ensure_not_cancelled(&cancel)?;
+        let probe_path = java.clone();
+        let (major, version) =
+            match await_runtime_or_cancel(&cancel, probe_java(self.runner.as_ref(), &probe_path))
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&temp);
+                    return Err(error);
+                }
+            };
         if major != requirement.major() {
             let _ = fs::remove_dir_all(&temp);
             return Err(install_error());
@@ -772,6 +809,36 @@ impl RuntimeInstaller {
             }
             _ => Err(runtime_inconsistent(None)),
         }
+    }
+}
+
+fn ensure_not_cancelled(cancel: &DownloadCancellationToken) -> Result<(), LauncherError> {
+    if cancel.is_cancelled() {
+        Err(LauncherError::new(
+            "download_cancelled",
+            "The operation was cancelled.",
+            None,
+            true,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+async fn await_runtime_or_cancel<T>(
+    cancel: &DownloadCancellationToken,
+    future: impl std::future::Future<Output = Result<T, LauncherError>>,
+) -> Result<T, LauncherError> {
+    let cancelled = cancel.cancelled();
+    futures_util::pin_mut!(cancelled, future);
+    match futures_util::future::select(cancelled, future).await {
+        futures_util::future::Either::Left(_) => Err(LauncherError::new(
+            "download_cancelled",
+            "The operation was cancelled.",
+            None,
+            true,
+        )),
+        futures_util::future::Either::Right((result, _)) => result,
     }
 }
 

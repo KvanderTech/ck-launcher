@@ -7,8 +7,7 @@ use crate::{
     error::LauncherError,
     metadata::models::ResolvedVersion,
     metadata::resolver::MetadataService,
-    paths::AppPaths,
-    profiles::{clamp_memory, PhysicalMemory},
+    profiles::{clamp_memory, validated_profile_game_directory, PhysicalMemory},
     runtime::{requirement_for_version, JavaRuntimeState, JavaRuntimeStatus, RuntimeManager},
     storage::{LauncherProfile, ProfileStore},
 };
@@ -56,6 +55,8 @@ pub struct GameProcessStatus {
     pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub error: Option<LauncherError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -199,6 +200,7 @@ impl Launcher {
                     pid: None,
                     exit_code: None,
                     error: None,
+                    log_path: None,
                 },
             );
         }
@@ -222,6 +224,14 @@ impl Launcher {
         prepared: PreparedLaunch,
     ) -> Result<(), LauncherError> {
         let log = ProcessLog::open(&self.logs_root, prepared.secrets.clone())?;
+        let log_path = self.logs_root.join("latest.log");
+        self.registry
+            .lock()
+            .map_err(|_| process_state_error())?
+            .operations
+            .get_mut(operation_id)
+            .ok_or_else(process_state_error)?
+            .log_path = Some(log_path.clone());
         for path in &prepared.validated_paths {
             self.path_inspector.validate(path)?;
         }
@@ -246,6 +256,33 @@ impl Launcher {
         tauri::async_runtime::spawn(async move {
             match child.wait(log).await {
                 Ok(outcome) => {
+                    if outcome.exit_code != 0 {
+                        let error = game_exit_error(outcome.exit_code);
+                        let _ = finish_registry(
+                            &registry,
+                            &profile_id,
+                            &operation_id,
+                            Some(outcome.exit_code),
+                            Some(error.clone()),
+                        );
+                        if let Some(auxiliary) = outcome.auxiliary_error {
+                            events.emit(GameProcessEvent::Error {
+                                operation_id: operation_id.clone(),
+                                profile_id: profile_id.clone(),
+                                error: auxiliary,
+                                terminal: false,
+                                log_path: Some(log_path.clone()),
+                            });
+                        }
+                        events.emit(GameProcessEvent::Error {
+                            operation_id,
+                            profile_id,
+                            error,
+                            terminal: true,
+                            log_path: Some(log_path),
+                        });
+                        return;
+                    }
                     let _ = finish_registry(
                         &registry,
                         &profile_id,
@@ -259,6 +296,7 @@ impl Launcher {
                             profile_id: profile_id.clone(),
                             error,
                             terminal: false,
+                            log_path: Some(log_path.clone()),
                         });
                     }
                     events.emit(GameProcessEvent::Exited {
@@ -280,6 +318,7 @@ impl Launcher {
                         profile_id,
                         error,
                         terminal: true,
+                        log_path: Some(log_path),
                     });
                 }
             }
@@ -305,6 +344,11 @@ impl Launcher {
             profile_id: profile_id.to_owned(),
             error,
             terminal: true,
+            log_path: self
+                .registry
+                .lock()
+                .ok()
+                .and_then(|registry| registry.operations.get(operation_id)?.log_path.clone()),
         });
         Ok(())
     }
@@ -335,6 +379,15 @@ impl Launcher {
             .active_profiles
             .len())
     }
+}
+
+fn game_exit_error(exit_code: i32) -> LauncherError {
+    LauncherError::new(
+        "game_exit",
+        format!("Minecraft exited with code {exit_code}."),
+        Some(format!("Minecraft exited with code {exit_code}.")),
+        true,
+    )
 }
 
 fn finish_registry(
@@ -389,7 +442,6 @@ pub(crate) struct ProductionLaunchContext {
     profiles: Arc<dyn ProfileStore>,
     metadata: Arc<MetadataService>,
     runtimes: Arc<RuntimeManager>,
-    paths: AppPaths,
     memory: Arc<dyn PhysicalMemory>,
 }
 
@@ -399,7 +451,6 @@ impl ProductionLaunchContext {
         profiles: Arc<dyn ProfileStore>,
         metadata: Arc<MetadataService>,
         runtimes: Arc<RuntimeManager>,
-        paths: AppPaths,
         memory: Arc<dyn PhysicalMemory>,
     ) -> Self {
         Self {
@@ -407,7 +458,6 @@ impl ProductionLaunchContext {
             profiles,
             metadata,
             runtimes,
-            paths,
             memory,
         }
     }
@@ -437,6 +487,7 @@ impl LaunchContextProvider for ProductionLaunchContext {
                 true,
             )
         })?;
+        let game_root = validated_profile_game_directory(&profile)?;
         let version = self.metadata.resolved_version(version_id).await?;
         let requirement = requirement_for_version(&version)?;
         let runtime = self
@@ -460,7 +511,7 @@ impl LaunchContextProvider for ProductionLaunchContext {
             version,
             profile,
             runtime,
-            game_root: self.paths.game.clone(),
+            game_root,
             physical_memory_mb: self.memory.physical_memory_mb(),
         })
     }

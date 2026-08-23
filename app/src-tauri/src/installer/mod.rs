@@ -482,6 +482,16 @@ impl Installer {
         Self::with_dependencies(paths.game.clone(), versions, downloads, installations)
     }
 
+    pub(crate) fn for_game_root(&self, game_root: PathBuf) -> Result<Self, LauncherError> {
+        AppPaths::new(game_root.clone()).validate_absolute_directory(&game_root)?;
+        Self::with_dependencies(
+            game_root.clone(),
+            self.versions.clone(),
+            Arc::new(DownloadService::new(game_root)?),
+            self.installations.clone(),
+        )
+    }
+
     pub fn plan(&self, version: &ResolvedVersion) -> Result<InstallPlan, LauncherError> {
         plan_installation(&self.game_root, version)
     }

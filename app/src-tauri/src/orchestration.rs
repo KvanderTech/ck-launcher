@@ -5,8 +5,7 @@ use crate::{
     installer::{Installer, OperationHandle, OperationRegistry, OperationState},
     launcher::{build_launch, LaunchAccount, LaunchBuildRequest, Launcher, PreparedLaunch},
     metadata::{models::ResolvedVersion, resolver::MetadataService},
-    paths::AppPaths,
-    profiles::PhysicalMemory,
+    profiles::{validated_profile_game_directory, PhysicalMemory},
     runtime::{requirement_for_version, JavaRuntimeState, JavaRuntimeStatus, RuntimeManager},
     storage::{LauncherProfile, ProfileStore},
 };
@@ -126,21 +125,31 @@ fn safe_file_name(path: &Path) -> Option<String> {
 #[async_trait]
 pub(crate) trait WorkflowBackend: Send + Sync {
     fn game_active(&self) -> Result<bool, LauncherError>;
-    async fn authenticate(&self) -> Result<LaunchAccount, LauncherError>;
+    async fn authenticate(
+        &self,
+        cancel: DownloadCancellationToken,
+    ) -> Result<LaunchAccount, LauncherError>;
     async fn metadata(
         &self,
         profile_id: &str,
+        cancel: DownloadCancellationToken,
     ) -> Result<(LauncherProfile, ResolvedVersion), LauncherError>;
     async fn runtime(
         &self,
         profile: &LauncherProfile,
         version: &ResolvedVersion,
+        cancel: DownloadCancellationToken,
     ) -> Result<JavaRuntimeStatus, LauncherError>;
-    async fn installation_verified(&self, version: &ResolvedVersion)
-        -> Result<bool, LauncherError>;
+    async fn installation_verified(
+        &self,
+        profile: &LauncherProfile,
+        version: &ResolvedVersion,
+        cancel: DownloadCancellationToken,
+    ) -> Result<bool, LauncherError>;
     async fn install(
         &self,
         operation_id: &str,
+        profile: &LauncherProfile,
         version: &ResolvedVersion,
         cancel: DownloadCancellationToken,
         progress: Arc<dyn ProgressSink>,
@@ -200,7 +209,7 @@ impl LaunchOrchestrator {
         let progress = ProgressBridge::new(handle.operation_id.clone(), self.events.clone());
 
         progress.advance(WorkflowStage::Authenticating);
-        let account = match self.backend.authenticate().await {
+        let account = match self.backend.authenticate(handle.cancel_token.clone()).await {
             Ok(account) => account,
             Err(error) => {
                 return self.terminate(
@@ -214,7 +223,11 @@ impl LaunchOrchestrator {
         self.ensure_not_cancelled(&profile_id, &handle, WorkflowStage::Authenticating)?;
 
         progress.advance(WorkflowStage::ResolvingMetadata);
-        let (profile, version) = match self.backend.metadata(&profile_id).await {
+        let (profile, version) = match self
+            .backend
+            .metadata(&profile_id, handle.cancel_token.clone())
+            .await
+        {
             Ok(value) => value,
             Err(error) => {
                 return self.terminate(
@@ -228,7 +241,11 @@ impl LaunchOrchestrator {
         self.ensure_not_cancelled(&profile_id, &handle, WorkflowStage::ResolvingMetadata)?;
 
         progress.advance(WorkflowStage::ResolvingJava);
-        let runtime = match self.backend.runtime(&profile, &version).await {
+        let runtime = match self
+            .backend
+            .runtime(&profile, &version, handle.cancel_token.clone())
+            .await
+        {
             Ok(runtime) => runtime,
             Err(error) => {
                 return self.terminate(
@@ -241,7 +258,11 @@ impl LaunchOrchestrator {
         };
         self.ensure_not_cancelled(&profile_id, &handle, WorkflowStage::ResolvingJava)?;
 
-        let installed = match self.backend.installation_verified(&version).await {
+        let installed = match self
+            .backend
+            .installation_verified(&profile, &version, handle.cancel_token.clone())
+            .await
+        {
             Ok(installed) => installed,
             Err(error) => {
                 return self.terminate(
@@ -259,6 +280,7 @@ impl LaunchOrchestrator {
                 .backend
                 .install(
                     &handle.operation_id,
+                    &profile,
                     &version,
                     handle.cancel_token.clone(),
                     install_progress,
@@ -368,7 +390,6 @@ pub(crate) struct ProductionWorkflowBackend {
     runtimes: Arc<RuntimeManager>,
     installer: Arc<Installer>,
     launcher: Arc<Launcher>,
-    paths: AppPaths,
     memory: Arc<dyn PhysicalMemory>,
 }
 
@@ -381,7 +402,6 @@ impl ProductionWorkflowBackend {
         runtimes: Arc<RuntimeManager>,
         installer: Arc<Installer>,
         launcher: Arc<Launcher>,
-        paths: AppPaths,
         memory: Arc<dyn PhysicalMemory>,
     ) -> Self {
         Self {
@@ -391,7 +411,6 @@ impl ProductionWorkflowBackend {
             runtimes,
             installer,
             launcher,
-            paths,
             memory,
         }
     }
@@ -403,10 +422,13 @@ impl WorkflowBackend for ProductionWorkflowBackend {
         self.launcher.game_active()
     }
 
-    async fn authenticate(&self) -> Result<LaunchAccount, LauncherError> {
+    async fn authenticate(
+        &self,
+        cancel: DownloadCancellationToken,
+    ) -> Result<LaunchAccount, LauncherError> {
         let (account, access_token) = self
             .auth
-            .refresh_active_minecraft_account()
+            .refresh_active_minecraft_account_cancellable(cancel)
             .await?
             .into_parts();
         Ok(LaunchAccount::new(
@@ -419,6 +441,7 @@ impl WorkflowBackend for ProductionWorkflowBackend {
     async fn metadata(
         &self,
         profile_id: &str,
+        cancel: DownloadCancellationToken,
     ) -> Result<(LauncherProfile, ResolvedVersion), LauncherError> {
         let profile = self
             .profiles
@@ -427,7 +450,10 @@ impl WorkflowBackend for ProductionWorkflowBackend {
             .filter(|profile| profile.id == profile_id)
             .ok_or_else(profile_not_found)?;
         let version_id = profile.version_id.as_deref().ok_or_else(version_required)?;
-        let version = self.metadata.resolved_version(version_id).await?;
+        let version = self
+            .metadata
+            .resolved_version_cancellable(version_id, cancel)
+            .await?;
         Ok((profile, version))
     }
 
@@ -435,19 +461,23 @@ impl WorkflowBackend for ProductionWorkflowBackend {
         &self,
         profile: &LauncherProfile,
         version: &ResolvedVersion,
+        cancel: DownloadCancellationToken,
     ) -> Result<JavaRuntimeStatus, LauncherError> {
         let requirement = requirement_for_version(version)?;
         let resolved = self
             .runtimes
-            .resolve(
+            .resolve_cancellable(
                 requirement,
                 profile.java_override.as_ref().map(PathBuf::from),
+                cancel.clone(),
             )
             .await?;
         let runtime = if resolved.state == JavaRuntimeState::Valid {
             resolved
         } else {
-            self.runtimes.install(requirement).await?
+            self.runtimes
+                .install_cancellable(requirement, cancel)
+                .await?
         };
         if runtime.state != JavaRuntimeState::Valid || runtime.path.is_none() {
             return Err(runtime_unavailable());
@@ -457,19 +487,31 @@ impl WorkflowBackend for ProductionWorkflowBackend {
 
     async fn installation_verified(
         &self,
+        profile: &LauncherProfile,
         version: &ResolvedVersion,
+        cancel: DownloadCancellationToken,
     ) -> Result<bool, LauncherError> {
-        self.installer.is_verified_version(version).await
+        if cancel.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        let game_root = validated_profile_game_directory(profile)?;
+        self.installer
+            .for_game_root(game_root)?
+            .is_verified_version(version)
+            .await
     }
 
     async fn install(
         &self,
         operation_id: &str,
+        profile: &LauncherProfile,
         version: &ResolvedVersion,
         cancel: DownloadCancellationToken,
         progress: Arc<dyn ProgressSink>,
     ) -> Result<(), LauncherError> {
+        let game_root = validated_profile_game_directory(profile)?;
         self.installer
+            .for_game_root(game_root)?
             .install_resolved_with_progress(
                 operation_id.to_owned(),
                 version.clone(),
@@ -487,12 +529,13 @@ impl WorkflowBackend for ProductionWorkflowBackend {
         version: ResolvedVersion,
         runtime: JavaRuntimeStatus,
     ) -> Result<PreparedLaunch, LauncherError> {
+        let game_root = validated_profile_game_directory(&profile)?;
         build_launch(LaunchBuildRequest {
             account,
             version,
             profile,
             runtime,
-            game_root: self.paths.game.clone(),
+            game_root,
             physical_memory_mb: self.memory.physical_memory_mb(),
         })
     }
@@ -590,6 +633,8 @@ mod tests {
         cancel_at: Option<WorkflowStage>,
         cancel: Mutex<Option<DownloadCancellationToken>>,
         terminalize_spawn: Mutex<Option<OperationRegistry>>,
+        block_at: Option<WorkflowStage>,
+        entered: tokio::sync::Semaphore,
     }
 
     impl MockBackend {
@@ -601,6 +646,8 @@ mod tests {
                 cancel_at: None,
                 cancel: Mutex::new(None),
                 terminalize_spawn: Mutex::new(None),
+                block_at: None,
+                entered: tokio::sync::Semaphore::new(0),
             }
         }
 
@@ -615,6 +662,26 @@ mod tests {
                 cancel_at: Some(stage),
                 ..Self::new(false)
             }
+        }
+
+        fn blocking(stage: WorkflowStage) -> Self {
+            Self {
+                block_at: Some(stage),
+                ..Self::new(false)
+            }
+        }
+
+        async fn block_if_needed(
+            &self,
+            stage: WorkflowStage,
+            cancel: &DownloadCancellationToken,
+        ) -> Result<(), LauncherError> {
+            if self.block_at == Some(stage) {
+                self.entered.add_permits(1);
+                cancel.cancelled().await;
+                return Err(cancelled());
+            }
+            Ok(())
         }
 
         fn attach_cancel(&self, cancel: DownloadCancellationToken) {
@@ -663,8 +730,13 @@ mod tests {
             Ok(false)
         }
 
-        async fn authenticate(&self) -> Result<LaunchAccount, LauncherError> {
+        async fn authenticate(
+            &self,
+            cancel: DownloadCancellationToken,
+        ) -> Result<LaunchAccount, LauncherError> {
             self.record("auth", WorkflowStage::Authenticating)?;
+            self.block_if_needed(WorkflowStage::Authenticating, &cancel)
+                .await?;
             self.maybe_fail(FailurePoint::Auth)?;
             Ok(LaunchAccount::new("Player", "uuid", "access-secret"))
         }
@@ -672,8 +744,11 @@ mod tests {
         async fn metadata(
             &self,
             _profile_id: &str,
+            cancel: DownloadCancellationToken,
         ) -> Result<(LauncherProfile, ResolvedVersion), LauncherError> {
             self.record("metadata", WorkflowStage::ResolvingMetadata)?;
+            self.block_if_needed(WorkflowStage::ResolvingMetadata, &cancel)
+                .await?;
             self.maybe_fail(FailurePoint::Metadata)?;
             Ok((fixture_profile(), fixture_version()))
         }
@@ -682,8 +757,11 @@ mod tests {
             &self,
             _profile: &LauncherProfile,
             _version: &ResolvedVersion,
+            cancel: DownloadCancellationToken,
         ) -> Result<JavaRuntimeStatus, LauncherError> {
             self.record("runtime", WorkflowStage::ResolvingJava)?;
+            self.block_if_needed(WorkflowStage::ResolvingJava, &cancel)
+                .await?;
             self.maybe_fail(FailurePoint::Runtime)?;
             Ok(JavaRuntimeStatus {
                 requirement: 21,
@@ -696,20 +774,27 @@ mod tests {
 
         async fn installation_verified(
             &self,
+            _profile: &LauncherProfile,
             _version: &ResolvedVersion,
+            cancel: DownloadCancellationToken,
         ) -> Result<bool, LauncherError> {
             self.calls.lock().expect("calls lock").push("verify");
+            self.block_if_needed(WorkflowStage::Installing, &cancel)
+                .await?;
             Ok(*self.installed.lock().expect("installed lock"))
         }
 
         async fn install(
             &self,
             operation_id: &str,
+            _profile: &LauncherProfile,
             _version: &ResolvedVersion,
             cancel: DownloadCancellationToken,
             progress: Arc<dyn ProgressSink>,
         ) -> Result<(), LauncherError> {
             self.record("install", WorkflowStage::Installing)?;
+            self.block_if_needed(WorkflowStage::Installing, &cancel)
+                .await?;
             progress.emit(DownloadProgress {
                 operation_id: operation_id.to_owned(),
                 completed_bytes: 5,
@@ -911,6 +996,55 @@ mod tests {
                 .expect("cancellation error event");
             assert_eq!(event.stage, stage);
         }
+    }
+
+    #[test]
+    fn cancellation_interrupts_blocking_prelaunch_stages_and_releases_the_reservation() {
+        tauri::async_runtime::block_on(async {
+            for stage in [
+                WorkflowStage::Authenticating,
+                WorkflowStage::ResolvingMetadata,
+                WorkflowStage::ResolvingJava,
+                WorkflowStage::Installing,
+            ] {
+                let backend = Arc::new(MockBackend::blocking(stage));
+                let operations = OperationRegistry::default();
+                let orchestrator = Arc::new(LaunchOrchestrator::new(
+                    backend.clone(),
+                    operations.clone(),
+                    Arc::new(RecordingEvents::default()),
+                ));
+                let handle = orchestrator.reserve("default").expect("reservation");
+                let operation_id = handle.operation_id.clone();
+                let execution = tauri::async_runtime::spawn({
+                    let orchestrator = orchestrator.clone();
+                    async move { orchestrator.execute("default".to_owned(), handle).await }
+                });
+                backend
+                    .entered
+                    .acquire()
+                    .await
+                    .expect("stage entered")
+                    .forget();
+
+                operations.cancel(&operation_id).expect("cancel accepted");
+                let error = tokio::time::timeout(std::time::Duration::from_millis(250), execution)
+                    .await
+                    .expect("blocking stage interrupted")
+                    .expect("execution task")
+                    .expect_err("cancellation is terminal");
+
+                assert_eq!(error.code(), "download_cancelled", "stage {stage:?}");
+                assert_eq!(
+                    operations
+                        .workflow_status(&operation_id)
+                        .expect("terminal status")
+                        .state,
+                    OperationState::Cancelled
+                );
+                assert!(orchestrator.reserve("default").is_ok(), "stage {stage:?}");
+            }
+        });
     }
 
     #[test]

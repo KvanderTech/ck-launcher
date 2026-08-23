@@ -1,9 +1,13 @@
 use crate::{
     error::LauncherError,
+    paths::AppPaths,
     storage::{LauncherProfile, ProfileStore},
 };
 use serde::Serialize;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 const MEMORY_STEP_MB: u32 = 512;
 const MAX_MEMORY_MB: u64 = 32_768;
@@ -98,7 +102,29 @@ impl ProfileService {
                 false,
             ));
         }
+        let allowed_game_dir = self
+            .storage
+            .active_profile()
+            .await?
+            .map(|current| current.game_dir)
+            .unwrap_or_else(|| self.default_game_dir.clone());
+        if profile.game_dir != allowed_game_dir {
+            return Err(LauncherError::invalid_path());
+        }
+        validate_stored_game_directory(&profile.game_dir, &self.default_game_dir)?;
         profile.memory_mb = clamp_memory(profile.memory_mb, self.memory.physical_memory_mb());
+        self.storage.upsert_profile(&profile).await?;
+        Ok(profile)
+    }
+
+    pub async fn select_game_directory(
+        &self,
+        selected: PathBuf,
+    ) -> Result<LauncherProfile, LauncherError> {
+        let selected =
+            AppPaths::new(selected.clone()).prepare_user_selected_directory(&selected)?;
+        let mut profile = self.get_profile().await?;
+        profile.game_dir = selected.to_string_lossy().into_owned();
         self.storage.upsert_profile(&profile).await?;
         Ok(profile)
     }
@@ -130,6 +156,26 @@ impl ProfileService {
     }
 }
 
+pub(crate) fn validated_profile_game_directory(
+    profile: &LauncherProfile,
+) -> Result<PathBuf, LauncherError> {
+    let path = PathBuf::from(&profile.game_dir);
+    AppPaths::new(path.clone()).validate_absolute_directory(&path)?;
+    path.canonicalize()
+        .map_err(|_| LauncherError::invalid_path())
+}
+
+fn validate_stored_game_directory(
+    game_dir: &str,
+    default_game_dir: &str,
+) -> Result<(), LauncherError> {
+    if game_dir == default_game_dir && !Path::new(game_dir).is_absolute() {
+        return Ok(());
+    }
+    let path = Path::new(game_dir);
+    AppPaths::new(path.to_path_buf()).validate_absolute_directory(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{clamp_memory, PhysicalMemory, ProfileService};
@@ -138,7 +184,10 @@ mod tests {
         storage::{LauncherProfile, ProfileStore, Storage},
     };
     use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
     use tokio::sync::Notify;
     struct FixedMemory(u64);
     impl PhysicalMemory for FixedMemory {
@@ -204,6 +253,66 @@ mod tests {
                 .expect("profile saves");
             assert_eq!(saved.memory_mb, 12_288);
             assert_eq!(service.get_profile().await.expect("profile reads"), saved);
+        });
+    }
+
+    #[test]
+    fn explicitly_selected_absolute_game_directory_is_created_canonicalized_and_persisted() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("ck-profile-custom-game-{}", rand::random::<u64>()));
+            let default = root.join("default");
+            std::fs::create_dir_all(&default).expect("default game directory");
+            let selected = root.join("selected");
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            let service = ProfileService::new(
+                storage,
+                Arc::new(FixedMemory(16_384)),
+                default.to_string_lossy(),
+            );
+            service.get_profile().await.expect("default profile");
+
+            let saved = service
+                .select_game_directory(selected.clone())
+                .await
+                .expect("selected directory persists");
+
+            assert_eq!(
+                PathBuf::from(saved.game_dir),
+                selected.canonicalize().expect("selected canonicalizes")
+            );
+            assert!(selected.is_dir());
+            std::fs::remove_dir_all(root).expect("temporary root removed");
+        });
+    }
+
+    #[test]
+    fn generic_profile_update_cannot_inject_an_unselected_game_directory() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "ck-profile-unselected-game-{}",
+                rand::random::<u64>()
+            ));
+            let default = root.join("default");
+            let unselected = root.join("unselected");
+            std::fs::create_dir_all(&default).expect("default game directory");
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            let service = ProfileService::new(
+                storage,
+                Arc::new(FixedMemory(16_384)),
+                default.to_string_lossy(),
+            );
+            let mut profile = service.get_profile().await.expect("default profile");
+            profile.game_dir = unselected.to_string_lossy().into_owned();
+
+            let error = service
+                .update_profile(profile)
+                .await
+                .expect_err("unselected directory is rejected");
+
+            assert_eq!(error.code(), "invalid_path");
+            assert!(!unselected.exists());
+            std::fs::remove_dir_all(root).expect("temporary root removed");
         });
     }
     #[test]

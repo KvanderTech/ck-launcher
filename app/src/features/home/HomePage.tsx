@@ -19,9 +19,11 @@ export type LauncherViewState =
 interface HomePageProps {
   cancelling: boolean;
   error?: LauncherErrorDto;
+  logPath?: string;
   warning?: LauncherErrorDto;
   onCancel(): void;
   onPlay(): void;
+  onOpenLog(): void;
   onRetry(): void;
   onVersionChange(versionId: string): void;
   profile: LauncherProfile;
@@ -44,9 +46,11 @@ const stateLabels: Record<LauncherViewState, string> = {
 export function HomePage({
   cancelling,
   error,
+  logPath,
   warning,
   onCancel,
   onPlay,
+  onOpenLog,
   onRetry,
   onVersionChange,
   profile,
@@ -108,7 +112,7 @@ export function HomePage({
       </div>
 
       {progress && (state === "installing" || state === "launching") ? (
-        <ProgressPanel cancelling={cancelling} onCancel={state === "installing" ? onCancel : undefined} progress={progress} />
+        <ProgressPanel cancelling={cancelling} onCancel={onCancel} progress={progress} />
       ) : null}
 
       {error ? (
@@ -116,10 +120,15 @@ export function HomePage({
           <div>
             <span className="eyebrow">Ошибка · {error.code}</span>
             <strong>{error.message}</strong>
+            {logPath ? <code>{logPath}</code> : null}
           </div>
-          {error.recoverable ? (
-            <button onClick={onRetry} type="button">Повторить</button>
-          ) : (
+          <div>
+            {error.recoverable ? (
+              <button onClick={onRetry} type="button">Повторить</button>
+            ) : null}
+            {logPath ? (
+              <button onClick={onOpenLog} type="button">Открыть очищенный журнал</button>
+            ) : (
             <button
               disabled
               title="Открытие журнала будет доступно после добавления безопасной backend-команды."
@@ -127,7 +136,8 @@ export function HomePage({
             >
               Открыть очищенный журнал
             </button>
-          )}
+            )}
+          </div>
         </section>
       ) : null}
 

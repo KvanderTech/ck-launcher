@@ -19,6 +19,7 @@ import type {
 export interface LauncherApi {
   listAccounts(): Promise<AccountSummary[]>;
   beginMicrosoftLogin(): Promise<AccountSummary>;
+  cancelMicrosoftLogin(): Promise<void>;
   removeAccount(accountId: string): Promise<void>;
   setActiveAccount(accountId: string): Promise<void>;
 }
@@ -26,6 +27,7 @@ export interface LauncherApi {
 export const launcherApi: LauncherApi = {
   listAccounts: () => invoke<AccountSummary[]>("list_accounts"),
   beginMicrosoftLogin: () => invoke<AccountSummary>("begin_microsoft_login"),
+  cancelMicrosoftLogin: () => invoke<void>("cancel_microsoft_login"),
   removeAccount: (accountId) => invoke<void>("remove_account", { accountId }),
   setActiveAccount: (accountId) =>
     invoke<void>("set_active_account", { accountId }),
@@ -60,11 +62,13 @@ export interface ProfileApi {
   requiredJavaForVersion(versionId: string): Promise<JavaMajor>;
   getProfile(): Promise<LauncherProfile>;
   updateProfile(profile: LauncherProfile): Promise<LauncherProfile>;
+  chooseGameDirectory(): Promise<LauncherProfile | null>;
 }
 
 export interface OperationApi {
   launchOrInstall(profileId: string): Promise<OperationId>;
   cancelOperation(operationId: OperationId): Promise<void>;
+  openLatestGameLog(): Promise<void>;
   onProgress(handler: (event: ProgressEvent) => void): Promise<UnlistenFn>;
   onGameStarted(handler: (event: GameStartedEvent) => void): Promise<UnlistenFn>;
   onGameExited(handler: (event: GameExitedEvent) => void): Promise<UnlistenFn>;
@@ -94,8 +98,10 @@ export const appApi: AppApi = {
   requiredJavaForVersion: (versionId) => invoke<JavaMajor>("required_java_for_version", { versionId }),
   getProfile: () => invoke<LauncherProfile>("get_profile"),
   updateProfile: (profile) => invoke<LauncherProfile>("update_profile", { profile }),
+  chooseGameDirectory: () => invoke<LauncherProfile | null>("choose_game_directory"),
   launchOrInstall: (profileId) => invokeLaunchOrInstall(profileId),
   cancelOperation: (operationId) => invoke<void>("cancel_operation", { operationId }),
+  openLatestGameLog: () => invoke<void>("open_latest_game_log"),
   onProgress: (handler) => listenPayload("launcher://progress", handler),
   onGameStarted: (handler) => listenPayload("launcher://game-started", handler),
   onGameExited: (handler) => listenPayload("launcher://game-exited", handler),

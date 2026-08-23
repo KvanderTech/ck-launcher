@@ -1,5 +1,5 @@
 use super::models::{GameVersionSummary, ResolvedVersion, VersionJson, VersionManifest};
-use crate::error::LauncherError;
+use crate::{downloads::DownloadCancellationToken, error::LauncherError};
 use async_trait::async_trait;
 use reqwest::{header, Client, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -225,7 +225,7 @@ impl MetadataService {
 
     pub async fn stable_releases(&self) -> Result<Vec<GameVersionSummary>, LauncherError> {
         let mut releases: Vec<_> = self
-            .manifest()
+            .manifest(DownloadCancellationToken::new())
             .await?
             .versions
             .into_iter()
@@ -240,31 +240,49 @@ impl MetadataService {
         Ok(releases)
     }
     pub async fn resolved_version(&self, id: &str) -> Result<ResolvedVersion, LauncherError> {
-        self.resolve(id, 0, &mut HashSet::new()).await
+        self.resolved_version_cancellable(id, DownloadCancellationToken::new())
+            .await
     }
-    async fn manifest(&self) -> Result<VersionManifest, LauncherError> {
-        self.document("manifest", MANIFEST_URL, None).await
+    pub(crate) async fn resolved_version_cancellable(
+        &self,
+        id: &str,
+        cancel: DownloadCancellationToken,
+    ) -> Result<ResolvedVersion, LauncherError> {
+        self.resolve(id, 0, &mut HashSet::new(), cancel).await
+    }
+    async fn manifest(
+        &self,
+        cancel: DownloadCancellationToken,
+    ) -> Result<VersionManifest, LauncherError> {
+        self.document("manifest", MANIFEST_URL, None, cancel).await
     }
     async fn resolve(
         &self,
         id: &str,
         depth: usize,
         visiting: &mut HashSet<String>,
+        cancel: DownloadCancellationToken,
     ) -> Result<ResolvedVersion, LauncherError> {
+        ensure_not_cancelled(&cancel)?;
         if depth >= MAX_INHERITANCE_DEPTH || !visiting.insert(id.to_owned()) {
             return Err(LauncherError::metadata_invalid());
         }
-        let manifest = self.manifest().await?;
+        let manifest = self.manifest(cancel.clone()).await?;
         let entry = manifest
             .versions
             .into_iter()
             .find(|entry| entry.id == id)
             .ok_or_else(LauncherError::metadata_invalid)?;
         let child: VersionJson = self
-            .document(&format!("version-{id}"), &entry.url, entry.sha1.as_deref())
+            .document(
+                &format!("version-{id}"),
+                &entry.url,
+                entry.sha1.as_deref(),
+                cancel.clone(),
+            )
             .await?;
         let result = if let Some(parent_id) = child.inherits_from.clone() {
-            let parent = Box::pin(self.resolve(&parent_id, depth + 1, visiting)).await?;
+            let parent = Box::pin(self.resolve(&parent_id, depth + 1, visiting, cancel)).await?;
             merge(parent, child)
         } else {
             into_resolved(child)
@@ -277,18 +295,25 @@ impl MetadataService {
         key: &str,
         url: &str,
         sha1: Option<&str>,
+        cancel: DownloadCancellationToken,
     ) -> Result<T, LauncherError> {
+        ensure_not_cancelled(&cancel)?;
         let cached = self.cache.load(key)?;
         let valid_cached = || {
             cached
                 .as_ref()
                 .filter(|entry| entry.verified && !entry.body.is_empty())
         };
-        match self
+        let request = self
             .http
-            .get(url, valid_cached().and_then(|entry| entry.etag.as_deref()))
-            .await
-        {
+            .get(url, valid_cached().and_then(|entry| entry.etag.as_deref()));
+        let cancelled = cancel.cancelled();
+        futures_util::pin_mut!(request, cancelled);
+        let response = match futures_util::future::select(cancelled, request).await {
+            futures_util::future::Either::Left(_) => return Err(cancelled_error()),
+            futures_util::future::Either::Right((response, _)) => response,
+        };
+        match response {
             Ok(HttpResponse::NotModified) => valid_cached()
                 .and_then(|entry| serde_json::from_str(&entry.body).ok())
                 .ok_or_else(LauncherError::metadata_unavailable),
@@ -310,11 +335,29 @@ impl MetadataService {
                 )?;
                 Ok(decoded)
             }
+            Err(error) if error.code() == "download_cancelled" => Err(error),
             Err(_) => valid_cached()
                 .and_then(|entry| serde_json::from_str(&entry.body).ok())
                 .ok_or_else(LauncherError::metadata_unavailable),
         }
     }
+}
+
+fn ensure_not_cancelled(cancel: &DownloadCancellationToken) -> Result<(), LauncherError> {
+    if cancel.is_cancelled() {
+        Err(cancelled_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn cancelled_error() -> LauncherError {
+    LauncherError::new(
+        "download_cancelled",
+        "The operation was cancelled.",
+        None,
+        true,
+    )
 }
 
 fn hex_sha1(body: &str) -> String {

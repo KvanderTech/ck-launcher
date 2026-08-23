@@ -36,12 +36,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::accounts::list_accounts,
             commands::accounts::begin_microsoft_login,
+            commands::accounts::cancel_microsoft_login,
             commands::accounts::remove_account,
             commands::accounts::set_active_account,
             commands::versions::list_game_versions,
             commands::versions::required_java_for_version,
             commands::versions::get_profile,
             commands::versions::update_profile,
+            commands::versions::choose_game_directory,
             commands::versions::update_profile_memory,
             commands::versions::memory_status,
             commands::runtime::runtime_statuses,
@@ -53,6 +55,7 @@ pub fn run() {
             commands::install::installation_status,
             commands::launch::launch_or_install,
             commands::launch::launch_status,
+            commands::launch::open_latest_game_log,
         ])
         .setup(|app| {
             let paths = AppPaths::windows_default()?;
@@ -95,7 +98,6 @@ pub fn run() {
                 Arc::new(storage.clone()),
                 metadata.clone(),
                 runtimes.clone(),
-                paths.clone(),
                 physical_memory.clone(),
             ));
             let launcher = launcher::Launcher::production(
@@ -110,7 +112,6 @@ pub fn run() {
                 runtimes.clone(),
                 Arc::new(installer.clone()),
                 Arc::new(launcher.clone()),
-                paths.clone(),
                 physical_memory,
             ));
             let orchestrator = orchestration::LaunchOrchestrator::new(

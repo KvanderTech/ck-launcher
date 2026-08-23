@@ -103,6 +103,76 @@ impl AppPaths {
         Ok(url.into())
     }
 
+    /// Creates and canonicalizes a directory chosen by the user in a backend-owned picker.
+    /// Every existing component is rejected if it is a link or Windows reparse point.
+    pub fn prepare_user_selected_directory(
+        &self,
+        selected: &Path,
+    ) -> Result<PathBuf, LauncherError> {
+        if !selected.is_absolute()
+            || selected.file_name().is_none()
+            || selected
+                .components()
+                .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+        {
+            return Err(LauncherError::invalid_path());
+        }
+
+        let inspector = FileSystemInspector;
+        let mut current = PathBuf::new();
+        for component in selected.components() {
+            current.push(component.as_os_str());
+            if matches!(component, Component::Prefix(_)) {
+                continue;
+            }
+            match inspector
+                .kind(&current)
+                .map_err(|_| LauncherError::invalid_path())?
+            {
+                PathKind::Existing => {}
+                PathKind::ReparsePoint => return Err(LauncherError::invalid_path()),
+                PathKind::Missing => {
+                    fs::create_dir(&current).map_err(|_| LauncherError::storage_unavailable())?;
+                    if inspector
+                        .kind(&current)
+                        .map_err(|_| LauncherError::invalid_path())?
+                        != PathKind::Existing
+                    {
+                        return Err(LauncherError::invalid_path());
+                    }
+                }
+            }
+        }
+
+        let canonical = inspector
+            .canonicalize(selected)
+            .map_err(|_| LauncherError::invalid_path())?;
+        self.validate_absolute_directory(&canonical)?;
+        Ok(canonical)
+    }
+
+    pub fn validate_absolute_directory(&self, directory: &Path) -> Result<(), LauncherError> {
+        if !directory.is_absolute() || !directory.is_dir() || directory.file_name().is_none() {
+            return Err(LauncherError::invalid_path());
+        }
+        let inspector = FileSystemInspector;
+        let mut current = PathBuf::new();
+        for component in directory.components() {
+            current.push(component.as_os_str());
+            if matches!(component, Component::Prefix(_)) {
+                continue;
+            }
+            if inspector
+                .kind(&current)
+                .map_err(|_| LauncherError::invalid_path())?
+                != PathKind::Existing
+            {
+                return Err(LauncherError::invalid_path());
+            }
+        }
+        Ok(())
+    }
+
     /// Validates a path immediately before a sensitive write.
     ///
     /// Existing links and Windows reparse points (including junctions and mount points) are
@@ -213,6 +283,20 @@ mod tests {
             assert_eq!(error.code(), "invalid_path");
         }
 
+        fs::remove_dir_all(root).expect("temporary root is removed");
+    }
+
+    #[test]
+    fn selected_game_directory_must_be_an_absolute_backend_picker_result() {
+        let root = temporary_root();
+        let paths = AppPaths::new(root.clone());
+
+        let error = paths
+            .prepare_user_selected_directory(Path::new("relative-game"))
+            .expect_err("relative frontend-injected path is rejected");
+
+        assert_eq!(error.code(), "invalid_path");
+        assert!(!root.join("relative-game").exists());
         fs::remove_dir_all(root).expect("temporary root is removed");
     }
 
@@ -337,6 +421,32 @@ mod tests {
                     .code(),
                 "invalid_path"
             );
+            fs::remove_dir(&junction).expect("junction is removed without following it");
+        }
+        fs::remove_dir_all(root).expect("temporary root is removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn selected_game_directory_rejects_a_real_windows_junction() {
+        use std::process::Command;
+
+        let root = temporary_root();
+        let target = root.join("outside-target");
+        let junction = root.join("selected-junction");
+        fs::create_dir(&target).expect("junction target is created");
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("junction command starts");
+
+        if output.status.success() {
+            let error = AppPaths::new(root.clone())
+                .prepare_user_selected_directory(&junction)
+                .expect_err("selected junction is rejected");
+            assert_eq!(error.code(), "invalid_path");
             fs::remove_dir(&junction).expect("junction is removed without following it");
         }
         fs::remove_dir_all(root).expect("temporary root is removed");

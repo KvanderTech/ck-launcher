@@ -112,7 +112,7 @@ impl DownloadCancellationToken {
         self.inner.cancelled.load(Ordering::SeqCst)
     }
 
-    async fn cancelled(&self) {
+    pub(crate) async fn cancelled(&self) {
         loop {
             if self.is_cancelled() {
                 return;
@@ -123,6 +123,10 @@ impl DownloadCancellationToken {
             }
             notified.await;
         }
+    }
+
+    pub(crate) fn same_operation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
@@ -153,14 +157,31 @@ impl DownloadHttpClient {
         url: &str,
         max_bytes: usize,
     ) -> Result<Vec<u8>, LauncherError> {
+        self.fetch_bytes_bounded_cancellable(url, max_bytes, &DownloadCancellationToken::new())
+            .await
+    }
+
+    pub(crate) async fn fetch_bytes_bounded_cancellable(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        cancel: &DownloadCancellationToken,
+    ) -> Result<Vec<u8>, LauncherError> {
         let sleeper = TokioSleeper;
         let jitter = RandomJitter;
         for attempt in 0..MAX_ATTEMPTS {
-            let token = DownloadCancellationToken::new();
-            match self.fetch_bytes_once(url, max_bytes, &token).await {
+            match self.fetch_bytes_once(url, max_bytes, cancel).await {
                 Ok(bytes) => return Ok(bytes),
                 Err(failure) if failure.retryable && attempt + 1 < MAX_ATTEMPTS => {
-                    sleeper.sleep(retry_delay(attempt, &jitter)).await;
+                    let delay = sleeper.sleep(retry_delay(attempt, &jitter));
+                    let cancelled = cancel.cancelled();
+                    futures_util::pin_mut!(delay, cancelled);
+                    if matches!(
+                        futures_util::future::select(cancelled, delay).await,
+                        futures_util::future::Either::Left(_)
+                    ) {
+                        return Err(download_cancelled_error());
+                    }
                 }
                 Err(failure) => return Err(failure.error),
             }

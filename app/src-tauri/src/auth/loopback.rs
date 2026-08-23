@@ -1,3 +1,4 @@
+use crate::downloads::DownloadCancellationToken;
 use crate::error::LauncherError;
 use std::{
     io::{Read, Write},
@@ -43,10 +44,17 @@ impl CallbackReceiver {
     }
 
     pub fn redirect_uri(&self) -> String {
-        format!("http://{}/callback", self.address())
+        format!("http://localhost:{}/callback", self.address().port())
     }
 
     pub fn receive(&mut self) -> Result<String, LauncherError> {
+        self.receive_cancellable(&DownloadCancellationToken::new())
+    }
+
+    pub fn receive_cancellable(
+        &mut self,
+        cancel: &DownloadCancellationToken,
+    ) -> Result<String, LauncherError> {
         if self.used {
             return Err(LauncherError::new(
                 "auth_callback_used",
@@ -67,6 +75,9 @@ impl CallbackReceiver {
 
         let deadline = Instant::now() + self.timeout;
         loop {
+            if cancel.is_cancelled() {
+                return Err(auth_cancelled());
+            }
             match listener.accept() {
                 Ok((mut stream, peer)) => {
                     if !is_ipv4_loopback(peer.ip()) {
@@ -205,6 +216,15 @@ fn callback_unavailable() -> LauncherError {
     )
 }
 
+fn auth_cancelled() -> LauncherError {
+    LauncherError::new(
+        "auth_cancelled",
+        "Microsoft sign-in was cancelled.",
+        None,
+        true,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::CallbackReceiver;
@@ -239,6 +259,10 @@ mod tests {
             CallbackReceiver::bind("expected-state", Duration::from_secs(2)).expect("binds");
         assert_eq!(receiver.address().ip(), IpAddr::from([127, 0, 0, 1]));
         assert_ne!(receiver.address().port(), 0);
+        assert_eq!(
+            receiver.redirect_uri(),
+            format!("http://localhost:{}/callback", receiver.address().port())
+        );
 
         let client = send_callback(&receiver, "/callback?state=expected-state&code=oauth-code");
         assert_eq!(receiver.receive().expect("callback succeeds"), "oauth-code");
@@ -278,5 +302,20 @@ mod tests {
 
         let error = receiver.receive().expect_err("second use is rejected");
         assert_eq!(error.code(), "auth_callback_used");
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_blocked_callback_wait() {
+        let mut receiver = CallbackReceiver::bind("state", Duration::from_secs(30)).expect("binds");
+        let cancel = crate::downloads::DownloadCancellationToken::new();
+        cancel.cancel();
+
+        let started = std::time::Instant::now();
+        let error = receiver
+            .receive_cancellable(&cancel)
+            .expect_err("cancelled callback stops");
+
+        assert_eq!(error.code(), "auth_cancelled");
+        assert!(started.elapsed() < Duration::from_millis(250));
     }
 }
