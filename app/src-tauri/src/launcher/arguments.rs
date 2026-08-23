@@ -6,6 +6,9 @@ use crate::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+const WINDOWS_OS_NAME_JVM: &str = "-Dos.name=Windows 10";
+const WINDOWS_OS_VERSION_JVM: &str = "-Dos.version=10.0";
+
 pub(super) fn resolve_modern(
     arguments: &[Argument],
     variables: &BTreeMap<&str, String>,
@@ -56,6 +59,8 @@ pub(super) fn safe_metadata_jvm(
         format!("-Dminecraft.launcher.version={expected_launcher_version}"),
     ];
     let mut safe = Vec::new();
+    let mut requests_windows_os_name = false;
+    let mut requests_windows_os_version = false;
     let mut index = 0;
     while index < arguments.len() {
         let current = &arguments[index];
@@ -74,11 +79,27 @@ pub(super) fn safe_metadata_jvm(
             index += 1;
             continue;
         }
+        if current == WINDOWS_OS_NAME_JVM {
+            requests_windows_os_name = true;
+            index += 1;
+            continue;
+        }
+        if current == WINDOWS_OS_VERSION_JVM {
+            requests_windows_os_version = true;
+            index += 1;
+            continue;
+        }
         if !allowed.contains(current) {
             return Err(unsafe_argument());
         }
         safe.push(current.clone());
         index += 1;
+    }
+    if requests_windows_os_name {
+        safe.push(WINDOWS_OS_NAME_JVM.to_owned());
+    }
+    if requests_windows_os_version {
+        safe.push(WINDOWS_OS_VERSION_JVM.to_owned());
     }
     Ok(safe)
 }

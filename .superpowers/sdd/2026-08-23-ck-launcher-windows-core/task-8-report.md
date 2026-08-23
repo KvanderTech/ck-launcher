@@ -94,3 +94,22 @@ Fresh Fix 2 verification:
 - `cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check`: passed.
 - `cargo test --quiet --manifest-path app/src-tauri/Cargo.toml`: passed — 131 library tests and 2 integration tests, 0 failures.
 - `cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed with 0 warnings/errors.
+
+## Fix 3 review remediation
+
+Restored compatibility with Mojang's Windows 10 conditional JVM properties without reopening arbitrary system-property injection:
+
+- Exact metadata requests for `-Dos.name=Windows 10` and `-Dos.version=10.0` are consumed, deduplicated, and reconstructed from launcher-owned constants after the remaining metadata options are validated.
+- Any alternate OS name/version, including `Windows 11` and `11.0`, remains outside the allowlist and returns `unsafe_launch_argument`.
+- The regression fixture uses a Windows/amd64 rule with a `^10\\.` version pattern, includes a disallowed Linux branch, and verifies a successful modern command containing each safe Windows property exactly once and no Linux property.
+
+Fix 3 TDD evidence:
+
+1. The Windows-rule fixture initially failed with `unsafe_launch_argument` after the Fix 2 allowlist rejected Mojang's legitimate exact properties.
+2. After launcher-owned reconstruction, the focused compatibility test and the arbitrary-value rejection test both passed.
+
+Fresh Fix 3 verification:
+
+- `cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check`: passed.
+- `cargo test --quiet --manifest-path app/src-tauri/Cargo.toml`: passed — 132 library tests and 2 integration tests, 0 failures.
+- `cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed with 0 warnings/errors.
