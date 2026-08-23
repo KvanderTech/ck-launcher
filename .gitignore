@@ -1,0 +1,8 @@
+.worktrees/
+.superpowers/
+
+# Application build output and local runtime data
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+*.part
