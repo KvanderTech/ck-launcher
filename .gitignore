@@ -6,4 +6,10 @@
 app/node_modules/
 app/dist/
 app/src-tauri/target/
+app/runtime/
+app/game/
+app/assets/
+app/logs/
+app/screenshots/
+app/*-current.png
 *.part

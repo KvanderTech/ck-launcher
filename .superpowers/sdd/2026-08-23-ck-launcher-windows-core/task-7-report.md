@@ -48,3 +48,37 @@ Frontend checks were not required because Task 7 registers Rust commands/events 
 - Path/reparse validation occurs immediately before every installer create, extract, rename, restore, and delete boundary. As documented in Task 2, path-based validation cannot completely eliminate a malicious same-user TOCTOU swap without a future handle-relative/no-follow filesystem layer.
 - Legacy Mojang libraries without size/hash metadata require the artifact host to support HEAD and return a valid `Content-Length`; bodies still download only through Task 6 and must match that exact size.
 - The installed version JSON is the resolved, normalized Task 4 representation rather than a byte-for-byte copy of a child metadata document. Its source document has already passed Task 4's SHA/cache checks, and the normalized bytes are independently hashed and safely replaced.
+
+## Fix Round 1
+
+### Reviewer findings addressed
+
+1. Legacy libraries with `natives` but no `downloads` now derive and queue both the ordinary Maven artifact and the Windows x64 classifier. The old-LWJGL fixture verifies classifier URL/path generation, Linux/macOS exclusion, legacy arguments, and `extract.exclude` propagation.
+2. Asset objects are normalized to lowercase SHA-1 and deduplicated by content-addressed destination before Task 6 specs are built. Duplicate logical asset names with one hash produce one download; conflicting sizes for one hash are rejected.
+3. A central strict Windows relative-path validator now governs explicit artifact paths, Maven-generated paths, asset/logging destinations, and native entries. It rejects traversal/prefixes, ADS colons, Windows-invalid characters, controls, trailing dot/space aliases, reserved `.part` namespaces, and DOS devices including extension forms such as `CON.jar` and `COM1.dll`.
+4. Native activation success is authoritative after the staged directory replaces the destination. Backup cleanup is best-effort; a locked backup remains discoverable under `natives.backup-*` and the existing pre-install recovery retries cleanup later.
+5. Native extraction now preflights a maximum of 4,096 entries, 256 MiB per entry, and 512 MiB aggregate uncompressed data across all native archives, using checked arithmetic. A real 4,097-entry ZIP is rejected before destination activation.
+6. Terminal operation status now retains the sanitized stable `LauncherError`, limits retained terminal history to 128 records, and prunes oldest records without affecting active operations.
+7. Base and asset download phases use explicit progress offsets. Completed bytes never regress when the asset phase starts, while the total grows once the verified asset index reveals object sizes.
+
+### TDD evidence
+
+- The legacy LWJGL test first found no Windows native classifier; the legacy branch now emits the classifier and native extraction record.
+- The shared-hash test first produced two object files for upper/lowercase forms of one SHA-1; normalization now produces exactly one canonical object.
+- Strict-path tests first accepted `CON.jar`, ADS paths, trailing aliases, controls, and reserved asset/logging IDs; all now fail with `metadata_invalid` through one validator.
+- Operation tests initially could not store an error and retained the oldest terminal record indefinitely; status now exposes a redacted error and the 129th terminal operation prunes the first.
+- The phase adapter test proves a completed base phase followed by one asset byte emits completed values `10, 11`, never `10, 1`.
+- Native cleanup injection proves a post-activation permission failure returns success, retains the new destination and discoverable backup, and a later recovery removes the backup.
+- Budget tests cover entry count, per/aggregate limits, checked overflow, and a real over-count ZIP rejected before native destination creation.
+
+### Round verification
+
+- `cargo fmt --all --check`: passed.
+- `cargo clippy --all-targets -- -D warnings`: passed with 0 project warnings/errors.
+- `cargo test --all-targets --quiet`: passed — 110 library tests and 2 integration tests, 0 failures.
+- `git diff --check`: passed immediately before commit.
+
+### Round concerns
+
+- The existing same-user path-based TOCTOU limitation remains unchanged; strict Windows lexical validation complements, but does not replace, immediate Task 2 reparse validation.
+- Legacy size discovery still depends on a valid HEAD `Content-Length`; downloaded bytes remain subject to Task 6 exact-size verification.
