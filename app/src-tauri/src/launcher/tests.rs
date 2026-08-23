@@ -868,6 +868,40 @@ fn spawn_failure_emits_one_error_and_releases_the_profile_registry() {
 }
 
 #[test]
+fn orchestrated_prepared_spawn_failure_is_returned_without_a_second_terminal_event() {
+    tauri::async_runtime::block_on(async {
+        let request = fixture_request("prepared-spawn-failure");
+        let logs = request.game_root.parent().expect("root").join("logs");
+        fs::create_dir_all(&logs).expect("logs");
+        let prepared = build_launch(request).expect("prepared");
+        let events = Arc::new(RecordingEvents::default());
+        let launcher = Launcher::new(
+            Arc::new(PreparedContext(Mutex::new(None))),
+            Arc::new(MockSpawner {
+                commands: Mutex::new(Vec::new()),
+                release: Arc::new(tokio::sync::Semaphore::new(0)),
+                fail: true,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+                post_exit_error: None,
+            }),
+            events.clone(),
+            logs,
+        );
+
+        let error = launcher
+            .launch_prepared("default", "workflow-operation", prepared)
+            .await
+            .expect_err("spawn fails");
+
+        assert_eq!(error.code(), "game_spawn_failed");
+        assert_eq!(launcher.active_count().expect("registry"), 0);
+        assert!(events.0.lock().expect("events").is_empty());
+    });
+}
+
+#[test]
 fn terminal_process_history_is_bounded_and_expires_the_oldest_operation() {
     let registry = Arc::new(Mutex::new(super::ProcessRegistry::default()));
     for index in 0..=super::MAX_TERMINAL_PROCESSES {

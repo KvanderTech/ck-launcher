@@ -6,7 +6,7 @@ import RootApp from "../App";
 import type {
   AccountSummary,
   JavaRuntimeStatus,
-  LauncherErrorDto,
+  LauncherErrorEvent,
   ProgressEvent,
 } from "./types";
 
@@ -14,11 +14,7 @@ type EventHandlers = {
   progress?: (event: ProgressEvent) => void;
   started?: (event: { operationId: string; profileId: string; pid: number }) => void;
   exited?: (event: { operationId: string; profileId: string; exitCode: number }) => void;
-  error?: (event: {
-    operationId: string;
-    profileId: string;
-    error: LauncherErrorDto;
-  }) => void;
+  error?: (event: LauncherErrorEvent) => void;
 };
 
 const accounts: AccountSummary[] = [
@@ -227,6 +223,7 @@ describe("launcher application", () => {
       handlers.error?.({
         operationId: "operation-current",
         profileId: "default",
+        terminal: true,
         error: {
           code: "download_timeout",
           message: "Соединение прервано.",
@@ -240,6 +237,7 @@ describe("launcher application", () => {
       handlers.error?.({
         operationId: "operation-current",
         profileId: "default",
+        terminal: true,
         error: {
           code: "invalid_path",
           message: "Запуск остановлен.",
@@ -276,21 +274,27 @@ describe("launcher application", () => {
     expect((screen.getByRole("button", { name: "Игра запущена" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("clears an auxiliary recoverable error when the same operation exits", async () => {
+  it("keeps running and shows no Retry for a nonterminal process warning", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
     renderApp(api);
     fireEvent.click(await screen.findByRole("button", { name: "Играть" }));
     await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledTimes(1));
+    act(() => {
+      handlers.started?.({ operationId: "operation-current", profileId: "default", pid: 42 });
+    });
 
     act(() => {
       handlers.error?.({
         operationId: "operation-current",
         profileId: "default",
+        terminal: false,
         error: { code: "log_warning", message: "Журнал неполон.", recoverable: true },
       });
     });
-    expect(screen.getByRole("button", { name: "Повторить" })).toBeTruthy();
+    expect(screen.getByText("Minecraft запущен")).toBeTruthy();
+    expect(screen.getByText("Журнал неполон.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Повторить" })).toBeNull();
 
     act(() => {
       handlers.exited?.({ operationId: "operation-current", profileId: "default", exitCode: 0 });

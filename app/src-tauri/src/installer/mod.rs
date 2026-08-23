@@ -533,16 +533,10 @@ impl Installer {
                 return Ok(false);
             }
         }
-        if !plan.natives.is_empty() {
-            let relative = Path::new("versions").join(&version.id).join("natives");
-            let natives =
-                AppPaths::new(self.game_root.clone()).safe_join(&self.game_root, &relative)?;
-            if !natives
-                .metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_dir())
-            {
-                return Ok(false);
-            }
+        if !plan.natives.is_empty()
+            && !natives::verify_native_inventory(&self.game_root, &version.id)?
+        {
+            return Ok(false);
         }
         Ok(true)
     }

@@ -83,12 +83,23 @@ export interface GameExitedEvent {
   exitCode: number;
 }
 
-export interface LauncherErrorEvent {
+interface ErrorEventBase {
   kind?: "error";
   operationId: OperationId;
   profileId: string;
   error: LauncherErrorDto;
 }
+
+export interface ProcessErrorEvent extends ErrorEventBase {
+  terminal: boolean;
+}
+
+export interface WorkflowErrorEvent extends ErrorEventBase {
+  stage: Exclude<LauncherStage, "idle" | "running" | "failed">;
+  terminal?: never;
+}
+
+export type LauncherErrorEvent = ProcessErrorEvent | WorkflowErrorEvent;
 
 export function progressLabel(progress: ProgressEvent): string {
   const percent = progress.totalBytes > 0

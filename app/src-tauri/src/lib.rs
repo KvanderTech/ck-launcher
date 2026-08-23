@@ -57,8 +57,7 @@ pub fn run() {
         .setup(|app| {
             let paths = AppPaths::windows_default()?;
             paths.create_directories()?;
-            let database_url = paths.database_url()?;
-            let storage = tauri::async_runtime::block_on(Storage::connect(&database_url))?;
+            let storage = tauri::async_runtime::block_on(Storage::connect_file(&paths.database))?;
             let credentials: Arc<dyn storage::credentials::CredentialStore> =
                 Arc::new(WindowsCredentialStore);
             let mutations = Arc::new(AccountMutationCoordinator::default());
