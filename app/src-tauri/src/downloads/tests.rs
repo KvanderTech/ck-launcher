@@ -767,7 +767,7 @@ fn planner_rejects_final_part_lock_and_case_insensitive_aliases() {
 }
 
 #[test]
-fn planner_reserves_internal_suffixes_across_separate_executions() {
+fn planner_reserves_internal_components_across_separate_executions() {
     let root = temporary_root("reserved-download-paths")
         .canonicalize()
         .unwrap();
@@ -781,10 +781,23 @@ fn planner_reserves_internal_suffixes_across_separate_executions() {
 
     super::plan::build_plan(&root, vec![make_spec("a")])
         .expect("a normal destination remains valid");
+    super::plan::build_plan(&root, vec![make_spec("normal/child.bin")])
+        .expect("normal nested destination components remain valid");
 
-    for reserved in ["a.part", "a.PART", "a.part.lock", "a.PART.LOCK"] {
+    for reserved in [
+        "a.part",
+        "a.PART",
+        "a.part.lock",
+        "a.PART.LOCK",
+        "a.part/child.bin",
+        "a.PART/child.bin",
+        "a.part.lock/child.bin",
+        "a.PART.LOCK/child.bin",
+        "normal/intermediate.part/child.bin",
+        "normal/intermediate.part.lock/child.bin",
+    ] {
         let error = match super::plan::build_plan(&root, vec![make_spec(reserved)]) {
-            Ok(_) => panic!("{reserved:?} must be reserved in every plan"),
+            Ok(_) => panic!("every reserved component in {reserved:?} must be rejected"),
             Err(error) => error,
         };
         assert_eq!(error.code(), "download_spec_invalid");

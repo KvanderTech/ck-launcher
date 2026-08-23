@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 use url::Url;
 
@@ -53,9 +53,9 @@ pub(crate) fn build_plan(
             .checked_add(spec.expected_size)
             .ok_or_else(invalid_spec)?;
         let relative_destination = destination_relative_to(root, &spec.destination)?;
-        // These suffixes are exclusively queue-owned. Reserving them for every plan means a
-        // final path can never alias another execution's part or ownership marker.
-        if has_internal_suffix(&relative_destination) {
+        // These suffixes are exclusively queue-owned. Reserving them in every component of every
+        // plan means no final subtree can contain another execution's part or ownership marker.
+        if has_internal_component(&relative_destination) {
             return Err(invalid_spec());
         }
         let destination = safety.safe_join(root, &relative_destination)?;
@@ -145,11 +145,13 @@ fn compare_utf16_case_insensitive(left: &[u16], right: &[u16]) -> Ordering {
     result.cmp(&CSTR_EQUAL)
 }
 
-fn has_internal_suffix(path: &Path) -> bool {
-    let Some(name) = path.file_name() else {
-        return false;
-    };
-    filename_ends_with(name, PART_SUFFIX) || filename_ends_with(name, LOCK_SUFFIX)
+fn has_internal_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        filename_ends_with(name, PART_SUFFIX) || filename_ends_with(name, LOCK_SUFFIX)
+    })
 }
 
 #[cfg(windows)]
