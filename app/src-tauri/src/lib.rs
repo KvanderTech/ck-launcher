@@ -6,6 +6,7 @@ pub mod error;
 pub mod metadata;
 pub mod paths;
 pub mod profiles;
+pub mod runtime;
 pub mod storage;
 mod webview2;
 
@@ -36,6 +37,10 @@ pub fn run() {
             commands::versions::list_game_versions,
             commands::versions::get_profile,
             commands::versions::update_profile,
+            commands::runtime::runtime_statuses,
+            commands::runtime::detect_runtime,
+            commands::runtime::install_runtime,
+            commands::runtime::choose_runtime_path,
         ])
         .setup(|app| {
             let paths = AppPaths::windows_default()?;
@@ -62,6 +67,7 @@ pub fn run() {
                 Arc::new(profiles::SystemPhysicalMemory),
                 paths.game.to_string_lossy(),
             );
+            let runtimes = runtime::RuntimeManager::production(paths.runtime.clone())?;
 
             app.manage(paths);
             app.manage(storage);
@@ -69,6 +75,7 @@ pub fn run() {
             app.manage(accounts);
             app.manage(metadata);
             app.manage(profiles);
+            app.manage(runtimes);
             Ok(())
         })
         .run(tauri::generate_context!())
