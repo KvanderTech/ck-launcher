@@ -44,13 +44,52 @@ impl AuthSession {
 
 impl Drop for AuthSession {
     fn drop(&mut self) {
-        if let Ok(mut active) = self.active_login.lock() {
-            if active
-                .as_ref()
-                .is_some_and(|current| current.same_operation(&self.cancel))
-            {
-                *active = None;
-            }
+        clear_matching_login(&self.active_login, &self.cancel);
+    }
+}
+
+struct ActiveLoginReservation {
+    cancel: DownloadCancellationToken,
+    active_login: Arc<Mutex<Option<DownloadCancellationToken>>>,
+    transferred: bool,
+}
+
+impl ActiveLoginReservation {
+    fn into_session(
+        mut self,
+        callback: CallbackReceiver,
+        verifier: String,
+        redirect_uri: String,
+    ) -> AuthSession {
+        self.transferred = true;
+        AuthSession {
+            callback,
+            verifier,
+            redirect_uri,
+            cancel: self.cancel.clone(),
+            active_login: self.active_login.clone(),
+        }
+    }
+}
+
+impl Drop for ActiveLoginReservation {
+    fn drop(&mut self) {
+        if !self.transferred {
+            clear_matching_login(&self.active_login, &self.cancel);
+        }
+    }
+}
+
+fn clear_matching_login(
+    active_login: &Arc<Mutex<Option<DownloadCancellationToken>>>,
+    cancel: &DownloadCancellationToken,
+) {
+    if let Ok(mut active) = active_login.lock() {
+        if active
+            .as_ref()
+            .is_some_and(|current| current.same_operation(cancel))
+        {
+            *active = None;
         }
     }
 }
@@ -125,6 +164,13 @@ impl AuthService {
     }
 
     pub fn begin_login(&self) -> Result<AuthSession, LauncherError> {
+        self.begin_login_with_callback(|state, timeout| CallbackReceiver::bind(state, timeout))
+    }
+
+    fn begin_login_with_callback(
+        &self,
+        bind_callback: impl FnOnce(&str, Duration) -> Result<CallbackReceiver, LauncherError>,
+    ) -> Result<AuthSession, LauncherError> {
         let client_id = self.client_id.as_deref().ok_or_else(|| {
             LauncherError::new(
                 "auth_not_configured",
@@ -151,9 +197,14 @@ impl AuthService {
         let cancel = DownloadCancellationToken::new();
         *active_login = Some(cancel.clone());
         drop(active_login);
+        let reservation = ActiveLoginReservation {
+            cancel,
+            active_login: self.active_login.clone(),
+            transferred: false,
+        };
         let pkce = pkce::generate_pkce();
         let state = random_state();
-        let callback = CallbackReceiver::bind(&state, CALLBACK_TIMEOUT)?;
+        let callback = bind_callback(&state, CALLBACK_TIMEOUT)?;
         let redirect_uri = callback.redirect_uri();
         let mut authorization_url = Url::parse(AUTHORIZE_ENDPOINT).map_err(|_| {
             LauncherError::new(
@@ -173,13 +224,7 @@ impl AuthService {
             .append_pair("code_challenge", pkce.challenge())
             .append_pair("code_challenge_method", "S256")
             .append_pair("prompt", "select_account");
-        let session = AuthSession {
-            callback,
-            verifier: pkce.verifier().to_owned(),
-            redirect_uri,
-            cancel,
-            active_login: self.active_login.clone(),
-        };
+        let session = reservation.into_session(callback, pkce.verifier().to_owned(), redirect_uri);
         self.opener.open(authorization_url.as_str())?;
 
         Ok(session)
@@ -1044,5 +1089,43 @@ mod tests {
         };
         assert_eq!(error.code(), "auth_not_configured");
         assert!(opener.0.lock().expect("opener lock").is_empty());
+    }
+
+    #[test]
+    fn callback_bind_failure_releases_the_active_login_reservation() {
+        tauri::async_runtime::block_on(async {
+            let service = AuthService::new(
+                Some("public-client-id".to_owned()),
+                Arc::new(MockMicrosoftApi {
+                    calls: Mutex::new(Vec::new()),
+                    profile_error: false,
+                    refresh_error: false,
+                }),
+                Arc::new(Storage::connect("sqlite::memory:").await.expect("storage")),
+                Arc::new(InMemoryCredentialStore::default()),
+                Arc::new(RecordingOpener::default()),
+                Arc::new(AccountMutationCoordinator::default()),
+            );
+
+            let first = match service.begin_login_with_callback(|_, _| {
+                Err(LauncherError::new(
+                    "auth_callback_unavailable",
+                    "Microsoft sign-in callback is unavailable.",
+                    None,
+                    true,
+                ))
+            }) {
+                Err(error) => error,
+                Ok(_) => panic!("fixture bind fails"),
+            };
+            assert_eq!(first.code(), "auth_callback_unavailable");
+
+            let retry = service.begin_login();
+            assert!(
+                !matches!(&retry, Err(error) if error.code() == "auth_in_progress"),
+                "failed callback bind must release the active login reservation"
+            );
+            drop(retry.expect("retry binds and opens"));
+        });
     }
 }
