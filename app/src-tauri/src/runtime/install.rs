@@ -399,6 +399,83 @@ mod tests {
             std::fs::remove_dir_all(root).expect("temporary root removed");
         });
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_rejects_a_backup_whose_bin_component_is_a_junction() {
+        use std::process::Command;
+
+        tauri::async_runtime::block_on(async {
+            let root = temporary_root();
+            std::fs::create_dir_all(root.join("java-17/bin")).expect("broken final runtime");
+            std::fs::write(root.join("java-17/bin/java.exe"), b"broken java")
+                .expect("broken Java executable");
+            let backup = root.join(".backup-java-17");
+            std::fs::create_dir(&backup).expect("backup root");
+            let external = temporary_root();
+            std::fs::write(external.join("java.exe"), b"old java")
+                .expect("external Java executable");
+            let junction = backup.join("bin");
+            let output = Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(&junction)
+                .arg(&external)
+                .output()
+                .expect("junction command starts");
+            assert!(output.status.success(), "junction fixture must be created");
+            let installer = RuntimeInstaller::new(
+                root.clone(),
+                Arc::new(FileContentRunner),
+                Arc::new(FakeFetcher(Vec::new())),
+                manifest("0".repeat(64)),
+            );
+
+            let result = installer
+                .recover_interrupted_swap(JavaRequirement::new(17).unwrap())
+                .await;
+
+            std::fs::remove_dir(&junction).expect("junction is removed without following it");
+            std::fs::remove_dir_all(root).expect("runtime root removed");
+            std::fs::remove_dir_all(external).expect("external root removed");
+            assert_eq!(
+                result.expect_err("junction-backed Java is rejected").code(),
+                "invalid_path"
+            );
+        });
+    }
+
+    #[test]
+    fn backup_discovery_ignores_loose_prefix_lookalike_directories() {
+        let root = temporary_root();
+        for name in [
+            ".backup-java-17-attacker",
+            ".backup-java-17-",
+            ".backup-java-17-12-extra",
+            ".backup-java-17-18446744073709551616",
+        ] {
+            std::fs::create_dir(root.join(name)).expect("lookalike directory");
+        }
+
+        assert!(super::discover_backup(&root, 17)
+            .expect("backup discovery")
+            .is_none());
+        std::fs::remove_dir_all(root).expect("runtime root removed");
+    }
+
+    #[test]
+    fn backup_discovery_accepts_current_and_numeric_legacy_names() {
+        for name in [".backup-java-17", ".backup-java-17-18446744073709551615"] {
+            let root = temporary_root();
+            let expected = root.join(name);
+            std::fs::create_dir(&expected).expect("generated backup directory");
+
+            assert_eq!(
+                super::discover_backup(&root, 17).expect("backup discovery"),
+                Some(expected)
+            );
+            std::fs::remove_dir_all(root).expect("runtime root removed");
+        }
+    }
 }
 use super::{
     archive::extract_zip_archive, detect::probe_java, java_executable, JavaRequirement,
@@ -675,7 +752,7 @@ impl RuntimeInstaller {
                 .map_err(|error| runtime_inconsistent(Some(error.to_string())))?;
         }
 
-        let final_java = java_executable(&final_path);
+        let final_java = validated_java_executable(&self.runtime_root, &final_path)?;
         match probe_java(self.runner.as_ref(), &final_java).await {
             Ok((major, _)) if major == requirement.major() => {
                 if backup.exists() {
@@ -685,7 +762,7 @@ impl RuntimeInstaller {
                 Ok(())
             }
             _ if backup.exists() => {
-                let backup_java = java_executable(&backup);
+                let backup_java = validated_java_executable(&self.runtime_root, &backup)?;
                 match probe_java(self.runner.as_ref(), &backup_java).await {
                     Ok((major, _)) if major == requirement.major() => {}
                     _ => return Err(runtime_inconsistent(None)),
@@ -827,17 +904,35 @@ pub(crate) fn recover_interrupted_swaps_on_startup(root: &Path) -> Result<(), La
 }
 
 fn discover_backup(root: &Path, major: u16) -> Result<Option<PathBuf>, LauncherError> {
-    let prefix = format!(".backup-java-{major}");
     let mut backups = fs::read_dir(root)
         .map_err(|_| install_error())?
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .filter(|entry| is_generated_backup_name(&entry.file_name().to_string_lossy(), major))
         .map(|entry| entry.path())
         .collect::<Vec<_>>();
     if backups.len() > 1 {
         return Err(runtime_inconsistent(None));
     }
     Ok(backups.pop())
+}
+
+fn is_generated_backup_name(name: &str, major: u16) -> bool {
+    let current_name = format!(".backup-java-{major}");
+    if name == current_name {
+        return true;
+    }
+
+    name.strip_prefix(&format!("{current_name}-"))
+        .is_some_and(|suffix| suffix.parse::<u64>().is_ok())
+}
+
+fn validated_java_executable(root: &Path, runtime_home: &Path) -> Result<PathBuf, LauncherError> {
+    let runtime_name = runtime_home
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| runtime_inconsistent(None))?;
+    let relative = Path::new(runtime_name).join("bin").join("java.exe");
+    AppPaths::new(root.to_path_buf()).safe_join(root, &relative)
 }
 
 fn revalidate_child(root: &Path, path: &Path) -> Result<PathBuf, LauncherError> {
