@@ -8,7 +8,7 @@ use url::Url;
 enum PathKind {
     Existing,
     Missing,
-    Symlink,
+    ReparsePoint,
 }
 
 trait PathInspector {
@@ -25,12 +25,25 @@ impl PathInspector for FileSystemInspector {
 
     fn kind(&self, path: &Path) -> io::Result<PathKind> {
         match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => Ok(PathKind::Symlink),
+            Ok(metadata) if is_reparse_point(&metadata) => Ok(PathKind::ReparsePoint),
             Ok(_) => Ok(PathKind::Existing),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(PathKind::Missing),
             Err(error) => Err(error),
         }
     }
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
 }
 
 #[derive(Clone, Debug)]
@@ -62,16 +75,27 @@ impl AppPaths {
     }
 
     pub fn create_directories(&self) -> Result<(), LauncherError> {
-        for path in [&self.root, &self.game, &self.runtime, &self.logs] {
-            fs::create_dir_all(path).map_err(|_| LauncherError::storage_unavailable())?;
+        fs::create_dir_all(&self.root).map_err(|_| LauncherError::storage_unavailable())?;
+        if FileSystemInspector
+            .kind(&self.root)
+            .map_err(|_| LauncherError::invalid_path())?
+            != PathKind::Existing
+        {
+            return Err(LauncherError::invalid_path());
+        }
+        for relative in ["game", "runtime", "logs"] {
+            let path = self.safe_join(&self.root, Path::new(relative))?;
+            fs::create_dir_all(&path).map_err(|_| LauncherError::storage_unavailable())?;
+            self.safe_join(&self.root, Path::new(relative))?;
         }
 
         Ok(())
     }
 
     pub fn database_url(&self) -> Result<String, LauncherError> {
-        let mut url = Url::from_file_path(&self.database)
-            .map_err(|_| LauncherError::storage_unavailable())?;
+        let database = self.safe_join(&self.root, Path::new("launcher.sqlite3"))?;
+        let mut url =
+            Url::from_file_path(database).map_err(|_| LauncherError::storage_unavailable())?;
         url.set_scheme("sqlite")
             .map_err(|_| LauncherError::storage_unavailable())?;
         url.set_query(Some("mode=rwc"));
@@ -81,10 +105,11 @@ impl AppPaths {
 
     /// Validates a path immediately before a sensitive write.
     ///
-    /// Existing symlinks are rejected component by component, including dangling links. The
-    /// filesystem can still change after this check, so callers that write sensitive files must
-    /// keep the trusted root private and use platform no-follow/open-by-handle APIs where
-    /// available in addition to validating as close to the write as possible.
+    /// Existing links and Windows reparse points (including junctions and mount points) are
+    /// rejected component by component, including dangling links. The filesystem can still
+    /// change after this check, so callers that write sensitive files must keep the trusted root
+    /// private and use platform no-follow/open-by-handle APIs where available in addition to
+    /// validating as close to the write as possible.
     pub fn safe_join(&self, root: &Path, relative: &Path) -> Result<PathBuf, LauncherError> {
         self.safe_join_with(root, relative, &FileSystemInspector)
     }
@@ -129,7 +154,7 @@ impl AppPaths {
             {
                 PathKind::Existing => {}
                 PathKind::Missing => {}
-                PathKind::Symlink => return Err(LauncherError::invalid_path()),
+                PathKind::ReparsePoint => return Err(LauncherError::invalid_path()),
             }
         }
 
@@ -200,7 +225,7 @@ mod tests {
 
         fn kind(&self, path: &Path) -> std::io::Result<PathKind> {
             if path.ends_with("linked") {
-                Ok(PathKind::Symlink)
+                Ok(PathKind::ReparsePoint)
             } else {
                 Ok(PathKind::Existing)
             }
@@ -219,6 +244,39 @@ mod tests {
                 &DanglingSymlinkInspector,
             )
             .expect_err("paths below a dangling symlink are rejected");
+
+        assert_eq!(error.code(), "invalid_path");
+        fs::remove_dir_all(root).expect("temporary root is removed");
+    }
+
+    struct JunctionInspector;
+
+    impl PathInspector for JunctionInspector {
+        fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
+            Ok(path.to_path_buf())
+        }
+
+        fn kind(&self, path: &Path) -> std::io::Result<PathKind> {
+            if path.ends_with("junction") {
+                Ok(PathKind::ReparsePoint)
+            } else {
+                Ok(PathKind::Existing)
+            }
+        }
+    }
+
+    #[test]
+    fn safe_join_rejects_all_reparse_points_not_only_symbolic_links() {
+        let root = temporary_root();
+        let paths = AppPaths::new(root.clone());
+
+        let error = paths
+            .safe_join_with(
+                &root,
+                Path::new("junction\\new-file.txt"),
+                &JunctionInspector,
+            )
+            .expect_err("junction reparse point is rejected");
 
         assert_eq!(error.code(), "invalid_path");
         fs::remove_dir_all(root).expect("temporary root is removed");
@@ -252,5 +310,61 @@ mod tests {
             }
             Err(error) => panic!("unexpected symlink creation failure: {error}"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn safe_join_rejects_a_real_windows_junction_when_creation_is_available() {
+        use std::process::Command;
+
+        let root = temporary_root();
+        let target = root.join("junction-target");
+        let junction = root.join("junction");
+        fs::create_dir(&target).expect("junction target is created");
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("junction command starts");
+
+        if output.status.success() {
+            let paths = AppPaths::new(root.clone());
+            assert_eq!(
+                paths
+                    .safe_join(&root, Path::new("junction\\new-file.txt"))
+                    .expect_err("junction is rejected")
+                    .code(),
+                "invalid_path"
+            );
+            fs::remove_dir(&junction).expect("junction is removed without following it");
+        }
+        fs::remove_dir_all(root).expect("temporary root is removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_creation_refuses_an_existing_reparse_point_child() {
+        use std::process::Command;
+
+        let root = temporary_root();
+        let target = root.join("external-game");
+        let junction = root.join("game");
+        fs::create_dir(&target).expect("junction target is created");
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("junction command starts");
+
+        if output.status.success() {
+            let error = AppPaths::new(root.clone())
+                .create_directories()
+                .expect_err("launcher directory junction is rejected before writes");
+            assert_eq!(error.code(), "invalid_path");
+            fs::remove_dir(&junction).expect("junction is removed without following it");
+        }
+        fs::remove_dir_all(root).expect("temporary root is removed");
     }
 }
