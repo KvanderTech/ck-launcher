@@ -3,6 +3,7 @@ pub mod detect;
 pub mod install;
 
 use crate::error::LauncherError;
+use crate::metadata::models::ResolvedVersion;
 use detect::probe_java;
 pub use detect::{parse_java_major, ProcessOutput, ProcessRunner, TokioProcessRunner};
 use install::{
@@ -51,6 +52,25 @@ impl<'de> Deserialize<'de> for JavaRequirement {
         let major = u16::deserialize(deserializer)?;
         Self::new(major).map_err(|_| serde::de::Error::custom("unsupported Java major"))
     }
+}
+
+pub fn requirement_for_version(
+    version: &ResolvedVersion,
+) -> Result<JavaRequirement, LauncherError> {
+    let major = version
+        .java_version
+        .as_ref()
+        .map(|java| java.major_version)
+        .unwrap_or(8);
+    let major = u16::try_from(major).map_err(|_| {
+        LauncherError::new(
+            "runtime_unavailable",
+            "A compatible Java runtime is unavailable.",
+            None,
+            true,
+        )
+    })?;
+    JavaRequirement::new(major)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -393,8 +413,14 @@ fn java_invalid() -> LauncherError {
 
 #[cfg(test)]
 mod tests {
-    use super::{JavaRequirement, JavaRuntimeSource, ProcessOutput, ProcessRunner, RuntimeManager};
-    use crate::error::LauncherError;
+    use super::{
+        requirement_for_version, JavaRequirement, JavaRuntimeSource, ProcessOutput, ProcessRunner,
+        RuntimeManager,
+    };
+    use crate::{
+        error::LauncherError,
+        metadata::models::{JavaVersion, ResolvedVersion, VersionJson},
+    };
     use async_trait::async_trait;
     use std::{
         path::{Path, PathBuf},
@@ -466,5 +492,20 @@ mod tests {
                 .major(),
             21
         );
+    }
+
+    #[test]
+    fn version_metadata_drives_the_same_java_requirement_used_for_launch() {
+        let declared = ResolvedVersion::from(VersionJson {
+            java_version: Some(JavaVersion {
+                component: "java-runtime-gamma".to_owned(),
+                major_version: 21,
+            }),
+            ..VersionJson::default()
+        });
+        let legacy = ResolvedVersion::from(VersionJson::default());
+
+        assert_eq!(requirement_for_version(&declared).unwrap().major(), 21);
+        assert_eq!(requirement_for_version(&legacy).unwrap().major(), 8);
     }
 }

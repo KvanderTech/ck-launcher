@@ -41,6 +41,7 @@ export default function App({ api = appApi }: AppProps) {
   const [versions, setVersions] = useState<GameVersionSummary[]>([]);
   const [profile, setProfile] = useState<LauncherProfile>();
   const [runtimes, setRuntimes] = useState<JavaRuntimeStatus[]>([]);
+  const [requiredJava, setRequiredJava] = useState<JavaMajor>();
   const [bootState, setBootState] = useState<BootState>("loading");
   const [viewState, setViewState] = useState<LauncherViewState>("ready");
   const [progress, setProgress] = useState<ProgressEvent>();
@@ -48,9 +49,9 @@ export default function App({ api = appApi }: AppProps) {
   const [cancelling, setCancelling] = useState(false);
   const operationId = useRef<OperationId | undefined>(undefined);
   const profileRef = useRef<LauncherProfile | undefined>(undefined);
-  const memoryTimer = useRef<number | undefined>(undefined);
   const awaitingOperationId = useRef(false);
   const bufferedOperationEvents = useRef<BufferedOperationEvent[]>([]);
+  const requiredJavaRequest = useRef(0);
 
   function applyOperationEvent(event: BufferedOperationEvent) {
     switch (event.kind) {
@@ -66,6 +67,7 @@ export default function App({ api = appApi }: AppProps) {
         break;
       case "exited":
         operationId.current = undefined;
+        setOperationError(undefined);
         setViewState("ready");
         setProgress(undefined);
         break;
@@ -113,6 +115,21 @@ export default function App({ api = appApi }: AppProps) {
   }, [api]);
 
   useEffect(() => {
+    const versionId = profile?.versionId;
+    const request = ++requiredJavaRequest.current;
+    setRequiredJava(undefined);
+    if (!versionId) return;
+    void api.requiredJavaForVersion(versionId).then(
+      (requirement) => {
+        if (request === requiredJavaRequest.current) setRequiredJava(requirement);
+      },
+      () => {
+        if (request === requiredJavaRequest.current) setRequiredJava(undefined);
+      },
+    );
+  }, [api, profile?.versionId]);
+
+  useEffect(() => {
     let active = true;
     const registrations = [
       api.onProgress((event) => {
@@ -136,10 +153,6 @@ export default function App({ api = appApi }: AppProps) {
       void Promise.all(registrations).then((unlisten) => unlisten.forEach((stop) => stop()));
     };
   }, [api]);
-
-  useEffect(() => () => {
-    if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
-  }, []);
 
   async function startPlay() {
     const currentProfile = profileRef.current;
@@ -177,19 +190,12 @@ export default function App({ api = appApi }: AppProps) {
     setProfile(next);
   }
 
-  function updateMemory(memoryMb: number) {
+  function memorySaved(memoryMb: number) {
     const current = profileRef.current;
     if (!current) return;
     const next = { ...current, memoryMb };
     profileRef.current = next;
     setProfile(next);
-    if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
-    memoryTimer.current = window.setTimeout(() => {
-      void api.updateProfile(next).then((saved) => {
-        profileRef.current = saved;
-        setProfile(saved);
-      });
-    }, 250);
   }
 
   async function updateRuntime(
@@ -259,7 +265,9 @@ export default function App({ api = appApi }: AppProps) {
       />
       <main className="main-pane">
         <header className="topbar">
-          <span>ЦК Лаунчер</span>
+          <div className="topbar-drag-region" data-tauri-drag-region>
+            <span data-tauri-drag-region>ЦК Лаунчер</span>
+          </div>
           <WindowControls />
         </header>
         <div className="page-scroll">
@@ -273,12 +281,14 @@ export default function App({ api = appApi }: AppProps) {
           ) : activePage === "home" ? (
             <HomePage
               error={operationError}
+              cancelling={cancelling}
               onCancel={() => void cancelCurrentOperation()}
               onPlay={() => void startPlay()}
               onRetry={() => void startPlay()}
               onVersionChange={updateVersion}
               profile={profile}
               progress={progress}
+              requiredJava={requiredJava}
               runtimes={runtimes}
               state={viewState}
               versions={versions}
@@ -286,7 +296,7 @@ export default function App({ api = appApi }: AppProps) {
           ) : activePage === "settings" ? (
             <SettingsPage
               api={api}
-              onMemoryChange={updateMemory}
+              onMemorySaved={memorySaved}
               onRuntimeAction={(requirement, action) => void updateRuntime(requirement, action)}
               runtimes={runtimes}
             />
@@ -303,7 +313,7 @@ export default function App({ api = appApi }: AppProps) {
 
 interface SettingsPageProps {
   api: AppApi;
-  onMemoryChange(memoryMb: number): void;
+  onMemorySaved(memoryMb: number): void;
   onRuntimeAction(
     requirement: JavaMajor,
     action: (requirement: JavaMajor) => Promise<JavaRuntimeStatus | null>,
@@ -311,13 +321,13 @@ interface SettingsPageProps {
   runtimes: JavaRuntimeStatus[];
 }
 
-function SettingsPage({ api, onMemoryChange, onRuntimeAction, runtimes }: SettingsPageProps) {
+function SettingsPage({ api, onMemorySaved, onRuntimeAction, runtimes }: SettingsPageProps) {
   return (
     <section className="settings-page">
       <div className="page-heading"><span className="eyebrow">Параметры запуска</span><h1>Настройки</h1><p>Память и реальные установки Java сохраняются через ядро лаунчера.</p></div>
       <div className="settings-grid">
         <div className="settings-column">
-          <MemorySettings api={api} onChange={onMemoryChange} />
+          <MemorySettings api={api} onSaved={onMemorySaved} />
           <section className="settings-card">
             <h2>Фоновые кадры</h2>
             <p>Затемнённые кадры меняются каждые 12 секунд. При уменьшенном движении смена отключена.</p>

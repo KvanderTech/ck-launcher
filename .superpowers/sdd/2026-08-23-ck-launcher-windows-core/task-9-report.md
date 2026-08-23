@@ -33,3 +33,12 @@
 
 - Финальная install→launch orchestration относится к Task 10; сейчас `launchOrInstall` вызывает существующую команду `launch`.
 - Backend-команды безопасного открытия очищенного журнала пока нет, поэтому fatal-кнопка намеренно disabled с пояснением.
+
+## Исправления по ревью — round 1
+
+- Main window переведено в undecorated-режим; добавлены точечные Tauri window permissions. Drag-region ограничена безопасной частью topbar и не захватывает кнопки. Minimize/maximize/close вызываются через централизованный `WindowApi` и покрыты mock-тестом.
+- Индикатор Java теперь запрашивает major для выбранной версии через узкую backend-команду. UI и launch preparation используют один `requirement_for_version`, а устаревшие async-ответы игнорируются.
+- `game-exited` очищает вспомогательную recoverable-ошибку, поэтому ready-состояние не соседствует с retry. `cancelling` проведён до `ProgressPanel` с disabled-состоянием «Отменяем…».
+- Память сохраняется узкой командой `update_profile_memory`: backend меняет только memory в самом свежем профиле, UI сливает из ответа только memory. Отказ показывает безопасную ошибку и возвращает slider к последнему сохранённому значению; тест с in-flight сохранением проверяет, что версия не откатывается.
+- «Добавить аккаунт» в menu переиспользует общий `MicrosoftLogin`: loading, безопасная error и retry остаются в popup, rejected Promise обработан.
+- Проверки: `npm test -- --run` — PASS, 7 files / 18 tests; `npm run build` — PASS; `cargo test` — PASS, 136 tests total (134 unit + 2 integration); `cargo fmt --check` — PASS.

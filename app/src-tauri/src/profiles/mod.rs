@@ -103,6 +103,12 @@ impl ProfileService {
         Ok(profile)
     }
 
+    pub async fn update_memory(&self, memory_mb: u32) -> Result<LauncherProfile, LauncherError> {
+        let mut profile = self.get_profile().await?;
+        profile.memory_mb = memory_mb;
+        self.update_profile(profile).await
+    }
+
     pub async fn memory_status(&self) -> Result<MemorySettingsStatus, LauncherError> {
         let profile = self.get_profile().await?;
         let physical_mb = self.memory.physical_memory_mb();
@@ -187,6 +193,30 @@ mod tests {
             assert_eq!(status.min_memory_mb, 512);
             assert_eq!(status.max_memory_mb, 12_288);
             assert_eq!(status.step_memory_mb, 512);
+        });
+    }
+
+    #[test]
+    fn memory_update_preserves_the_latest_profile_fields() {
+        tauri::async_runtime::block_on(async {
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            let service = ProfileService::new(storage, Arc::new(FixedMemory(16_384)), "game");
+            service
+                .update_profile(LauncherProfile {
+                    id: "default".to_owned(),
+                    name: "Player".to_owned(),
+                    version_id: Some("1.21.8".to_owned()),
+                    memory_mb: 4_096,
+                    game_dir: "game".to_owned(),
+                    java_override: None,
+                })
+                .await
+                .expect("profile seeds");
+
+            let saved = service.update_memory(20_000).await.expect("memory saves");
+
+            assert_eq!(saved.version_id.as_deref(), Some("1.21.8"));
+            assert_eq!(saved.memory_mb, 12_288);
         });
     }
 }

@@ -1,24 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { settingsApi, type SettingsApi } from "../../app/tauri";
 import type { MemorySettingsStatus } from "../../app/types";
 
 interface MemorySettingsProps {
   api?: SettingsApi;
-  onChange(memoryMb: number): void;
+  onSaved(memoryMb: number): void;
 }
 
-export function MemorySettings({ api = settingsApi, onChange }: MemorySettingsProps) {
+export function MemorySettings({ api = settingsApi, onSaved }: MemorySettingsProps) {
   const [status, setStatus] = useState<MemorySettingsStatus>();
   const [failed, setFailed] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "error">("idle");
+  const savedMemory = useRef<number | undefined>(undefined);
+  const timer = useRef<number | undefined>(undefined);
+  const request = useRef(0);
+  const mounted = useRef(true);
 
   useEffect(() => {
     let active = true;
+    mounted.current = true;
     void api.memoryStatus().then(
-      (next) => { if (active) setStatus(next); },
+      (next) => {
+        if (active) {
+          savedMemory.current = next.memoryMb;
+          setStatus(next);
+        }
+      },
       () => { if (active) setFailed(true); },
     );
-    return () => { active = false; };
+    return () => {
+      active = false;
+      mounted.current = false;
+      if (timer.current !== undefined) window.clearTimeout(timer.current);
+    };
   }, [api]);
 
   if (failed) return <p role="alert">Не удалось получить безопасный предел памяти.</p>;
@@ -26,7 +41,30 @@ export function MemorySettings({ api = settingsApi, onChange }: MemorySettingsPr
 
   function changeMemory(memoryMb: number) {
     setStatus((current) => current ? { ...current, memoryMb } : current);
-    onChange(memoryMb);
+    setSaveState("idle");
+    if (timer.current !== undefined) window.clearTimeout(timer.current);
+    const currentRequest = ++request.current;
+    timer.current = window.setTimeout(() => {
+      setSaveState("saving");
+      void api.updateMemory(memoryMb).then(
+        (saved) => {
+          if (request.current !== currentRequest) return;
+          savedMemory.current = saved.memoryMb;
+          if (mounted.current) {
+            setStatus((current) => current ? { ...current, memoryMb: saved.memoryMb } : current);
+            setSaveState("idle");
+          }
+          onSaved(saved.memoryMb);
+        },
+        () => {
+          if (request.current !== currentRequest || !mounted.current) return;
+          setStatus((current) => current && savedMemory.current !== undefined
+            ? { ...current, memoryMb: savedMemory.current }
+            : current);
+          setSaveState("error");
+        },
+      );
+    }, 250);
   }
 
   return (
@@ -43,6 +81,8 @@ export function MemorySettings({ api = settingsApi, onChange }: MemorySettingsPr
         type="range"
         value={status.memoryMb}
       />
+      {saveState === "saving" ? <p aria-live="polite">Сохраняем…</p> : null}
+      {saveState === "error" ? <p role="alert">Не удалось сохранить память. Значение восстановлено.</p> : null}
     </section>
   );
 }

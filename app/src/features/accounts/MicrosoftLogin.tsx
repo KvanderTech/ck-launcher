@@ -5,6 +5,8 @@ import type { AccountSummary, LauncherErrorDto } from "../../app/types";
 
 interface MicrosoftLoginProps {
   api?: LauncherApi;
+  buttonRole?: "menuitem";
+  idleLabel?: string;
   onAuthenticated?: (account: AccountSummary) => void;
 }
 
@@ -12,6 +14,8 @@ type LoginState = "idle" | "loading" | "error";
 
 export function MicrosoftLogin({
   api = launcherApi,
+  buttonRole,
+  idleLabel = "Войти через Microsoft",
   onAuthenticated,
 }: MicrosoftLoginProps) {
   const [state, setState] = useState<LoginState>("idle");
@@ -35,13 +39,14 @@ export function MicrosoftLogin({
       <button
         disabled={state === "loading"}
         onClick={() => void beginLogin()}
+        role={buttonRole}
         type="button"
       >
         {state === "loading"
           ? "Входим…"
           : state === "error"
             ? "Повторить вход"
-            : "Войти через Microsoft"}
+            : idleLabel}
       </button>
       {state === "error" ? <p role="alert">{errorMessage}</p> : null}
     </div>
