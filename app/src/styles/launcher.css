@@ -610,6 +610,22 @@
   margin-top: 5px;
 }
 
+.error-panel code,
+.settings-card code {
+  color: var(--ink-muted);
+  display: block;
+  font-size: 0.62rem;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+}
+
+.error-panel > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .error-panel.is-recoverable {
   border-color: rgba(245, 191, 103, 0.35);
 }
@@ -662,6 +678,15 @@
   font-size: 0.68rem;
   line-height: 1.55;
   margin-bottom: 0;
+}
+
+.settings-card > button {
+  background: rgba(32, 52, 77, 0.92);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  margin-top: 12px;
+  min-height: 34px;
+  padding: 0 12px;
 }
 
 .settings-page section[aria-labelledby="memory-settings-title"] output {

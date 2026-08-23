@@ -29,6 +29,7 @@ function mockApi(overrides: Partial<LauncherApi> = {}): LauncherApi {
   return {
     listAccounts: vi.fn(async () => accounts),
     beginMicrosoftLogin: vi.fn(async () => accounts[0]),
+    cancelMicrosoftLogin: vi.fn(async () => undefined),
     removeAccount: vi.fn(async () => undefined),
     setActiveAccount: vi.fn(async () => undefined),
     ...overrides,
@@ -96,5 +97,16 @@ describe("MicrosoftLogin", () => {
 
     expect(screen.getByRole("alert").textContent).toBe("Не удалось войти.");
     expect(screen.getByRole("button", { name: "Повторить вход" })).toBeTruthy();
+  });
+
+  it("offers a prompt cancel action while the loopback callback is blocked", async () => {
+    const pending = new Promise<AccountSummary>(() => undefined);
+    const api = mockApi({ beginMicrosoftLogin: vi.fn(() => pending) });
+    render(<MicrosoftLogin api={api} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Войти через Microsoft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отменить вход" }));
+
+    expect(api.cancelMicrosoftLogin).toHaveBeenCalledWith();
   });
 });

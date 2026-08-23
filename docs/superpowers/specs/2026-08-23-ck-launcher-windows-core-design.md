@@ -37,7 +37,7 @@ Rust-ядро предоставляет ограниченный набор Tau
 
 Выполняет OAuth 2.0 Authorization Code Flow с PKCE через системный браузер. После Microsoft OAuth модуль проходит Xbox Live, XSTS и Minecraft Services, получает Minecraft-профиль и проверяет владение Java Edition.
 
-Callback принимается на временном loopback-адресе `127.0.0.1` со случайным свободным портом. Используются `state` и PKCE verifier. Пароли Microsoft приложение не видит.
+Listener принимает callback только на временном IPv4 loopback-адресе `127.0.0.1` со случайным свободным портом. OAuth redirect в authorize/token запросах имеет точную форму `http://localhost:<port>/callback`; в Entra Mobile and desktop applications регистрируется `http://localhost/callback`, где порт игнорируется, а путь совпадает. Используются `state` и PKCE verifier. Пароли Microsoft приложение не видит.
 
 ### `accounts`
 

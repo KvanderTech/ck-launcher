@@ -7,6 +7,7 @@ import type {
   AccountSummary,
   JavaRuntimeStatus,
   LauncherErrorEvent,
+  LauncherProfile,
   ProgressEvent,
 } from "./types";
 
@@ -48,6 +49,7 @@ function createApi(handlers: EventHandlers) {
   return {
     listAccounts: vi.fn(async () => accounts),
     beginMicrosoftLogin: vi.fn(async () => accounts[0]),
+    cancelMicrosoftLogin: vi.fn(async () => undefined),
     removeAccount: vi.fn(async () => undefined),
     setActiveAccount: vi.fn(async () => undefined),
     listGameVersions: vi.fn(async () => [
@@ -64,6 +66,7 @@ function createApi(handlers: EventHandlers) {
       javaOverride: null,
     })),
     updateProfile: vi.fn(async (profile) => profile),
+    chooseGameDirectory: vi.fn(async () => null as LauncherProfile | null),
     updateMemory: vi.fn(async (memoryMb: number) => ({
       id: "default",
       name: "Основной профиль",
@@ -84,6 +87,7 @@ function createApi(handlers: EventHandlers) {
     chooseRuntimePath: vi.fn(async (requirement) => ({ requirement, state: "valid" as const })),
     launchOrInstall: vi.fn(async () => "operation-current"),
     cancelOperation: vi.fn(async () => undefined),
+    openLatestGameLog: vi.fn(async () => undefined),
     onProgress: vi.fn(async (handler) => {
       handlers.progress = handler;
       return () => undefined;
@@ -157,6 +161,26 @@ describe("launcher application", () => {
     });
 
     expect(screen.getByText("Получаем метаданные")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+    expect(api.cancelOperation).toHaveBeenCalledWith("operation-current");
+  });
+
+  it("allows cancellation while the workflow is still at the pre-spawn launching stage", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Играть" }));
+    await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      handlers.progress?.({
+        operationId: "operation-current",
+        stage: "launching",
+        completedBytes: 0,
+        totalBytes: 0,
+      });
+    });
+
     fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
     expect(api.cancelOperation).toHaveBeenCalledWith("operation-current");
   });
@@ -249,6 +273,33 @@ describe("launcher application", () => {
     const logButton = screen.getByRole("button", { name: "Открыть очищенный журнал" });
     expect((logButton as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText(/never-show/)).toBeNull();
+  });
+
+  it("keeps a nonzero game exit in retryable error state and opens only the backend-owned log", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Играть" }));
+    await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledTimes(1));
+    act(() => {
+      handlers.started?.({ operationId: "operation-current", profileId: "default", pid: 42 });
+      handlers.error?.({
+        operationId: "operation-current",
+        profileId: "default",
+        terminal: true,
+        logPath: "C:\\safe\\logs\\latest.log",
+        error: {
+          code: "game_exit",
+          message: "Minecraft завершился с кодом 7.",
+          recoverable: true,
+        },
+      });
+    });
+
+    expect(screen.getByText("Можно повторить операцию")).toBeTruthy();
+    expect(screen.getByText("C:\\safe\\logs\\latest.log")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Открыть очищенный журнал" }));
+    expect(api.openLatestGameLog).toHaveBeenCalledWith();
   });
 
   it("accepts a matching game-started event emitted before the launch command returns", async () => {
@@ -352,6 +403,27 @@ describe("launcher application", () => {
     });
     expect(api.setActiveAccount).toHaveBeenCalledWith("comfort");
     expect(screen.queryByRole("menu", { name: "Аккаунты Minecraft" })).toBeNull();
+  });
+
+  it("changes the persisted game directory only through the backend picker", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    api.chooseGameDirectory.mockResolvedValue({
+      id: "default",
+      name: "Основной профиль",
+      versionId: "1.20.1",
+      memoryMb: 4096,
+      gameDir: "C:\\selected\\minecraft",
+      javaOverride: null,
+    });
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+
+    expect(screen.getByText("C:\\safe\\game")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать папку игры" }));
+
+    expect(await screen.findByText("C:\\selected\\minecraft")).toBeTruthy();
+    expect(api.chooseGameDirectory).toHaveBeenCalledWith();
   });
 
   it("saves only memory without reverting a version changed while the save is in flight", async () => {

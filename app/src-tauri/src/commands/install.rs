@@ -2,6 +2,7 @@ use crate::{
     downloads::{DownloadProgress, ProgressSink},
     error::LauncherError,
     installer::{InstallationStatus, Installer, OperationRegistry, OperationState},
+    profiles::{validated_profile_game_directory, ProfileService},
 };
 use serde::Serialize;
 use std::{path::Path, sync::Arc};
@@ -50,12 +51,14 @@ pub async fn install_version(
     version_id: String,
     app: AppHandle,
     installer: State<'_, Installer>,
+    profiles: State<'_, ProfileService>,
     operations: State<'_, OperationRegistry>,
 ) -> Result<String, LauncherError> {
+    let profile = profiles.get_profile().await?;
+    let installer = installer.for_game_root(validated_profile_game_directory(&profile)?)?;
     let handle = operations.begin(&version_id)?;
     let operation_id = handle.operation_id.clone();
     let spawned_operation_id = operation_id.clone();
-    let installer = installer.inner().clone();
     let operations = operations.inner().clone();
     let progress: Arc<dyn ProgressSink> = Arc::new(TauriProgressSink { app });
     tauri::async_runtime::spawn(async move {

@@ -32,6 +32,7 @@ impl AccountService {
     }
 
     pub async fn set_active_account(&self, account_id: &str) -> Result<(), LauncherError> {
+        let _mutation = self.mutations.lock().await;
         self.storage.set_active_account(account_id).await
     }
 
@@ -73,6 +74,13 @@ pub async fn begin_microsoft_login(
     auth.complete_login(session, &code?).await
 }
 
+#[tauri::command]
+pub async fn cancel_microsoft_login(
+    auth: State<'_, Arc<AuthService>>,
+) -> Result<(), LauncherError> {
+    auth.cancel_login()
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn remove_account(
     account_id: String,
@@ -98,7 +106,10 @@ mod tests {
         AccountMutationCoordinator, AccountStore, AccountSummary, Storage,
     };
     use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     struct FailingDeleteAccountStore {
         account: AccountSummary,
@@ -225,6 +236,46 @@ mod tests {
                 .get("stable-account-id")
                 .expect("credential reads")
                 .is_none());
+        });
+    }
+
+    #[test]
+    fn switching_active_account_waits_for_the_shared_mutation_coordinator() {
+        tauri::async_runtime::block_on(async {
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            let account = AccountSummary {
+                id: "stable-account-id".to_owned(),
+                minecraft_name: "Player".to_owned(),
+                minecraft_uuid: "minecraft-uuid".to_owned(),
+                head_url: None,
+                is_active: true,
+            };
+            storage
+                .upsert_account(&account)
+                .await
+                .expect("account saves");
+            let mutations = Arc::new(AccountMutationCoordinator::default());
+            let held = mutations.lock().await;
+            let service = Arc::new(AccountService::new(
+                storage,
+                Arc::new(InMemoryCredentialStore::default()),
+                mutations.clone(),
+            ));
+            let mut switching = tauri::async_runtime::spawn({
+                let service = service.clone();
+                async move { service.set_active_account("stable-account-id").await }
+            });
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut switching)
+                    .await
+                    .is_err()
+            );
+            drop(held);
+            switching
+                .await
+                .expect("switch task")
+                .expect("switch proceeds after shared lock releases");
         });
     }
 }

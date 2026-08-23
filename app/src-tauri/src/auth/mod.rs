@@ -3,6 +3,7 @@ pub mod loopback;
 pub mod pkce;
 
 use crate::{
+    downloads::DownloadCancellationToken,
     error::LauncherError,
     storage::{
         credentials::CredentialStore, AccountMutationCoordinator, AccountStore, AccountSummary,
@@ -31,11 +32,26 @@ pub struct AuthSession {
     callback: CallbackReceiver,
     verifier: String,
     redirect_uri: String,
+    cancel: DownloadCancellationToken,
+    active_login: Arc<Mutex<Option<DownloadCancellationToken>>>,
 }
 
 impl AuthSession {
     pub fn receive_code(&mut self) -> Result<String, LauncherError> {
-        self.callback.receive()
+        self.callback.receive_cancellable(&self.cancel)
+    }
+}
+
+impl Drop for AuthSession {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active_login.lock() {
+            if active
+                .as_ref()
+                .is_some_and(|current| current.same_operation(&self.cancel))
+            {
+                *active = None;
+            }
+        }
     }
 }
 
@@ -47,6 +63,7 @@ pub struct AuthService {
     opener: Arc<dyn BrowserOpener>,
     mutations: Arc<AccountMutationCoordinator>,
     token_cache: Mutex<Option<CachedMinecraftAccess>>,
+    active_login: Arc<Mutex<Option<DownloadCancellationToken>>>,
 }
 
 struct CachedMinecraftAccess {
@@ -82,6 +99,7 @@ impl AuthService {
             opener,
             mutations,
             token_cache: Mutex::new(None),
+            active_login: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -115,6 +133,24 @@ impl AuthService {
                 false,
             )
         })?;
+        let mut active_login = self
+            .active_login
+            .lock()
+            .map_err(|_| LauncherError::internal("Microsoft login state is unavailable"))?;
+        if active_login
+            .as_ref()
+            .is_some_and(|current| !current.is_cancelled())
+        {
+            return Err(LauncherError::new(
+                "auth_in_progress",
+                "Microsoft sign-in is already in progress.",
+                None,
+                true,
+            ));
+        }
+        let cancel = DownloadCancellationToken::new();
+        *active_login = Some(cancel.clone());
+        drop(active_login);
         let pkce = pkce::generate_pkce();
         let state = random_state();
         let callback = CallbackReceiver::bind(&state, CALLBACK_TIMEOUT)?;
@@ -137,13 +173,28 @@ impl AuthService {
             .append_pair("code_challenge", pkce.challenge())
             .append_pair("code_challenge_method", "S256")
             .append_pair("prompt", "select_account");
-        self.opener.open(authorization_url.as_str())?;
-
-        Ok(AuthSession {
+        let session = AuthSession {
             callback,
             verifier: pkce.verifier().to_owned(),
             redirect_uri,
-        })
+            cancel,
+            active_login: self.active_login.clone(),
+        };
+        self.opener.open(authorization_url.as_str())?;
+
+        Ok(session)
+    }
+
+    pub fn cancel_login(&self) -> Result<(), LauncherError> {
+        if let Some(cancel) = self
+            .active_login
+            .lock()
+            .map_err(|_| LauncherError::internal("Microsoft login state is unavailable"))?
+            .as_ref()
+        {
+            cancel.cancel();
+        }
+        Ok(())
     }
 
     pub async fn complete_login(
@@ -151,23 +202,28 @@ impl AuthService {
         session: AuthSession,
         code: &str,
     ) -> Result<AccountSummary, LauncherError> {
-        let oauth = self
-            .api
-            .exchange_code(code, &session.verifier, &session.redirect_uri)
-            .await?;
-        let xbox = self.api.xbox_live(oauth.access_token()).await?;
-        let xsts = self.api.xsts(&xbox).await?;
-        let minecraft = self.api.minecraft(&xsts).await?;
-        let mut profile = self.api.profile(&minecraft).await.map_err(|error| {
-            if matches!(
-                error.code(),
-                "minecraft_profile_not_found" | "minecraft_not_owned"
-            ) {
-                minecraft_not_owned()
-            } else {
-                error
-            }
-        })?;
+        let cancel = session.cancel.clone();
+        let oauth = await_auth_or_cancel(
+            &cancel,
+            self.api
+                .exchange_code(code, &session.verifier, &session.redirect_uri),
+        )
+        .await?;
+        let xbox = await_auth_or_cancel(&cancel, self.api.xbox_live(oauth.access_token())).await?;
+        let xsts = await_auth_or_cancel(&cancel, self.api.xsts(&xbox)).await?;
+        let minecraft = await_auth_or_cancel(&cancel, self.api.minecraft(&xsts)).await?;
+        let mut profile = await_auth_or_cancel(&cancel, self.api.profile(&minecraft))
+            .await
+            .map_err(|error| {
+                if matches!(
+                    error.code(),
+                    "minecraft_profile_not_found" | "minecraft_not_owned"
+                ) {
+                    minecraft_not_owned()
+                } else {
+                    error
+                }
+            })?;
         profile.is_active = true;
 
         let _mutation = self.mutations.lock().await;
@@ -190,7 +246,16 @@ impl AuthService {
     pub(crate) async fn refresh_active_minecraft_account(
         &self,
     ) -> Result<RefreshedMinecraftAccount, LauncherError> {
+        self.refresh_active_minecraft_account_cancellable(DownloadCancellationToken::new())
+            .await
+    }
+
+    pub(crate) async fn refresh_active_minecraft_account_cancellable(
+        &self,
+        cancel: DownloadCancellationToken,
+    ) -> Result<RefreshedMinecraftAccount, LauncherError> {
         let _mutation = self.mutations.lock().await;
+        ensure_auth_not_cancelled(&cancel)?;
         let account = self
             .storage
             .list_accounts()
@@ -219,17 +284,22 @@ impl AuthService {
                 true,
             )
         })?;
-        let oauth = self.api.refresh_token(&refresh).await.map_err(|_| {
-            LauncherError::new(
-                "account_reauthentication_required",
-                "Sign in again to launch Minecraft.",
-                None,
-                true,
-            )
-        })?;
-        let xbox = self.api.xbox_live(oauth.access_token()).await?;
-        let xsts = self.api.xsts(&xbox).await?;
-        let access_token = self.api.minecraft(&xsts).await?;
+        let oauth = await_auth_or_cancel(&cancel, self.api.refresh_token(&refresh))
+            .await
+            .map_err(|error| {
+                if error.code() == "download_cancelled" {
+                    return error;
+                }
+                LauncherError::new(
+                    "account_reauthentication_required",
+                    "Sign in again to launch Minecraft.",
+                    None,
+                    true,
+                )
+            })?;
+        let xbox = await_auth_or_cancel(&cancel, self.api.xbox_live(oauth.access_token())).await?;
+        let xsts = await_auth_or_cancel(&cancel, self.api.xsts(&xbox)).await?;
+        let access_token = await_auth_or_cancel(&cancel, self.api.minecraft(&xsts)).await?;
         self.credentials.save(&account.id, oauth.refresh_token())?;
         self.cache_access(&account.id, access_token.clone())?;
         Ok(RefreshedMinecraftAccount {
@@ -271,6 +341,35 @@ impl AuthService {
         });
         Ok(())
     }
+}
+
+async fn await_auth_or_cancel<T>(
+    cancel: &DownloadCancellationToken,
+    future: impl std::future::Future<Output = Result<T, LauncherError>>,
+) -> Result<T, LauncherError> {
+    let cancelled = cancel.cancelled();
+    futures_util::pin_mut!(cancelled, future);
+    match futures_util::future::select(cancelled, future).await {
+        futures_util::future::Either::Left(_) => Err(operation_cancelled()),
+        futures_util::future::Either::Right((result, _)) => result,
+    }
+}
+
+fn ensure_auth_not_cancelled(cancel: &DownloadCancellationToken) -> Result<(), LauncherError> {
+    if cancel.is_cancelled() {
+        Err(operation_cancelled())
+    } else {
+        Ok(())
+    }
+}
+
+fn operation_cancelled() -> LauncherError {
+    LauncherError::new(
+        "download_cancelled",
+        "The operation was cancelled.",
+        None,
+        true,
+    )
 }
 
 fn random_state() -> String {
@@ -488,7 +587,10 @@ mod tests {
         ) -> Result<OAuthTokens, LauncherError> {
             assert_eq!(code, "oauth-code");
             assert!(!verifier.is_empty());
-            assert!(redirect_uri.starts_with("http://127.0.0.1:"));
+            let redirect = url::Url::parse(redirect_uri).expect("redirect parses");
+            assert_eq!(redirect.host_str(), Some("localhost"));
+            assert_eq!(redirect.path(), "/callback");
+            assert!(redirect.port().is_some());
             self.calls.lock().expect("calls lock").push("exchange_code");
             Ok(OAuthTokens::new("oauth-access", "refresh-secret"))
         }

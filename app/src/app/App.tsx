@@ -48,6 +48,7 @@ export default function App({ api = appApi }: AppProps) {
   const [progress, setProgress] = useState<ProgressEvent>();
   const [operationError, setOperationError] = useState<LauncherErrorDto>();
   const [operationWarning, setOperationWarning] = useState<LauncherErrorDto>();
+  const [operationLogPath, setOperationLogPath] = useState<string>();
   const [cancelling, setCancelling] = useState(false);
   const [memorySaveState, setMemorySaveState] = useState<MemorySaveState>("idle");
   const operationId = useRef<OperationId | undefined>(undefined);
@@ -85,6 +86,7 @@ export default function App({ api = appApi }: AppProps) {
         operationId.current = undefined;
         setOperationError(undefined);
         setOperationWarning(undefined);
+        setOperationLogPath(undefined);
         setViewState("ready");
         setProgress(undefined);
         break;
@@ -94,6 +96,7 @@ export default function App({ api = appApi }: AppProps) {
           break;
         }
         setOperationError(event.value.error);
+        setOperationLogPath(event.value.logPath);
         setViewState(event.value.error.recoverable ? "recoverable-error" : "fatal-error");
         setProgress(undefined);
         break;
@@ -189,6 +192,7 @@ export default function App({ api = appApi }: AppProps) {
     if (!profileRef.current?.versionId || ["installing", "launching", "running"].includes(viewState)) return;
     setOperationError(undefined);
     setOperationWarning(undefined);
+    setOperationLogPath(undefined);
     setProgress(undefined);
     setViewState("launching");
     try {
@@ -324,6 +328,25 @@ export default function App({ api = appApi }: AppProps) {
     }
   }
 
+  async function openLatestGameLog() {
+    try {
+      await api.openLatestGameLog();
+    } catch {
+      setOperationWarning({
+        code: "game_log_open_failed",
+        message: "Не удалось открыть очищенный журнал Minecraft.",
+        recoverable: true,
+      });
+    }
+  }
+
+  async function chooseGameDirectory() {
+    const selected = await api.chooseGameDirectory();
+    if (!selected) return;
+    profileRef.current = selected;
+    setProfile(selected);
+  }
+
   function accountAdded(account: AccountSummary) {
     setAccounts((current) => [
       ...current.map((item) => ({ ...item, isActive: false })),
@@ -380,10 +403,12 @@ export default function App({ api = appApi }: AppProps) {
           ) : activePage === "home" ? (
             <HomePage
               error={operationError}
+              logPath={operationLogPath}
               warning={operationWarning}
               cancelling={cancelling}
               onCancel={() => void cancelCurrentOperation()}
               onPlay={() => void startPlay()}
+              onOpenLog={() => void openLatestGameLog()}
               onRetry={() => void startPlay()}
               onVersionChange={updateVersion}
               profile={profile}
@@ -397,8 +422,10 @@ export default function App({ api = appApi }: AppProps) {
             <SettingsPage
               api={api}
               memoryMb={profile.memoryMb}
+              gameDir={profile.gameDir}
               memorySaveState={memorySaveState}
               onMemoryChange={changeMemory}
+              onChooseGameDirectory={() => void chooseGameDirectory()}
               onRuntimeAction={(requirement, action) => void updateRuntime(requirement, action)}
               runtimes={runtimes}
             />
@@ -415,9 +442,11 @@ export default function App({ api = appApi }: AppProps) {
 
 interface SettingsPageProps {
   api: AppApi;
+  gameDir: string;
   memoryMb: number;
   memorySaveState: MemorySaveState;
   onMemoryChange(memoryMb: number): void;
+  onChooseGameDirectory(): void;
   onRuntimeAction(
     requirement: JavaMajor,
     action: (requirement: JavaMajor) => Promise<JavaRuntimeStatus | null>,
@@ -427,9 +456,11 @@ interface SettingsPageProps {
 
 function SettingsPage({
   api,
+  gameDir,
   memoryMb,
   memorySaveState,
   onMemoryChange,
+  onChooseGameDirectory,
   onRuntimeAction,
   runtimes,
 }: SettingsPageProps) {
@@ -444,6 +475,11 @@ function SettingsPage({
             onChange={onMemoryChange}
             saveState={memorySaveState}
           />
+          <section className="settings-card">
+            <h2>Папка игры</h2>
+            <code>{gameDir}</code>
+            <button onClick={onChooseGameDirectory} type="button">Выбрать папку игры</button>
+          </section>
           <section className="settings-card">
             <h2>Фоновые кадры</h2>
             <p>Затемнённые кадры меняются каждые 12 секунд. При уменьшенном движении смена отключена.</p>

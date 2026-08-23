@@ -6,8 +6,12 @@ use crate::{
         GameProcessStatus, Launcher, OperationId,
     },
     orchestration::{LaunchOrchestrator, WorkflowEvent, WorkflowEventSink},
+    paths::AppPaths,
 };
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tauri::{AppHandle, Emitter, State};
 
 pub const GAME_STARTED_EVENT: &str = "launcher://game-started";
@@ -110,4 +114,67 @@ pub async fn launch_status(
     launcher: State<'_, Launcher>,
 ) -> Result<GameProcessStatus, LauncherError> {
     launcher.status(&operation_id)
+}
+
+#[tauri::command]
+pub async fn open_latest_game_log(paths: State<'_, AppPaths>) -> Result<(), LauncherError> {
+    let path = latest_game_log_path(&paths)?;
+    open_log_file(&path)
+}
+
+fn latest_game_log_path(paths: &AppPaths) -> Result<PathBuf, LauncherError> {
+    let path = paths.safe_join(&paths.logs, Path::new("latest.log"))?;
+    if !path
+        .metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_file())
+    {
+        return Err(LauncherError::new(
+            "game_log_not_found",
+            "No sanitized Minecraft log is available yet.",
+            None,
+            true,
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn open_log_file(path: &Path) -> Result<(), LauncherError> {
+    use std::{iter::once, os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+    let operation: Vec<u16> = std::ffi::OsStr::new("open")
+        .encode_wide()
+        .chain(once(0))
+        .collect();
+    let target: Vec<u16> = path.as_os_str().encode_wide().chain(once(0)).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as isize <= 32 {
+        return Err(LauncherError::new(
+            "game_log_open_failed",
+            "The sanitized Minecraft log could not be opened.",
+            None,
+            true,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn open_log_file(_path: &Path) -> Result<(), LauncherError> {
+    Err(LauncherError::new(
+        "game_log_open_unavailable",
+        "Opening the Minecraft log is available only on Windows.",
+        None,
+        false,
+    ))
 }

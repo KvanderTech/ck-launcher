@@ -1,4 +1,4 @@
-use crate::{error::LauncherError, paths::AppPaths};
+use crate::{downloads::DownloadCancellationToken, error::LauncherError, paths::AppPaths};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Cursor},
@@ -15,6 +15,15 @@ const MAX_EXTRACTED_BYTES: u64 = 1_073_741_824;
 /// an entry cannot replace an existing file. `AppPaths::safe_join` also rejects reparse/symlink
 /// components at the last practical boundary before directory creation and file open.
 pub fn extract_zip_archive(bytes: &[u8], root: &Path) -> Result<(), LauncherError> {
+    extract_zip_archive_cancellable(bytes, root, &DownloadCancellationToken::new())
+}
+
+pub(crate) fn extract_zip_archive_cancellable(
+    bytes: &[u8],
+    root: &Path,
+    cancel: &DownloadCancellationToken,
+) -> Result<(), LauncherError> {
+    ensure_not_cancelled(cancel)?;
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|_| invalid_archive())?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
@@ -30,6 +39,7 @@ pub fn extract_zip_archive(bytes: &[u8], root: &Path) -> Result<(), LauncherErro
 
     let safety = AppPaths::new(root.to_path_buf());
     for index in 0..archive.len() {
+        ensure_not_cancelled(cancel)?;
         let mut entry = archive.by_index(index).map_err(|_| invalid_archive())?;
         let relative = validate_entry(&entry)?;
         let destination = safety
@@ -49,10 +59,31 @@ pub fn extract_zip_archive(bytes: &[u8], root: &Path) -> Result<(), LauncherErro
             .create_new(true)
             .open(destination)
             .map_err(|_| invalid_archive())?;
-        io::copy(&mut entry, &mut file).map_err(|_| invalid_archive())?;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            ensure_not_cancelled(cancel)?;
+            let read = io::Read::read(&mut entry, &mut buffer).map_err(|_| invalid_archive())?;
+            if read == 0 {
+                break;
+            }
+            io::Write::write_all(&mut file, &buffer[..read]).map_err(|_| invalid_archive())?;
+        }
         file.sync_all().map_err(|_| invalid_archive())?;
     }
     Ok(())
+}
+
+fn ensure_not_cancelled(cancel: &DownloadCancellationToken) -> Result<(), LauncherError> {
+    if cancel.is_cancelled() {
+        Err(LauncherError::new(
+            "download_cancelled",
+            "The operation was cancelled.",
+            None,
+            true,
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_entry<'a>(entry: &'a zip::read::ZipFile<'_>) -> Result<&'a Path, LauncherError> {

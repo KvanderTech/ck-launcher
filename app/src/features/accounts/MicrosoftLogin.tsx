@@ -10,7 +10,7 @@ interface MicrosoftLoginProps {
   onAuthenticated?: (account: AccountSummary) => void;
 }
 
-type LoginState = "idle" | "loading" | "error";
+type LoginState = "idle" | "loading" | "cancelling" | "error";
 
 export function MicrosoftLogin({
   api = launcherApi,
@@ -34,20 +34,36 @@ export function MicrosoftLogin({
     }
   }
 
+  async function cancelLogin() {
+    if (state !== "loading") return;
+    setState("cancelling");
+    try {
+      await api.cancelMicrosoftLogin();
+    } catch (error: unknown) {
+      setErrorMessage(errorMessageFrom(error));
+      setState("error");
+    }
+  }
+
   return (
     <div className="microsoft-login">
       <button
-        disabled={state === "loading"}
+        disabled={state === "loading" || state === "cancelling"}
         onClick={() => void beginLogin()}
         role={buttonRole}
         type="button"
       >
-        {state === "loading"
+        {state === "loading" || state === "cancelling"
           ? "Входим…"
           : state === "error"
             ? "Повторить вход"
             : idleLabel}
       </button>
+      {state === "loading" || state === "cancelling" ? (
+        <button disabled={state === "cancelling"} onClick={() => void cancelLogin()} type="button">
+          {state === "cancelling" ? "Отменяем вход…" : "Отменить вход"}
+        </button>
+      ) : null}
       {state === "error" ? <p role="alert">{errorMessage}</p> : null}
     </div>
   );

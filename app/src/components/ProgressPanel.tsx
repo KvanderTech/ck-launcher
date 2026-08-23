@@ -29,7 +29,7 @@ export function ProgressPanel({ progress, cancelling = false, onCancel }: Progre
   const percent = progress.totalBytes > 0
     ? Math.min(100, Math.floor((progress.completedBytes / progress.totalBytes) * 100))
     : 0;
-  const canCancel = !["idle", "launching", "running", "failed"].includes(progress.stage)
+  const canCancel = !["idle", "running", "failed"].includes(progress.stage)
     && Boolean(onCancel);
 
   return (

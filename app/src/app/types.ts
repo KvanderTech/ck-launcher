@@ -88,6 +88,7 @@ interface ErrorEventBase {
   operationId: OperationId;
   profileId: string;
   error: LauncherErrorDto;
+  logPath?: string;
 }
 
 export interface ProcessErrorEvent extends ErrorEventBase {

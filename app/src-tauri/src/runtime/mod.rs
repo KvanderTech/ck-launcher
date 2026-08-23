@@ -2,6 +2,7 @@ pub mod archive;
 pub mod detect;
 pub mod install;
 
+use crate::downloads::DownloadCancellationToken;
 use crate::error::LauncherError;
 use crate::metadata::models::ResolvedVersion;
 use detect::probe_java;
@@ -166,6 +167,17 @@ impl RuntimeManager {
         requirement: JavaRequirement,
         override_path: Option<PathBuf>,
     ) -> Result<JavaRuntimeStatus, LauncherError> {
+        self.resolve_cancellable(requirement, override_path, DownloadCancellationToken::new())
+            .await
+    }
+
+    pub async fn resolve_cancellable(
+        &self,
+        requirement: JavaRequirement,
+        override_path: Option<PathBuf>,
+        cancel: DownloadCancellationToken,
+    ) -> Result<JavaRuntimeStatus, LauncherError> {
+        ensure_not_cancelled(&cancel)?;
         let managed = self
             .runtime_root
             .join(format!("java-{}", requirement.major()))
@@ -193,10 +205,19 @@ impl RuntimeManager {
             );
 
         for (path, source) in candidates {
+            ensure_not_cancelled(&cancel)?;
             if !path.is_file() {
                 continue;
             }
-            match probe_java(self.runner.as_ref(), &path).await {
+            let probe_path = path.clone();
+            let probe = probe_java(self.runner.as_ref(), &probe_path);
+            let cancelled = cancel.cancelled();
+            futures_util::pin_mut!(probe, cancelled);
+            let result = match futures_util::future::select(cancelled, probe).await {
+                futures_util::future::Either::Left(_) => return Err(cancelled_error()),
+                futures_util::future::Either::Right((result, _)) => result,
+            };
+            match result {
                 Ok((major, version)) if major == requirement.major() => {
                     return Ok(JavaRuntimeStatus {
                         requirement: requirement.major(),
@@ -255,6 +276,16 @@ impl RuntimeManager {
         &self,
         requirement: JavaRequirement,
     ) -> Result<JavaRuntimeStatus, LauncherError> {
+        self.install_cancellable(requirement, DownloadCancellationToken::new())
+            .await
+    }
+
+    pub async fn install_cancellable(
+        &self,
+        requirement: JavaRequirement,
+        cancel: DownloadCancellationToken,
+    ) -> Result<JavaRuntimeStatus, LauncherError> {
+        ensure_not_cancelled(&cancel)?;
         {
             let mut installing = self.installing.lock().await;
             if !installing.insert(requirement.major()) {
@@ -268,7 +299,7 @@ impl RuntimeManager {
             }
         }
         let result = match &self.installer {
-            Some(installer) => installer.install(requirement).await,
+            Some(installer) => installer.install_cancellable(requirement, cancel).await,
             None => Err(LauncherError::new(
                 "runtime_install_unavailable",
                 "Managed Java installation is unavailable.",
@@ -305,6 +336,23 @@ impl RuntimeManager {
             version: Some(version),
         })
     }
+}
+
+fn ensure_not_cancelled(cancel: &DownloadCancellationToken) -> Result<(), LauncherError> {
+    if cancel.is_cancelled() {
+        Err(cancelled_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn cancelled_error() -> LauncherError {
+    LauncherError::new(
+        "download_cancelled",
+        "The operation was cancelled.",
+        None,
+        true,
+    )
 }
 
 fn normalize_java_path(path: PathBuf) -> PathBuf {

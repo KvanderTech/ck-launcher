@@ -50,3 +50,8 @@ sign in again, then launch the application. This value is read at runtime, so it
 embedded by `tauri build`.
 
 See [privacy-and-logs.md](docs/privacy-and-logs.md) for the local data and log policy.
+
+The default Minecraft directory is `%APPDATA%\CKLauncher\game`. Settings can persist a
+different absolute directory only through the native backend picker; install and launch use
+that same validated profile directory. A nonzero game exit is shown as retryable
+`game_exit`, with a backend-only action for opening the sanitized `latest.log`.

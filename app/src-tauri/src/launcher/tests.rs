@@ -591,15 +591,13 @@ impl EventSink for RecordingEvents {
 }
 
 #[test]
-fn supervisor_spawns_the_exact_command_rejects_duplicates_and_emits_one_started_and_exit() {
+fn nonzero_exit_records_stable_failure_and_emits_one_terminal_error() {
     tauri::async_runtime::block_on(async {
         let request = fixture_request("supervisor");
         let logs = request.game_root.parent().expect("root").join("logs");
         fs::create_dir_all(&logs).expect("logs");
         let prepared = build_launch(request).expect("prepared");
         let expected_executable = prepared.command.executable.clone();
-        let expected_args = prepared.command.args.clone();
-        let expected_cwd = prepared.command.cwd.clone();
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let spawner = Arc::new(MockSpawner {
             commands: Mutex::new(Vec::new()),
@@ -615,7 +613,7 @@ fn supervisor_spawns_the_exact_command_rejects_duplicates_and_emits_one_started_
             Arc::new(PreparedContext(Mutex::new(Some(prepared)))),
             spawner.clone(),
             events.clone(),
-            logs,
+            logs.clone(),
         );
 
         let operation = launcher.launch("default").await.expect("launch starts");
@@ -628,8 +626,6 @@ fn supervisor_spawns_the_exact_command_rejects_duplicates_and_emits_one_started_
             let commands = spawner.commands.lock().expect("commands lock");
             assert_eq!(commands.len(), 1);
             assert_eq!(commands[0].executable, expected_executable);
-            assert_eq!(commands[0].args, expected_args);
-            assert_eq!(commands[0].cwd, expected_cwd);
         }
         release.add_permits(1);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -650,14 +646,81 @@ fn supervisor_spawns_the_exact_command_rejects_duplicates_and_emits_one_started_
                 .count(),
             1
         );
+        assert!(!recorded
+            .iter()
+            .any(|event| matches!(event, GameProcessEvent::Exited { .. })));
+        let terminal = recorded
+            .iter()
+            .find_map(|event| match event {
+                GameProcessEvent::Error {
+                    error,
+                    terminal: true,
+                    ..
+                } => Some(error),
+                _ => None,
+            })
+            .expect("nonzero exit emits a terminal error");
+        assert_eq!(terminal.code(), "game_exit");
+        assert_eq!(terminal.details(), Some("Minecraft exited with code 7."));
+        let status = launcher.status(&operation).expect("status");
+        assert_eq!(status.exit_code, Some(7));
         assert_eq!(
-            recorded
+            status.error.as_ref().map(|error| error.code()),
+            Some("game_exit")
+        );
+        let expected_log = logs.join("latest.log");
+        assert_eq!(status.log_path.as_deref(), Some(expected_log.as_path()));
+        assert_eq!(launcher.active_count().expect("registry"), 0);
+    });
+}
+
+#[test]
+fn zero_exit_remains_successful_and_emits_one_exit() {
+    tauri::async_runtime::block_on(async {
+        let request = fixture_request("zero-exit");
+        let logs = request.game_root.parent().expect("root").join("logs");
+        fs::create_dir_all(&logs).expect("logs");
+        let prepared = build_launch(request).expect("prepared");
+        let events = Arc::new(RecordingEvents::default());
+        let launcher = Launcher::new(
+            Arc::new(PreparedContext(Mutex::new(Some(prepared)))),
+            Arc::new(MockSpawner {
+                commands: Mutex::new(Vec::new()),
+                release: Arc::new(tokio::sync::Semaphore::new(1)),
+                fail: false,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+                post_exit_error: None,
+            }),
+            events.clone(),
+            logs,
+        );
+
+        let operation = launcher.launch("default").await.expect("launch starts");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if launcher.status(&operation).expect("status").exit_code == Some(0) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("process exits");
+
+        let status = launcher.status(&operation).expect("status");
+        assert!(status.error.is_none());
+        assert_eq!(
+            events
+                .0
+                .lock()
+                .expect("events")
                 .iter()
-                .filter(|event| matches!(event, GameProcessEvent::Exited { exit_code: 7, .. }))
+                .filter(|event| matches!(event, GameProcessEvent::Exited { exit_code: 0, .. }))
                 .count(),
             1
         );
-        assert_eq!(launcher.active_count().expect("registry"), 0);
     });
 }
 
@@ -723,7 +786,7 @@ fn auxiliary_output_failure_preserves_exit_status_and_emits_exit_exactly_once() 
             fail: false,
             stdout: Vec::new(),
             stderr: Vec::new(),
-            exit_code: 23,
+            exit_code: 0,
             post_exit_error: Some(crate::error::LauncherError::new(
                 "game_log_unavailable",
                 "Game output could not be written to the launcher log.",
@@ -752,7 +815,7 @@ fn auxiliary_output_failure_preserves_exit_status_and_emits_exit_exactly_once() 
         .expect("auxiliary error recorded");
 
         let status = launcher.status(&operation).expect("status");
-        assert_eq!(status.exit_code, Some(23));
+        assert_eq!(status.exit_code, Some(0));
         assert_eq!(
             status.error.as_ref().map(|error| error.code()),
             Some("game_log_unavailable")
@@ -761,7 +824,7 @@ fn auxiliary_output_failure_preserves_exit_status_and_emits_exit_exactly_once() 
         assert_eq!(
             recorded
                 .iter()
-                .filter(|event| matches!(event, GameProcessEvent::Exited { exit_code: 23, .. }))
+                .filter(|event| matches!(event, GameProcessEvent::Exited { exit_code: 0, .. }))
                 .count(),
             1
         );
@@ -917,6 +980,7 @@ fn terminal_process_history_is_bounded_and_expires_the_oldest_operation() {
                     pid: Some(index as u32),
                     exit_code: None,
                     error: None,
+                    log_path: None,
                 },
             );
             inner

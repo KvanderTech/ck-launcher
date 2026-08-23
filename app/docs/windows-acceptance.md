@@ -14,16 +14,18 @@ The expected paths for a release build are:
 
 ## Entra public-client registration
 
-The application uses Authorization Code with PKCE in the system browser and a loopback
-callback on `127.0.0.1` with a random free port. Register a **public client** in Microsoft
-Entra ID as follows:
+The application uses Authorization Code with PKCE in the system browser. Its listener binds
+only to IPv4 `127.0.0.1` on a random free port, while both OAuth requests use the exact
+redirect form `http://localhost:<random-port>/callback`. Microsoft Entra ignores the port
+when matching a `localhost` loopback redirect, but the `/callback` path must match. Register
+a **public client** in Microsoft Entra ID as follows:
 
 1. Create an App registration for the Microsoft account population your release supports.
    This implementation uses the `consumers` authority, so select **Personal Microsoft
    accounts** (or an account type that includes them).
 2. In **Authentication**, add the platform **Mobile and desktop applications** and add the
-   redirect URI `http://localhost`. Do not register a client secret for this desktop
-   public-client flow.
+   redirect URI `http://localhost/callback`. Do not register `127.0.0.1`, a fixed port, or
+   a client secret for this desktop public-client flow.
 3. Enable public client flows only if the tenant policy asks for it. The implemented flow
    is authorization-code + PKCE, not a client-secret flow.
 4. Copy the **Application (client) ID**. It is public configuration, but it must still be
@@ -55,6 +57,9 @@ With no environment value, sign-in must remain unavailable with the stable
 `auth_not_configured` error. That is the expected acceptance state for an unsigned build
 without a release registration.
 
+Cancelling sign-in interrupts the pending loopback callback and any in-flight token exchange;
+it does not leave an OAuth listener reserved for a later attempt.
+
 ## Bounded local smoke acceptance
 
 Run the direct release executable with a temporary, empty `APPDATA` directory. Verify that
@@ -67,6 +72,12 @@ the `ck-launcher` process and its main window are alive, then verify creation of
 
 Close the window or terminate only the PID started for the smoke run. Do not use that
 temporary profile as a real user profile.
+
+The default game directory is `%APPDATA%\CKLauncher\game`. A user can choose another
+absolute local directory in Settings through the backend-owned folder picker. The backend
+creates and canonicalizes that selection, persists it in the active profile, rejects links
+and Windows reparse points component by component, and uses the same directory for install,
+verification, and launch.
 
 ## External acceptance blockers
 
