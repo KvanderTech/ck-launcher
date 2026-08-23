@@ -29,6 +29,7 @@ interface AppProps {
 }
 
 type BootState = "loading" | "loaded" | "failed";
+type MemorySaveState = "idle" | "saving" | "error";
 type BufferedOperationEvent =
   | { kind: "progress"; value: ProgressEvent }
   | { kind: "started"; value: GameStartedEvent }
@@ -47,11 +48,15 @@ export default function App({ api = appApi }: AppProps) {
   const [progress, setProgress] = useState<ProgressEvent>();
   const [operationError, setOperationError] = useState<LauncherErrorDto>();
   const [cancelling, setCancelling] = useState(false);
+  const [memorySaveState, setMemorySaveState] = useState<MemorySaveState>("idle");
   const operationId = useRef<OperationId | undefined>(undefined);
   const profileRef = useRef<LauncherProfile | undefined>(undefined);
   const awaitingOperationId = useRef(false);
   const bufferedOperationEvents = useRef<BufferedOperationEvent[]>([]);
   const requiredJavaRequest = useRef(0);
+  const savedMemory = useRef<number | undefined>(undefined);
+  const memoryTimer = useRef<number | undefined>(undefined);
+  const memoryRequest = useRef(0);
 
   function applyOperationEvent(event: BufferedOperationEvent) {
     switch (event.kind) {
@@ -101,6 +106,7 @@ export default function App({ api = appApi }: AppProps) {
         setVersions(nextVersions.filter((version) => version.type === "release"));
         setProfile(nextProfile);
         profileRef.current = nextProfile;
+        savedMemory.current = nextProfile.memoryMb;
         setRuntimes(nextRuntimes);
         setBootState("loaded");
       },
@@ -113,6 +119,11 @@ export default function App({ api = appApi }: AppProps) {
       active = false;
     };
   }, [api]);
+
+  useEffect(() => () => {
+    if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
+    memoryRequest.current += 1;
+  }, []);
 
   useEffect(() => {
     const versionId = profile?.versionId;
@@ -190,12 +201,36 @@ export default function App({ api = appApi }: AppProps) {
     setProfile(next);
   }
 
-  function memorySaved(memoryMb: number) {
+  function mergeMemory(memoryMb: number) {
     const current = profileRef.current;
     if (!current) return;
     const next = { ...current, memoryMb };
     profileRef.current = next;
     setProfile(next);
+  }
+
+  function changeMemory(memoryMb: number) {
+    mergeMemory(memoryMb);
+    setMemorySaveState("idle");
+    if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
+    const request = ++memoryRequest.current;
+    memoryTimer.current = window.setTimeout(() => {
+      if (request !== memoryRequest.current) return;
+      setMemorySaveState("saving");
+      void api.updateMemory(memoryMb).then(
+        (saved) => {
+          if (request !== memoryRequest.current) return;
+          savedMemory.current = saved.memoryMb;
+          mergeMemory(saved.memoryMb);
+          setMemorySaveState("idle");
+        },
+        () => {
+          if (request !== memoryRequest.current) return;
+          if (savedMemory.current !== undefined) mergeMemory(savedMemory.current);
+          setMemorySaveState("error");
+        },
+      );
+    }, 250);
   }
 
   async function updateRuntime(
@@ -296,7 +331,9 @@ export default function App({ api = appApi }: AppProps) {
           ) : activePage === "settings" ? (
             <SettingsPage
               api={api}
-              onMemorySaved={memorySaved}
+              memoryMb={profile.memoryMb}
+              memorySaveState={memorySaveState}
+              onMemoryChange={changeMemory}
               onRuntimeAction={(requirement, action) => void updateRuntime(requirement, action)}
               runtimes={runtimes}
             />
@@ -313,7 +350,9 @@ export default function App({ api = appApi }: AppProps) {
 
 interface SettingsPageProps {
   api: AppApi;
-  onMemorySaved(memoryMb: number): void;
+  memoryMb: number;
+  memorySaveState: MemorySaveState;
+  onMemoryChange(memoryMb: number): void;
   onRuntimeAction(
     requirement: JavaMajor,
     action: (requirement: JavaMajor) => Promise<JavaRuntimeStatus | null>,
@@ -321,13 +360,25 @@ interface SettingsPageProps {
   runtimes: JavaRuntimeStatus[];
 }
 
-function SettingsPage({ api, onMemorySaved, onRuntimeAction, runtimes }: SettingsPageProps) {
+function SettingsPage({
+  api,
+  memoryMb,
+  memorySaveState,
+  onMemoryChange,
+  onRuntimeAction,
+  runtimes,
+}: SettingsPageProps) {
   return (
     <section className="settings-page">
       <div className="page-heading"><span className="eyebrow">Параметры запуска</span><h1>Настройки</h1><p>Память и реальные установки Java сохраняются через ядро лаунчера.</p></div>
       <div className="settings-grid">
         <div className="settings-column">
-          <MemorySettings api={api} onSaved={onMemorySaved} />
+          <MemorySettings
+            api={api}
+            memoryMb={memoryMb}
+            onChange={onMemoryChange}
+            saveState={memorySaveState}
+          />
           <section className="settings-card">
             <h2>Фоновые кадры</h2>
             <p>Затемнённые кадры меняются каждые 12 секунд. При уменьшенном движении смена отключена.</p>

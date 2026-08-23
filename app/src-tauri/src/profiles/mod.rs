@@ -104,9 +104,18 @@ impl ProfileService {
     }
 
     pub async fn update_memory(&self, memory_mb: u32) -> Result<LauncherProfile, LauncherError> {
-        let mut profile = self.get_profile().await?;
-        profile.memory_mb = memory_mb;
-        self.update_profile(profile).await
+        let memory_mb = clamp_memory(memory_mb, self.memory.physical_memory_mb());
+        self.storage
+            .update_active_profile_memory(memory_mb)
+            .await?
+            .ok_or_else(|| {
+                LauncherError::new(
+                    "profile_not_found",
+                    "The launcher profile was not found.",
+                    None,
+                    false,
+                )
+            })
     }
 
     pub async fn memory_status(&self) -> Result<MemorySettingsStatus, LauncherError> {
@@ -124,12 +133,48 @@ impl ProfileService {
 #[cfg(test)]
 mod tests {
     use super::{clamp_memory, PhysicalMemory, ProfileService};
-    use crate::storage::{LauncherProfile, Storage};
-    use std::sync::Arc;
+    use crate::{
+        error::LauncherError,
+        storage::{LauncherProfile, ProfileStore, Storage},
+    };
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
     struct FixedMemory(u64);
     impl PhysicalMemory for FixedMemory {
         fn physical_memory_mb(&self) -> u64 {
             self.0
+        }
+    }
+
+    struct PausingProfileStore {
+        current: Mutex<Option<LauncherProfile>>,
+        read_started: Notify,
+        resume_read: Notify,
+    }
+
+    #[async_trait]
+    impl ProfileStore for PausingProfileStore {
+        async fn upsert_profile(&self, profile: &LauncherProfile) -> Result<(), LauncherError> {
+            *self.current.lock().expect("profile lock") = Some(profile.clone());
+            Ok(())
+        }
+
+        async fn active_profile(&self) -> Result<Option<LauncherProfile>, LauncherError> {
+            Ok(self.current.lock().expect("profile lock").clone())
+        }
+
+        async fn update_active_profile_memory(
+            &self,
+            memory_mb: u32,
+        ) -> Result<Option<LauncherProfile>, LauncherError> {
+            self.read_started.notify_one();
+            self.resume_read.notified().await;
+            let mut current = self.current.lock().expect("profile lock");
+            if let Some(profile) = current.as_mut() {
+                profile.memory_mb = memory_mb;
+            }
+            Ok(current.clone())
         }
     }
 
@@ -217,6 +262,69 @@ mod tests {
 
             assert_eq!(saved.version_id.as_deref(), Some("1.21.8"));
             assert_eq!(saved.memory_mb, 12_288);
+        });
+    }
+
+    #[test]
+    fn delayed_memory_update_cannot_overwrite_a_concurrently_saved_version() {
+        tauri::async_runtime::block_on(async {
+            let store = Arc::new(PausingProfileStore {
+                current: Mutex::new(Some(LauncherProfile {
+                    id: "default".to_owned(),
+                    name: "Player".to_owned(),
+                    version_id: Some("1.20.1".to_owned()),
+                    memory_mb: 4_096,
+                    game_dir: "game".to_owned(),
+                    java_override: None,
+                })),
+                read_started: Notify::new(),
+                resume_read: Notify::new(),
+            });
+            let service = Arc::new(ProfileService::new(
+                store.clone(),
+                Arc::new(FixedMemory(16_384)),
+                "game",
+            ));
+            let update = tauri::async_runtime::spawn({
+                let service = service.clone();
+                async move { service.update_memory(5_120).await }
+            });
+            store.read_started.notified().await;
+            store
+                .upsert_profile(&LauncherProfile {
+                    id: "default".to_owned(),
+                    name: "Player".to_owned(),
+                    version_id: Some("1.21.8".to_owned()),
+                    memory_mb: 4_096,
+                    game_dir: "game".to_owned(),
+                    java_override: None,
+                })
+                .await
+                .expect("new version saves");
+            store.resume_read.notify_one();
+
+            update
+                .await
+                .expect("memory task joins")
+                .expect("memory saves");
+            let current = store.current.lock().expect("profile lock").clone().unwrap();
+            assert_eq!(current.version_id.as_deref(), Some("1.21.8"));
+            assert_eq!(current.memory_mb, 5_120);
+        });
+    }
+
+    #[test]
+    fn memory_update_returns_stable_error_when_no_profile_exists() {
+        tauri::async_runtime::block_on(async {
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            let service = ProfileService::new(storage, Arc::new(FixedMemory(16_384)), "game");
+
+            let error = service
+                .update_memory(5_120)
+                .await
+                .expect_err("missing profile is rejected");
+
+            assert_eq!(error.code(), "profile_not_found");
         });
     }
 }
