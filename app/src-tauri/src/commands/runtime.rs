@@ -2,12 +2,12 @@ use crate::{
     error::LauncherError,
     runtime::{JavaRequirement, JavaRuntimeStatus, RuntimeManager},
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tauri::State;
 
 #[tauri::command]
 pub async fn runtime_statuses(
-    manager: State<'_, RuntimeManager>,
+    manager: State<'_, Arc<RuntimeManager>>,
 ) -> Result<Vec<JavaRuntimeStatus>, LauncherError> {
     manager.statuses().await
 }
@@ -15,7 +15,7 @@ pub async fn runtime_statuses(
 #[tauri::command]
 pub async fn detect_runtime(
     requirement: JavaRequirement,
-    manager: State<'_, RuntimeManager>,
+    manager: State<'_, Arc<RuntimeManager>>,
 ) -> Result<JavaRuntimeStatus, LauncherError> {
     manager.resolve(requirement, None).await
 }
@@ -23,7 +23,7 @@ pub async fn detect_runtime(
 #[tauri::command]
 pub async fn install_runtime(
     requirement: JavaRequirement,
-    manager: State<'_, RuntimeManager>,
+    manager: State<'_, Arc<RuntimeManager>>,
 ) -> Result<JavaRuntimeStatus, LauncherError> {
     manager.install(requirement).await
 }
@@ -31,7 +31,7 @@ pub async fn install_runtime(
 #[tauri::command]
 pub async fn choose_runtime_path(
     requirement: JavaRequirement,
-    manager: State<'_, RuntimeManager>,
+    manager: State<'_, Arc<RuntimeManager>>,
 ) -> Result<Option<JavaRuntimeStatus>, LauncherError> {
     let Some(path) = choose_java_executable()? else {
         return Ok(None);

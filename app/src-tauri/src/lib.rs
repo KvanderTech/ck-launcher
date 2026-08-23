@@ -5,6 +5,7 @@ pub mod commands;
 pub mod downloads;
 pub mod error;
 pub mod installer;
+pub mod launcher;
 pub mod metadata;
 pub mod paths;
 pub mod profiles;
@@ -47,6 +48,8 @@ pub fn run() {
             commands::install::install_version,
             commands::install::cancel_operation,
             commands::install::installation_status,
+            commands::launch::launch,
+            commands::launch::launch_status,
         ])
         .setup(|app| {
             let paths = AppPaths::windows_default()?;
@@ -56,11 +59,11 @@ pub fn run() {
             let credentials: Arc<dyn storage::credentials::CredentialStore> =
                 Arc::new(WindowsCredentialStore);
             let mutations = Arc::new(AccountMutationCoordinator::default());
-            let auth = auth::AuthService::production(
+            let auth = Arc::new(auth::AuthService::production(
                 storage.clone(),
                 credentials.clone(),
                 mutations.clone(),
-            )?;
+            )?);
             let accounts = commands::accounts::AccountService::new(
                 Arc::new(storage.clone()),
                 credentials,
@@ -74,7 +77,7 @@ pub fn run() {
                 Arc::new(profiles::SystemPhysicalMemory),
                 paths.game.to_string_lossy(),
             );
-            let runtimes = runtime::RuntimeManager::production(paths.runtime.clone())?;
+            let runtimes = Arc::new(runtime::RuntimeManager::production(paths.runtime.clone())?);
             let downloads = Arc::new(downloads::DownloadService::new(paths.game.clone())?);
             let installer = installer::Installer::production(
                 &paths,
@@ -83,6 +86,19 @@ pub fn run() {
                 Arc::new(storage.clone()),
             )?;
             let install_operations = installer::OperationRegistry::default();
+            let launch_context = Arc::new(launcher::ProductionLaunchContext::new(
+                auth.clone(),
+                Arc::new(storage.clone()),
+                metadata.clone(),
+                runtimes.clone(),
+                paths.clone(),
+                Arc::new(profiles::SystemPhysicalMemory),
+            ));
+            let launcher = launcher::Launcher::production(
+                launch_context,
+                commands::launch::TauriGameEventSink::new(app.handle().clone()),
+                paths.logs.clone(),
+            );
 
             app.manage(paths);
             app.manage(storage);
@@ -93,6 +109,7 @@ pub fn run() {
             app.manage(runtimes);
             app.manage(installer);
             app.manage(install_operations);
+            app.manage(launcher);
             Ok(())
         })
         .run(tauri::generate_context!())

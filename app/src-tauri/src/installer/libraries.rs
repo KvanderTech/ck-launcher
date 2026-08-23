@@ -41,11 +41,15 @@ pub fn library_allowed(
     library: &Library,
     context: &WindowsRuleContext,
 ) -> Result<bool, LauncherError> {
-    if library.rules.is_empty() {
+    rules_allowed(&library.rules, context)
+}
+
+pub fn rules_allowed(rules: &[Rule], context: &WindowsRuleContext) -> Result<bool, LauncherError> {
+    if rules.is_empty() {
         return Ok(true);
     }
     let mut allowed = false;
-    for rule in &library.rules {
+    for rule in rules {
         if rule_matches(rule, context)? {
             allowed = match rule.action.as_str() {
                 "allow" => true,

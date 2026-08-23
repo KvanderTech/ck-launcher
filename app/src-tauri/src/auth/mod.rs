@@ -45,6 +45,17 @@ pub struct AuthService {
     mutations: Arc<AccountMutationCoordinator>,
 }
 
+pub(crate) struct RefreshedMinecraftAccount {
+    pub account: AccountSummary,
+    access_token: client::MinecraftAccess,
+}
+
+impl RefreshedMinecraftAccount {
+    pub(crate) fn into_parts(self) -> (AccountSummary, String) {
+        (self.account, self.access_token.token().to_owned())
+    }
+}
+
 impl AuthService {
     pub fn new(
         client_id: Option<String>,
@@ -163,6 +174,43 @@ impl AuthService {
             return Err(error);
         }
         Ok(profile)
+    }
+
+    pub(crate) async fn refresh_active_minecraft_account(
+        &self,
+    ) -> Result<RefreshedMinecraftAccount, LauncherError> {
+        let _mutation = self.mutations.lock().await;
+        let account = self
+            .storage
+            .list_accounts()
+            .await?
+            .into_iter()
+            .find(|account| account.is_active)
+            .ok_or_else(|| {
+                LauncherError::new(
+                    "account_required",
+                    "Sign in to launch Minecraft.",
+                    None,
+                    true,
+                )
+            })?;
+        let refresh = self.credentials.get(&account.id)?.ok_or_else(|| {
+            LauncherError::new(
+                "account_reauthentication_required",
+                "Sign in again to launch Minecraft.",
+                None,
+                true,
+            )
+        })?;
+        let oauth = self.api.refresh_token(&refresh).await?;
+        let xbox = self.api.xbox_live(oauth.access_token()).await?;
+        let xsts = self.api.xsts(&xbox).await?;
+        let access_token = self.api.minecraft(&xsts).await?;
+        self.credentials.save(&account.id, oauth.refresh_token())?;
+        Ok(RefreshedMinecraftAccount {
+            account,
+            access_token,
+        })
     }
 }
 
@@ -385,8 +433,26 @@ mod tests {
             Ok(OAuthTokens::new("oauth-access", "refresh-secret"))
         }
 
+        async fn refresh_token(
+            &self,
+            refresh_token: &RefreshToken,
+        ) -> Result<OAuthTokens, LauncherError> {
+            assert!(matches!(
+                refresh_token.expose_secret(),
+                "refresh-secret" | "old-refresh-secret"
+            ));
+            self.calls.lock().expect("calls lock").push("refresh_token");
+            Ok(OAuthTokens::new(
+                "refreshed-oauth-access",
+                "rotated-refresh-secret",
+            ))
+        }
+
         async fn xbox_live(&self, access_token: &str) -> Result<XboxToken, LauncherError> {
-            assert_eq!(access_token, "oauth-access");
+            assert!(matches!(
+                access_token,
+                "oauth-access" | "refreshed-oauth-access"
+            ));
             self.calls.lock().expect("calls lock").push("xbox_live");
             Ok(XboxToken::new("xbox-token", "user-hash"))
         }
@@ -466,6 +532,58 @@ mod tests {
                     .expect("credential exists")
                     .expose_secret(),
                 "refresh-secret"
+            );
+        });
+    }
+
+    #[test]
+    fn launch_refreshes_the_active_account_internally_and_rotates_the_credential() {
+        tauri::async_runtime::block_on(async {
+            let account = AccountSummary {
+                id: "stable-account-id".to_owned(),
+                minecraft_name: "Player".to_owned(),
+                minecraft_uuid: "minecraft-uuid".to_owned(),
+                head_url: None,
+                is_active: true,
+            };
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            storage.upsert_account(&account).await.expect("account");
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            credentials
+                .save(&account.id, &RefreshToken::new("refresh-secret"))
+                .expect("credential");
+            let api = Arc::new(MockMicrosoftApi {
+                calls: Mutex::new(Vec::new()),
+                profile_error: false,
+            });
+            let service = AuthService::new(
+                Some("public-client-id".to_owned()),
+                api.clone(),
+                storage,
+                credentials.clone(),
+                Arc::new(RecordingOpener::default()),
+                Arc::new(AccountMutationCoordinator::default()),
+            );
+
+            let refreshed = service
+                .refresh_active_minecraft_account()
+                .await
+                .expect("refresh");
+            let (public, access_token) = refreshed.into_parts();
+
+            assert_eq!(public, account);
+            assert_eq!(access_token, "minecraft-access");
+            assert_eq!(
+                *api.calls.lock().expect("calls"),
+                ["refresh_token", "xbox_live", "xsts", "minecraft"]
+            );
+            assert_eq!(
+                credentials
+                    .get("stable-account-id")
+                    .expect("read")
+                    .expect("rotated")
+                    .expose_secret(),
+                "rotated-refresh-secret"
             );
         });
     }

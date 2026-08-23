@@ -60,7 +60,7 @@ pub async fn list_accounts(
 
 #[tauri::command]
 pub async fn begin_microsoft_login(
-    auth: State<'_, AuthService>,
+    auth: State<'_, Arc<AuthService>>,
 ) -> Result<AccountSummary, LauncherError> {
     let session = auth.begin_login()?;
     let (session, code) = tauri::async_runtime::spawn_blocking(move || {
