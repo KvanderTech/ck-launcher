@@ -1,7 +1,13 @@
 #![allow(linker_messages)]
 
+pub mod error;
+pub mod paths;
+pub mod storage;
 mod webview2;
 
+use paths::AppPaths;
+use storage::Storage;
+use tauri::Manager;
 use webview2::{
     check_availability, missing_runtime_instruction, show_missing_runtime_instruction,
     WindowsWebView2Registry,
@@ -17,6 +23,16 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(webview2_availability)
+        .setup(|app| {
+            let paths = AppPaths::windows_default()?;
+            paths.create_directories()?;
+            let database_url = paths.database_url()?;
+            let storage = tauri::async_runtime::block_on(Storage::connect(&database_url))?;
+
+            app.manage(paths);
+            app.manage(storage);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
