@@ -1,12 +1,15 @@
 #![allow(linker_messages)]
 
+pub mod auth;
+pub mod commands;
 pub mod error;
 pub mod paths;
 pub mod storage;
 mod webview2;
 
 use paths::AppPaths;
-use storage::Storage;
+use std::sync::Arc;
+use storage::{credentials::WindowsCredentialStore, Storage};
 use tauri::Manager;
 use webview2::{
     check_availability, missing_runtime_instruction, show_missing_runtime_instruction,
@@ -23,14 +26,26 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(webview2_availability)
+        .invoke_handler(tauri::generate_handler![
+            commands::accounts::list_accounts,
+            commands::accounts::begin_microsoft_login,
+            commands::accounts::remove_account,
+            commands::accounts::set_active_account,
+        ])
         .setup(|app| {
             let paths = AppPaths::windows_default()?;
             paths.create_directories()?;
             let database_url = paths.database_url()?;
             let storage = tauri::async_runtime::block_on(Storage::connect(&database_url))?;
+            let credentials: Arc<dyn storage::credentials::CredentialStore> =
+                Arc::new(WindowsCredentialStore);
+            let auth = auth::AuthService::production(storage.clone(), credentials.clone())?;
+            let accounts = commands::accounts::AccountService::new(storage.clone(), credentials);
 
             app.manage(paths);
             app.manage(storage);
+            app.manage(auth);
+            app.manage(accounts);
             Ok(())
         })
         .run(tauri::generate_context!())
