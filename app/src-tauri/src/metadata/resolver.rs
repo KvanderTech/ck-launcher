@@ -4,18 +4,25 @@ use async_trait::async_trait;
 use reqwest::{header, Client, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::{
     collections::{BTreeMap, HashSet},
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const MAX_INHERITANCE_DEPTH: usize = 16;
+static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub enum HttpResponse {
@@ -108,6 +115,42 @@ impl FileMetadataCache {
                 .collect::<String>()
         ))
     }
+
+    fn temporary_path(&self, target: &std::path::Path) -> PathBuf {
+        let sequence = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
+        let name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("metadata");
+        self.root
+            .join(format!(".{name}.{}-{sequence}.tmp", std::process::id()))
+    }
+
+    fn write_temporary(
+        &self,
+        target: &std::path::Path,
+        body: &[u8],
+    ) -> Result<PathBuf, LauncherError> {
+        for _ in 0..16 {
+            let temporary = self.temporary_path(target);
+            let mut file = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return Err(LauncherError::storage_unavailable()),
+            };
+            if file.write_all(body).and_then(|_| file.sync_all()).is_err() {
+                drop(file);
+                let _ = fs::remove_file(&temporary);
+                return Err(LauncherError::storage_unavailable());
+            }
+            return Ok(temporary);
+        }
+        Err(LauncherError::storage_unavailable())
+    }
 }
 impl MetadataCache for FileMetadataCache {
     fn load(&self, key: &str) -> Result<Option<CacheEntry>, LauncherError> {
@@ -119,14 +162,41 @@ impl MetadataCache for FileMetadataCache {
     }
     fn save(&self, key: &str, entry: &CacheEntry) -> Result<(), LauncherError> {
         let target = self.path(key);
-        let temporary = target.with_extension("tmp");
-        fs::write(
-            &temporary,
-            serde_json::to_vec(entry).map_err(|_| LauncherError::storage_unavailable())?,
-        )
-        .map_err(|_| LauncherError::storage_unavailable())?;
-        fs::rename(temporary, target).map_err(|_| LauncherError::storage_unavailable())
+        let body = serde_json::to_vec(entry).map_err(|_| LauncherError::storage_unavailable())?;
+        let temporary = self.write_temporary(&target, &body)?;
+        if replace_existing(&temporary, &target).is_err() {
+            let _ = fs::remove_file(&temporary);
+            return Err(LauncherError::storage_unavailable());
+        }
+        Ok(())
     }
+}
+
+#[cfg(windows)]
+fn replace_existing(temporary: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let temporary: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe {
+        MoveFileExW(
+            temporary.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } != 0
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_existing(temporary: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    fs::rename(temporary, target)
 }
 
 pub struct MetadataService {
@@ -585,5 +655,51 @@ mod tests {
         let error = tauri::async_runtime::block_on(service.resolved_version("one"))
             .expect_err("wrong hash is rejected");
         assert_eq!(error.code(), "metadata_invalid");
+    }
+
+    #[test]
+    fn file_cache_replaces_an_existing_verified_entry_after_a_second_refresh() {
+        let unique = format!(
+            "ck-launcher-metadata-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let cache = FileMetadataCache::new(root.clone()).expect("cache directory is created");
+        cache
+            .save(
+                "manifest",
+                &CacheEntry {
+                    body: "first verified manifest".to_owned(),
+                    etag: Some("etag-one".to_owned()),
+                    verified: true,
+                },
+            )
+            .expect("first cache entry saves");
+        std::fs::create_dir(root.join("manifest.tmp"))
+            .expect("the legacy fixed temporary name is unavailable");
+
+        cache
+            .save(
+                "manifest",
+                &CacheEntry {
+                    body: "second verified manifest".to_owned(),
+                    etag: Some("etag-two".to_owned()),
+                    verified: true,
+                },
+            )
+            .expect("second cache refresh replaces the first entry");
+
+        let entry = cache
+            .load("manifest")
+            .expect("cache reads")
+            .expect("cache entry remains");
+        assert_eq!(entry.body, "second verified manifest");
+        assert_eq!(entry.etag.as_deref(), Some("etag-two"));
+        assert!(entry.verified);
+        std::fs::remove_dir_all(root).expect("cache test directory is removed");
     }
 }
