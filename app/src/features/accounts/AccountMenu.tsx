@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { launcherApi, type LauncherApi } from "../../app/tauri";
 import type { AccountSummary } from "../../app/types";
+import { MicrosoftLogin } from "./MicrosoftLogin";
 
 interface AccountMenuProps {
   accounts: AccountSummary[];
@@ -74,17 +75,15 @@ export function AccountMenu({
               {account.id === activeId ? <span aria-hidden="true" className="account-check">✓</span> : null}
             </button>
           ))}
-          <button
-            className="account-menu-action"
-            onClick={() => {
+          <MicrosoftLogin
+            api={api}
+            buttonRole="menuitem"
+            idleLabel="Добавить аккаунт"
+            onAuthenticated={(account) => {
+              onAuthenticated?.(account);
               setOpen(false);
-              void api.beginMicrosoftLogin().then((account) => onAuthenticated?.(account));
             }}
-            role="menuitem"
-            type="button"
-          >
-            <span aria-hidden="true">＋</span> Добавить аккаунт
-          </button>
+          />
         </div>
       ) : null}
       <button

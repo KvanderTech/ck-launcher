@@ -1,5 +1,6 @@
 import type {
   GameVersionSummary,
+  JavaMajor,
   JavaRuntimeStatus,
   LauncherErrorDto,
   LauncherProfile,
@@ -16,6 +17,7 @@ export type LauncherViewState =
   | "fatal-error";
 
 interface HomePageProps {
+  cancelling: boolean;
   error?: LauncherErrorDto;
   onCancel(): void;
   onPlay(): void;
@@ -23,6 +25,7 @@ interface HomePageProps {
   onVersionChange(versionId: string): void;
   profile: LauncherProfile;
   progress?: ProgressEvent;
+  requiredJava?: JavaMajor;
   runtimes: JavaRuntimeStatus[];
   state: LauncherViewState;
   versions: GameVersionSummary[];
@@ -38,6 +41,7 @@ const stateLabels: Record<LauncherViewState, string> = {
 };
 
 export function HomePage({
+  cancelling,
   error,
   onCancel,
   onPlay,
@@ -45,12 +49,22 @@ export function HomePage({
   onVersionChange,
   profile,
   progress,
+  requiredJava,
   runtimes,
   state,
   versions,
 }: HomePageProps) {
   const busy = state === "installing" || state === "launching" || state === "running";
-  const validRuntime = runtimes.find((runtime) => runtime.state === "valid");
+  const requiredRuntime = runtimes.find((runtime) => runtime.requirement === requiredJava);
+  const runtimeLabel = requiredJava === undefined
+    ? "Определяем Java…"
+    : requiredRuntime?.state === "valid"
+      ? `Java ${requiredJava} готова`
+      : requiredRuntime?.state === "installing"
+        ? `Java ${requiredJava} устанавливается`
+        : requiredRuntime?.state === "invalid"
+          ? `Java ${requiredJava} не подходит`
+          : `Java ${requiredJava} не найдена`;
 
   return (
     <section className="home-page">
@@ -74,7 +88,7 @@ export function HomePage({
           <div className="profile-facts">
             <span><small>Профиль</small><strong>{profile.name}</strong></span>
             <span><small>Память</small><strong>{profile.memoryMb} МБ</strong></span>
-            <span><small>Java</small><strong>{validRuntime ? `Java ${validRuntime.requirement} готова` : "Нужно настроить"}</strong></span>
+            <span><small>Java</small><strong>{runtimeLabel}</strong></span>
           </div>
         </div>
         <div className="play-card">
@@ -92,7 +106,7 @@ export function HomePage({
       </div>
 
       {progress && (state === "installing" || state === "launching") ? (
-        <ProgressPanel onCancel={state === "installing" ? onCancel : undefined} progress={progress} />
+        <ProgressPanel cancelling={cancelling} onCancel={state === "installing" ? onCancel : undefined} progress={progress} />
       ) : null}
 
       {error ? (

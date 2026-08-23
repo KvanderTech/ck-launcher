@@ -9,7 +9,7 @@ use crate::{
     metadata::resolver::MetadataService,
     paths::AppPaths,
     profiles::{clamp_memory, PhysicalMemory},
-    runtime::{JavaRequirement, JavaRuntimeState, JavaRuntimeStatus, RuntimeManager},
+    runtime::{requirement_for_version, JavaRuntimeState, JavaRuntimeStatus, RuntimeManager},
     storage::{LauncherProfile, ProfileStore},
 };
 use arguments::{resolve_legacy, resolve_modern, safe_metadata_jvm};
@@ -387,13 +387,7 @@ impl LaunchContextProvider for ProductionLaunchContext {
             )
         })?;
         let version = self.metadata.resolved_version(version_id).await?;
-        let major = version
-            .java_version
-            .as_ref()
-            .map(|java| java.major_version)
-            .unwrap_or(8);
-        let requirement =
-            JavaRequirement::new(u16::try_from(major).map_err(|_| runtime_unavailable())?)?;
+        let requirement = requirement_for_version(&version)?;
         let runtime = self
             .runtimes
             .resolve(

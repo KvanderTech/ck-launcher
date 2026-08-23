@@ -47,14 +47,17 @@ export const runtimeApi: RuntimeApi = {
 
 export interface SettingsApi {
   memoryStatus(): Promise<MemorySettingsStatus>;
+  updateMemory(memoryMb: number): Promise<LauncherProfile>;
 }
 
 export const settingsApi: SettingsApi = {
   memoryStatus: () => invoke<MemorySettingsStatus>("memory_status"),
+  updateMemory: (memoryMb) => invoke<LauncherProfile>("update_profile_memory", { memoryMb }),
 };
 
 export interface ProfileApi {
   listGameVersions(): Promise<GameVersionSummary[]>;
+  requiredJavaForVersion(versionId: string): Promise<JavaMajor>;
   getProfile(): Promise<LauncherProfile>;
   updateProfile(profile: LauncherProfile): Promise<LauncherProfile>;
 }
@@ -80,6 +83,7 @@ export const appApi: AppApi = {
   ...runtimeApi,
   ...settingsApi,
   listGameVersions: () => invoke<GameVersionSummary[]>("list_game_versions"),
+  requiredJavaForVersion: (versionId) => invoke<JavaMajor>("required_java_for_version", { versionId }),
   getProfile: () => invoke<LauncherProfile>("get_profile"),
   updateProfile: (profile) => invoke<LauncherProfile>("update_profile", { profile }),
   launchOrInstall: (profileId) => invoke<OperationId>("launch", { profileId }),

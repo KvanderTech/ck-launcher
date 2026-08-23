@@ -58,6 +58,7 @@ function createApi(handlers: EventHandlers) {
       { id: "1.21.8", type: "release", releaseDate: "2026-07-17T00:00:00Z" },
       { id: "1.20.1", type: "release", releaseDate: "2023-06-12T00:00:00Z" },
     ]),
+    requiredJavaForVersion: vi.fn(async (versionId: string) => versionId === "1.20.1" ? 8 as const : 21 as const),
     getProfile: vi.fn(async () => ({
       id: "default",
       name: "Основной профиль",
@@ -67,6 +68,14 @@ function createApi(handlers: EventHandlers) {
       javaOverride: null,
     })),
     updateProfile: vi.fn(async (profile) => profile),
+    updateMemory: vi.fn(async (memoryMb: number) => ({
+      id: "default",
+      name: "Основной профиль",
+      versionId: "1.20.1",
+      memoryMb,
+      gameDir: "C:\\safe\\game",
+      javaOverride: null,
+    })),
     memoryStatus: vi.fn(async () => ({
       memoryMb: 4096,
       minMemoryMb: 512,
@@ -133,6 +142,33 @@ describe("launcher application", () => {
 
     expect(screen.getByText("50%")).toBeTruthy();
     expect(screen.getByText("client.jar")).toBeTruthy();
+  });
+
+  it("limits the Tauri drag region to the safe topbar area outside window buttons", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    const { container } = renderApp(api);
+    await screen.findByRole("button", { name: "Играть" });
+
+    const dragRegion = container.querySelector("[data-tauri-drag-region]");
+    expect(dragRegion?.classList.contains("topbar-drag-region")).toBe(true);
+    for (const button of screen.getAllByRole("button", { name: /Свернуть|Развернуть|Закрыть/ })) {
+      expect(button.hasAttribute("data-tauri-drag-region")).toBe(false);
+      expect(button.closest("[data-tauri-drag-region]")).toBeNull();
+    }
+  });
+
+  it("shows runtime readiness for the Java major required by the selected version", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    renderApp(api);
+
+    const version = await screen.findByRole("combobox", { name: "Версия Minecraft" });
+    expect(await screen.findByText("Java 8 не найдена")).toBeTruthy();
+    fireEvent.change(version, { target: { value: "1.21.8" } });
+
+    expect(await screen.findByText("Java 21 готова")).toBeTruthy();
+    expect(api.requiredJavaForVersion).toHaveBeenCalledWith("1.21.8");
   });
 
   it("ignores stale events, disables play while busy, and separates recoverable from fatal errors", async () => {
@@ -219,6 +255,60 @@ describe("launcher application", () => {
     expect((screen.getByRole("button", { name: "Игра запущена" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("clears an auxiliary recoverable error when the same operation exits", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Играть" }));
+    await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      handlers.error?.({
+        operationId: "operation-current",
+        profileId: "default",
+        error: { code: "log_warning", message: "Журнал неполон.", recoverable: true },
+      });
+    });
+    expect(screen.getByRole("button", { name: "Повторить" })).toBeTruthy();
+
+    act(() => {
+      handlers.exited?.({ operationId: "operation-current", profileId: "default", exitCode: 0 });
+    });
+    expect(screen.getByText("Готово к запуску")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Повторить" })).toBeNull();
+    expect(screen.queryByText("Журнал неполон.")).toBeNull();
+  });
+
+  it("shows cancellation in progress on the active progress panel", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    let finishCancel = () => undefined;
+    api.cancelOperation.mockImplementation(() => new Promise<undefined>((resolve) => {
+      finishCancel = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    }));
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Играть" }));
+    await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledTimes(1));
+    act(() => {
+      handlers.progress?.({
+        operationId: "operation-current",
+        stage: "downloading",
+        completedBytes: 1,
+        totalBytes: 2,
+        currentFile: "client.jar",
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+    const cancellingButton = screen.getByRole("button", { name: "Отменяем…" });
+    expect((cancellingButton as HTMLButtonElement).disabled).toBe(true);
+    expect(api.cancelOperation).toHaveBeenCalledWith("operation-current");
+    await act(async () => finishCancel());
+  });
+
   it("closes the scoped account popup after navigation and after switching", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
@@ -239,7 +329,7 @@ describe("launcher application", () => {
     expect(screen.queryByRole("menu", { name: "Аккаунты Minecraft" })).toBeNull();
   });
 
-  it("uses the backend memory maximum and persists profile memory after a 250 ms debounce", async () => {
+  it("saves only memory without reverting a version changed while the save is in flight", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
     renderApp(api);
@@ -247,17 +337,36 @@ describe("launcher application", () => {
     const slider = await screen.findByRole("slider", { name: "Оперативная память" });
     expect(slider.getAttribute("max")).toBe("12288");
 
+    let resolveMemory: ((profile: Awaited<ReturnType<typeof api.updateMemory>>) => void) | undefined;
+    api.updateMemory.mockImplementation(() => new Promise((resolve) => { resolveMemory = resolve; }));
     vi.useFakeTimers();
     fireEvent.change(slider, { target: { value: "5120" } });
-    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(api.updateMemory).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(249));
-    expect(api.updateProfile).not.toHaveBeenCalled();
+    expect(api.updateMemory).not.toHaveBeenCalled();
     await act(async () => {
       vi.advanceTimersByTime(1);
       await Promise.resolve();
     });
-    expect(api.updateProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "default", memoryMb: 5120 }),
-    );
+    expect(api.updateMemory).toHaveBeenCalledWith(5120);
+
+    vi.useRealTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Главная" }));
+    const version = await screen.findByRole("combobox", { name: "Версия Minecraft" });
+    fireEvent.change(version, { target: { value: "1.21.8" } });
+    await act(async () => {
+      resolveMemory?.({
+        id: "default",
+        name: "Основной профиль",
+        versionId: "1.20.1",
+        memoryMb: 5120,
+        gameDir: "C:\\safe\\game",
+        javaOverride: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect((version as HTMLSelectElement).value).toBe("1.21.8");
+    expect(screen.getByText("5120 МБ")).toBeTruthy();
   });
 });
