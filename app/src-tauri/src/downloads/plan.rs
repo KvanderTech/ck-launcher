@@ -2,7 +2,6 @@ use super::verify::verify_file;
 use crate::{error::LauncherError, paths::AppPaths};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
     ffi::OsString,
     path::{Path, PathBuf},
 };
@@ -42,7 +41,7 @@ pub(crate) fn build_plan(
     let mut total_bytes = 0_u64;
     let mut completed_bytes = 0_u64;
     let mut pending = Vec::new();
-    let mut destinations = HashSet::new();
+    let mut owned_paths: Vec<PathBuf> = Vec::new();
 
     for spec in specs {
         validate_spec(&spec)?;
@@ -51,8 +50,18 @@ pub(crate) fn build_plan(
             .ok_or_else(invalid_spec)?;
         let relative_destination = destination_relative_to(root, &spec.destination)?;
         let destination = safety.safe_join(root, &relative_destination)?;
-        if !destinations.insert(destination) {
-            return Err(invalid_spec());
+        let relative_part = sibling_with_suffix(&relative_destination, ".part")?;
+        let relative_lock = sibling_with_suffix(&relative_destination, ".part.lock")?;
+        let part = safety.safe_join(root, &relative_part)?;
+        let lock = safety.safe_join(root, &relative_lock)?;
+        for path in [destination, part, lock] {
+            if owned_paths
+                .iter()
+                .any(|owned| paths_equal_for_target(owned, &path))
+            {
+                return Err(invalid_spec());
+            }
+            owned_paths.push(path);
         }
         if verify_file(root, &relative_destination, &spec)? {
             completed_bytes = completed_bytes
@@ -60,10 +69,6 @@ pub(crate) fn build_plan(
                 .ok_or_else(invalid_spec)?;
             continue;
         }
-        let relative_part = sibling_with_suffix(&relative_destination, ".part")?;
-        let relative_lock = sibling_with_suffix(&relative_destination, ".part.lock")?;
-        safety.safe_join(root, &relative_part)?;
-        safety.safe_join(root, &relative_lock)?;
         pending.push(PlannedDownload {
             spec,
             relative_destination,
@@ -77,6 +82,30 @@ pub(crate) fn build_plan(
         completed_bytes,
         pending,
     })
+}
+
+#[cfg(windows)]
+fn paths_equal_for_target(left: &Path, right: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+
+    let left = left.as_os_str().encode_wide().collect::<Vec<_>>();
+    let right = right.as_os_str().encode_wide().collect::<Vec<_>>();
+    // SAFETY: both slices remain alive for the call and explicit lengths avoid a terminator.
+    unsafe {
+        CompareStringOrdinal(
+            left.as_ptr(),
+            left.len() as i32,
+            right.as_ptr(),
+            right.len() as i32,
+            1,
+        ) == CSTR_EQUAL
+    }
+}
+
+#[cfg(not(windows))]
+fn paths_equal_for_target(left: &Path, right: &Path) -> bool {
+    left == right
 }
 
 fn validate_spec(spec: &DownloadSpec) -> Result<(), LauncherError> {
