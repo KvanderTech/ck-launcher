@@ -401,8 +401,82 @@ fn worker_pool_never_exceeds_six_http_requests_and_serializes_progress() {
             assert!(event.completed_bytes <= event.total_bytes);
             assert!(event.current_file.starts_with(&root));
         }
+        assert!(progress
+            .events
+            .lock()
+            .unwrap()
+            .windows(2)
+            .all(|events| events[0].completed_bytes <= events[1].completed_bytes));
         fs::remove_dir_all(root).unwrap();
     });
+}
+
+#[test]
+fn progress_counter_mutation_and_emission_are_one_serialized_operation() {
+    use super::worker::ProgressState;
+    use std::sync::Condvar;
+
+    #[derive(Default)]
+    struct Values(Mutex<Vec<u64>>);
+    impl ProgressSink for Values {
+        fn emit(&self, event: DownloadProgress) {
+            self.0.lock().unwrap().push(event.completed_bytes);
+        }
+    }
+
+    struct Gate {
+        state: Mutex<(bool, bool)>,
+        changed: Condvar,
+    }
+    let gate = Arc::new(Gate {
+        state: Mutex::new((false, false)),
+        changed: Condvar::new(),
+    });
+    let hook_gate = gate.clone();
+    let hook = Arc::new(move |completed| {
+        if completed == 1 {
+            let mut state = hook_gate.state.lock().unwrap();
+            state.0 = true;
+            hook_gate.changed.notify_all();
+            while !state.1 {
+                state = hook_gate.changed.wait(state).unwrap();
+            }
+        }
+    });
+    let values = Arc::new(Values::default());
+    let progress = Arc::new(ProgressState::for_concurrency_test(2, values.clone(), hook));
+    let first_progress = progress.clone();
+    let first = thread::spawn(move || {
+        first_progress.set_file_bytes(Path::new("first"), 0, 1);
+    });
+    {
+        let mut state = gate.state.lock().unwrap();
+        while !state.0 {
+            state = gate.changed.wait(state).unwrap();
+        }
+    }
+    let second_progress = progress.clone();
+    let second = thread::spawn(move || {
+        second_progress.set_file_bytes(Path::new("second"), 0, 1);
+    });
+    for _ in 0..50 {
+        if !values.0.lock().unwrap().is_empty() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    {
+        let mut state = gate.state.lock().unwrap();
+        state.1 = true;
+        gate.changed.notify_all();
+    }
+    first.join().unwrap();
+    second.join().unwrap();
+
+    let values = values.0.lock().unwrap();
+    assert_eq!(values.len(), 2);
+    assert!(values.windows(2).all(|values| values[0] <= values[1]));
+    assert!(values.iter().all(|value| *value <= 2));
 }
 
 #[test]
@@ -619,6 +693,80 @@ fn compatible_range_resumes_and_incompatible_range_restarts_from_zero() {
 }
 
 #[test]
+fn hashless_download_discards_a_mixed_version_prefix_before_requesting() {
+    tauri::async_runtime::block_on(async {
+        let fresh = b"BBBBBBBB".to_vec();
+        let body = fresh.clone();
+        let server = TestServer::start(move |_, request| {
+            if request.contains("range: bytes=4-") {
+                TestResponse {
+                    status: 206,
+                    headers: vec![("Content-Range".to_owned(), "bytes 4-7/8".to_owned())],
+                    chunks: vec![(body[4..].to_vec(), Duration::ZERO)],
+                }
+            } else {
+                TestResponse::ok(body.clone())
+            }
+        });
+        let root = temporary_root("hashless-prefix");
+        let destination = root.join("file.bin");
+        fs::write(part_path(&destination), b"AAAA").unwrap();
+        let download = DownloadSpec {
+            url: format!("{}/file", server.url),
+            destination: destination.clone(),
+            expected_size: fresh.len() as u64,
+            sha1: None,
+            sha256: None,
+        };
+
+        DownloadService::new(root.clone())
+            .unwrap()
+            .execute(
+                "hashless",
+                vec![download],
+                DownloadCancellationToken::new(),
+                Arc::new(RecordingProgress::default()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(server.requests(), 1);
+        assert_eq!(fs::read(destination).unwrap(), fresh);
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn planner_rejects_final_part_lock_and_case_insensitive_aliases() {
+    let root = temporary_root("plan-aliases").canonicalize().unwrap();
+    for (first, second) in [
+        ("a", "a.part"),
+        ("a", "a.part.lock"),
+        ("A.PART", "a.part"),
+        ("File.bin", "file.bin"),
+    ] {
+        let specs = [first, second]
+            .into_iter()
+            .map(|name| DownloadSpec {
+                url: "https://example.test/file".to_owned(),
+                destination: root.join(name),
+                expected_size: 1,
+                sha1: None,
+                sha256: None,
+            })
+            .collect();
+
+        let error = match super::plan::build_plan(&root, specs) {
+            Ok(_) => panic!("{first:?} and {second:?} must not share a queue path"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), "download_spec_invalid");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn mismatched_partial_response_is_discarded_before_a_full_retry() {
     tauri::async_runtime::block_on(async {
         let bytes = vec![0x52; 256];
@@ -648,6 +796,49 @@ fn mismatched_partial_response_is_discarded_before_a_full_retry() {
         .unwrap()
         .execute(
             "bad-range",
+            vec![spec(
+                format!("{}/range", server.url),
+                destination.clone(),
+                &bytes,
+            )],
+            DownloadCancellationToken::new(),
+            Arc::new(RecordingProgress::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(server.requests(), 2);
+        assert_eq!(fs::read(destination).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn range_not_satisfiable_discards_stale_part_and_retries_from_zero() {
+    tauri::async_runtime::block_on(async {
+        let bytes = vec![0x27; 256];
+        let full = bytes.clone();
+        let server = TestServer::start(move |request_number, request| {
+            if request_number == 1 {
+                assert!(request.contains("range: bytes=64-"));
+                TestResponse::status(416)
+            } else {
+                assert!(!request.contains("range:"));
+                TestResponse::ok(full.clone())
+            }
+        });
+        let root = temporary_root("range-416");
+        let destination = root.join("file.bin");
+        fs::write(part_path(&destination), &bytes[..64]).unwrap();
+
+        DownloadService::with_retry_dependencies(
+            root.clone(),
+            Arc::new(RecordingSleeper::default()),
+            Arc::new(FixedJitter(Duration::ZERO)),
+        )
+        .unwrap()
+        .execute(
+            "range-416",
             vec![spec(
                 format!("{}/range", server.url),
                 destination.clone(),

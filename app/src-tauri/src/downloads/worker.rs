@@ -15,7 +15,7 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -215,6 +215,9 @@ impl DownloadHttpClient {
             Either::Right((response, _)) => response.map_err(classify_reqwest_error)?,
         };
         let status = response.status();
+        if offset.is_some() && status == StatusCode::RANGE_NOT_SATISFIABLE {
+            return Ok(response);
+        }
         if !status.is_success() {
             return Err(AttemptFailure {
                 error: LauncherError::new(
@@ -308,8 +311,12 @@ impl DownloadService {
         let progress = Arc::new(ProgressState {
             operation_id: operation_id.into(),
             total_bytes: plan.total_bytes,
-            completed_bytes: AtomicU64::new(plan.completed_bytes),
-            sink: StdMutex::new(progress_sink),
+            inner: StdMutex::new(ProgressInner {
+                completed_bytes: plan.completed_bytes,
+                sink: progress_sink,
+            }),
+            #[cfg(test)]
+            before_emit: None,
         });
 
         stream::iter(plan.pending)
@@ -375,7 +382,9 @@ impl DownloadService {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(_) => return Err(AttemptFailure::permanent(storage_error())),
         };
-        if offset > download.spec.expected_size {
+        let hashless_partial =
+            offset > 0 && download.spec.sha1.is_none() && download.spec.sha256.is_none();
+        if hashless_partial || offset > download.spec.expected_size {
             remove_part(&self.root, &download.relative_part)?;
             offset = 0;
         } else if offset == download.spec.expected_size && offset > 0 {
@@ -403,7 +412,13 @@ impl DownloadService {
             .request(&download.spec.url, requested_offset, cancel)
             .await?;
         if offset > 0 {
-            if response.status() == StatusCode::PARTIAL_CONTENT {
+            if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+                drop(file);
+                remove_part(&self.root, &download.relative_part)?;
+                progress.set_file_bytes(&download.spec.destination, *reported, 0);
+                *reported = 0;
+                return Err(AttemptFailure::transient(download_resume_error()));
+            } else if response.status() == StatusCode::PARTIAL_CONTENT {
                 if !compatible_content_range(&response, offset, download.spec.expected_size) {
                     drop(file);
                     remove_part(&self.root, &download.relative_part)?;
@@ -472,32 +487,57 @@ impl DownloadService {
     }
 }
 
-struct ProgressState {
+pub(super) struct ProgressState {
     operation_id: String,
     total_bytes: u64,
-    completed_bytes: AtomicU64,
-    sink: StdMutex<Arc<dyn ProgressSink>>,
+    inner: StdMutex<ProgressInner>,
+    #[cfg(test)]
+    before_emit: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+}
+
+struct ProgressInner {
+    completed_bytes: u64,
+    sink: Arc<dyn ProgressSink>,
 }
 
 impl ProgressState {
-    fn set_file_bytes(&self, current_file: &Path, previous: u64, current: u64) {
+    #[cfg(test)]
+    pub(super) fn for_concurrency_test(
+        total_bytes: u64,
+        sink: Arc<dyn ProgressSink>,
+        before_emit: Arc<dyn Fn(u64) + Send + Sync>,
+    ) -> Self {
+        Self {
+            operation_id: "progress-test".to_owned(),
+            total_bytes,
+            inner: StdMutex::new(ProgressInner {
+                completed_bytes: 0,
+                sink,
+            }),
+            before_emit: Some(before_emit),
+        }
+    }
+
+    pub(super) fn set_file_bytes(&self, current_file: &Path, previous: u64, current: u64) {
+        let mut inner = self.inner.lock().expect("progress state lock");
         let completed = if current >= previous {
-            self.completed_bytes
-                .fetch_add(current - previous, Ordering::SeqCst)
-                .saturating_add(current - previous)
+            inner.completed_bytes.saturating_add(current - previous)
         } else {
-            self.completed_bytes
-                .fetch_sub(previous - current, Ordering::SeqCst)
-                .saturating_sub(previous - current)
+            inner.completed_bytes.saturating_sub(previous - current)
         }
         .min(self.total_bytes);
+        inner.completed_bytes = completed;
+        #[cfg(test)]
+        if let Some(before_emit) = &self.before_emit {
+            before_emit(completed);
+        }
         let event = DownloadProgress {
             operation_id: self.operation_id.clone(),
             total_bytes: self.total_bytes,
             completed_bytes: completed,
             current_file: current_file.to_path_buf(),
         };
-        self.sink.lock().expect("progress sink lock").emit(event);
+        inner.sink.emit(event);
     }
 }
 
