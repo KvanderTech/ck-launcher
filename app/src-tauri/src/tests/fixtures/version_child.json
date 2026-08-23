@@ -1,0 +1,11 @@
+{
+  "id": "child",
+  "inheritsFrom": "parent",
+  "mainClass": "example.Child",
+  "libraries": [
+    { "name": "com.example:replace:1.0", "natives": { "windows": "natives-windows" } },
+    { "name": "com.example:child:1.0" }
+  ],
+  "arguments": { "game": ["--child"], "jvm": ["-Dchild=true"] },
+  "minecraftArguments": "--legacy-child"
+}

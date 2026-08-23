@@ -62,6 +62,24 @@ impl LauncherError {
         )
     }
 
+    pub fn metadata_unavailable() -> Self {
+        Self::new(
+            "metadata_unavailable",
+            "Official Minecraft version metadata is unavailable.",
+            None,
+            true,
+        )
+    }
+
+    pub fn metadata_invalid() -> Self {
+        Self::new(
+            "metadata_invalid",
+            "Official Minecraft version metadata is invalid.",
+            None,
+            false,
+        )
+    }
+
     pub fn code(&self) -> &str {
         &self.code
     }

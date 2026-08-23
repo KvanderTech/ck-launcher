@@ -1,0 +1,26 @@
+{
+  "latest": { "release": "1.21.6", "snapshot": "26.1-snapshot" },
+  "versions": [
+    {
+      "id": "1.20.4",
+      "type": "release",
+      "url": "https://example.test/1.20.4.json",
+      "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "releaseTime": "2023-12-07T12:00:00+00:00"
+    },
+    {
+      "id": "26.1-snapshot",
+      "type": "snapshot",
+      "url": "https://example.test/snapshot.json",
+      "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "releaseTime": "2026-08-21T12:00:00+00:00"
+    },
+    {
+      "id": "1.21.6",
+      "type": "release",
+      "url": "https://example.test/1.21.6.json",
+      "sha1": "cccccccccccccccccccccccccccccccccccccccc",
+      "releaseTime": "2026-06-17T12:00:00+00:00"
+    }
+  ]
+}
