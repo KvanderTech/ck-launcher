@@ -33,6 +33,18 @@ export interface AccountSummary {
   isActive: boolean;
 }
 
+export type JavaMajor = 8 | 17 | 21 | 25;
+export type JavaRuntimeState = "valid" | "missing" | "installing" | "invalid";
+export type JavaRuntimeSource = "managed" | "manual" | "system";
+
+export interface JavaRuntimeStatus {
+  requirement: JavaMajor;
+  state: JavaRuntimeState;
+  path?: string;
+  source?: JavaRuntimeSource;
+  version?: string;
+}
+
 export function progressLabel(progress: ProgressEvent): string {
   const percent = Math.floor((progress.completedBytes / progress.totalBytes) * 100);
 
