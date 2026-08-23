@@ -1,7 +1,37 @@
 use crate::error::LauncherError;
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use url::Url;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PathKind {
+    Existing,
+    Missing,
+    Symlink,
+}
+
+trait PathInspector {
+    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf>;
+    fn kind(&self, path: &Path) -> io::Result<PathKind>;
+}
+
+struct FileSystemInspector;
+
+impl PathInspector for FileSystemInspector {
+    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+        path.canonicalize()
+    }
+
+    fn kind(&self, path: &Path) -> io::Result<PathKind> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Ok(PathKind::Symlink),
+            Ok(_) => Ok(PathKind::Existing),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(PathKind::Missing),
+            Err(error) => Err(error),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct AppPaths {
@@ -49,7 +79,22 @@ impl AppPaths {
         Ok(url.into())
     }
 
+    /// Validates a path immediately before a sensitive write.
+    ///
+    /// Existing symlinks are rejected component by component, including dangling links. The
+    /// filesystem can still change after this check, so callers that write sensitive files must
+    /// keep the trusted root private and use platform no-follow/open-by-handle APIs where
+    /// available in addition to validating as close to the write as possible.
     pub fn safe_join(&self, root: &Path, relative: &Path) -> Result<PathBuf, LauncherError> {
+        self.safe_join_with(root, relative, &FileSystemInspector)
+    }
+
+    fn safe_join_with(
+        &self,
+        root: &Path,
+        relative: &Path,
+        inspector: &impl PathInspector,
+    ) -> Result<PathBuf, LauncherError> {
         if relative.components().any(|component| {
             matches!(
                 component,
@@ -59,35 +104,42 @@ impl AppPaths {
             return Err(LauncherError::invalid_path());
         }
 
-        let canonical_root = root
-            .canonicalize()
-            .map_err(|_| LauncherError::invalid_path())?;
-        let candidate = canonical_root.join(relative);
-        let existing_ancestor = existing_ancestor(&candidate)?;
-        let canonical_ancestor = existing_ancestor
-            .canonicalize()
-            .map_err(|_| LauncherError::invalid_path())?;
-
-        if !canonical_ancestor.starts_with(&canonical_root) {
+        if inspector
+            .kind(root)
+            .map_err(|_| LauncherError::invalid_path())?
+            != PathKind::Existing
+        {
             return Err(LauncherError::invalid_path());
+        }
+
+        let canonical_root = inspector
+            .canonicalize(root)
+            .map_err(|_| LauncherError::invalid_path())?;
+        let mut candidate = canonical_root.clone();
+
+        for component in relative.components() {
+            let Component::Normal(component) = component else {
+                continue;
+            };
+            candidate.push(component);
+
+            match inspector
+                .kind(&candidate)
+                .map_err(|_| LauncherError::invalid_path())?
+            {
+                PathKind::Existing => {}
+                PathKind::Missing => {}
+                PathKind::Symlink => return Err(LauncherError::invalid_path()),
+            }
         }
 
         Ok(candidate)
     }
 }
 
-fn existing_ancestor(path: &Path) -> Result<&Path, LauncherError> {
-    let mut ancestor = path;
-    while !ancestor.exists() {
-        ancestor = ancestor.parent().ok_or_else(LauncherError::invalid_path)?;
-    }
-
-    Ok(ancestor)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::AppPaths;
+    use super::{AppPaths, PathInspector, PathKind};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -133,9 +185,72 @@ mod tests {
             let error = paths
                 .safe_join(&root, path)
                 .expect_err("unsafe relative path is rejected");
-            assert_eq!(error.code, "invalid_path");
+            assert_eq!(error.code(), "invalid_path");
         }
 
         fs::remove_dir_all(root).expect("temporary root is removed");
+    }
+
+    struct DanglingSymlinkInspector;
+
+    impl PathInspector for DanglingSymlinkInspector {
+        fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
+            Ok(path.to_path_buf())
+        }
+
+        fn kind(&self, path: &Path) -> std::io::Result<PathKind> {
+            if path.ends_with("linked") {
+                Ok(PathKind::Symlink)
+            } else {
+                Ok(PathKind::Existing)
+            }
+        }
+    }
+
+    #[test]
+    fn safe_join_rejects_paths_beneath_a_dangling_symlink_deterministically() {
+        let root = temporary_root();
+        let paths = AppPaths::new(root.clone());
+
+        let error = paths
+            .safe_join_with(
+                &root,
+                Path::new("linked\\new-file.txt"),
+                &DanglingSymlinkInspector,
+            )
+            .expect_err("paths below a dangling symlink are rejected");
+
+        assert_eq!(error.code(), "invalid_path");
+        fs::remove_dir_all(root).expect("temporary root is removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn safe_join_rejects_a_real_dangling_directory_symlink_when_permitted() {
+        use std::os::windows::fs::symlink_dir;
+
+        let root = temporary_root();
+        let link = root.join("linked");
+        let missing_target = root.join("missing-target");
+        match symlink_dir(&missing_target, &link) {
+            Ok(()) => {
+                let paths = AppPaths::new(root.clone());
+                assert_eq!(
+                    paths
+                        .safe_join(&root, Path::new("linked\\new-file.txt"))
+                        .expect_err("dangling symlink is rejected")
+                        .code(),
+                    "invalid_path"
+                );
+                fs::remove_dir_all(root).expect("temporary root is removed");
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(1314) =>
+            {
+                fs::remove_dir_all(root).expect("temporary root is removed");
+            }
+            Err(error) => panic!("unexpected symlink creation failure: {error}"),
+        }
     }
 }

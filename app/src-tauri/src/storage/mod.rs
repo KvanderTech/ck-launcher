@@ -148,7 +148,7 @@ mod tests {
             };
             let serialized = serde_json::to_string(&error).expect("error serializes");
 
-            assert_eq!(error.code, "storage_unavailable");
+            assert_eq!(error.code(), "storage_unavailable");
             assert!(!serialized.contains("top-secret"));
             assert!(!serialized.contains(database_url));
         });
