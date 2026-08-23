@@ -4,11 +4,12 @@ use crate::{
     profiles::{MemorySettingsStatus, ProfileService},
     storage::LauncherProfile,
 };
+use std::sync::Arc;
 use tauri::State;
 
 #[tauri::command]
 pub async fn list_game_versions(
-    metadata: State<'_, MetadataService>,
+    metadata: State<'_, Arc<MetadataService>>,
 ) -> Result<Vec<GameVersionSummary>, LauncherError> {
     metadata.stable_releases().await
 }

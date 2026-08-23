@@ -1,0 +1,10 @@
+{
+  "id": "fixture-1.0",
+  "downloads": {"client":{"sha1":"1111111111111111111111111111111111111111","size":11,"url":"https://example.test/client.jar"}},
+  "assetIndex":{"id":"fixture-assets","url":"https://example.test/index.json","sha1":"f12c6162a8b2dfc72557cbcf499f3dcffd772df0","size":192},
+  "logging":{"client":{"file":{"id":"log4j.xml","url":"https://example.test/log4j.xml","sha1":"2222222222222222222222222222222222222222","size":12}}},
+  "libraries":[
+    {"name":"org.example:ordinary:1.0","downloads":{"artifact":{"path":"org/example/ordinary/1.0/ordinary-1.0.jar","url":"https://example.test/ordinary.jar","sha1":"3333333333333333333333333333333333333333","size":13}}},
+    {"name":"org.example:native:1.0","natives":{"windows":"natives-windows","linux":"natives-linux","osx":"natives-osx"},"downloads":{"classifiers":{"natives-windows":{"path":"org/example/native/1.0/native-1.0-natives-windows.jar","url":"https://example.test/windows.jar","sha1":"4444444444444444444444444444444444444444","size":14},"natives-linux":{"path":"org/example/native/1.0/native-1.0-natives-linux.jar","url":"https://example.test/linux.jar","sha1":"5555555555555555555555555555555555555555","size":15},"natives-osx":{"path":"org/example/native/1.0/native-1.0-natives-osx.jar","url":"https://example.test/osx.jar","sha1":"6666666666666666666666666666666666666666","size":16}}}}
+  ]
+}

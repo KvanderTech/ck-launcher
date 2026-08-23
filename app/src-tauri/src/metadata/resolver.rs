@@ -321,18 +321,7 @@ fn hex_sha1(body: &str) -> String {
     format!("{:x}", Sha1::digest(body.as_bytes()))
 }
 fn into_resolved(version: VersionJson) -> ResolvedVersion {
-    ResolvedVersion {
-        id: version.id,
-        main_class: version.main_class,
-        assets: version.assets,
-        asset_index: version.asset_index,
-        downloads: version.downloads,
-        libraries: version.libraries,
-        logging: version.logging,
-        java_version: version.java_version,
-        arguments: version.arguments,
-        minecraft_arguments: version.minecraft_arguments,
-    }
+    version.into()
 }
 fn merge(parent: ResolvedVersion, child: VersionJson) -> ResolvedVersion {
     let mut libraries: BTreeMap<String, _> = parent

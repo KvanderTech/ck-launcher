@@ -78,11 +78,15 @@ pub struct Download {
     pub sha1: Option<String>,
     pub size: Option<u64>,
     pub url: String,
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Library {
     pub name: String,
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub downloads: Option<LibraryDownloads>,
     #[serde(default)]
@@ -154,4 +158,21 @@ pub struct ResolvedVersion {
     pub java_version: Option<JavaVersion>,
     pub arguments: VersionArguments,
     pub minecraft_arguments: Option<String>,
+}
+
+impl From<VersionJson> for ResolvedVersion {
+    fn from(version: VersionJson) -> Self {
+        Self {
+            id: version.id,
+            main_class: version.main_class,
+            assets: version.assets,
+            asset_index: version.asset_index,
+            downloads: version.downloads,
+            libraries: version.libraries,
+            logging: version.logging,
+            java_version: version.java_version,
+            arguments: version.arguments,
+            minecraft_arguments: version.minecraft_arguments,
+        }
+    }
 }
