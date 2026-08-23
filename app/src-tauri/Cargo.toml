@@ -33,4 +33,4 @@ regex = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
 url = "2"
 winreg = "0.55"
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
