@@ -5,38 +5,68 @@ use std::fmt;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LauncherError {
-    pub code: String,
-    pub message: String,
-    pub details: Option<String>,
-    pub recoverable: bool,
+    code: String,
+    message: String,
+    details: Option<String>,
+    recoverable: bool,
 }
 
 impl LauncherError {
-    pub fn internal(details: impl AsRef<str>) -> Self {
+    pub fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        details: Option<String>,
+        recoverable: bool,
+    ) -> Self {
         Self {
-            code: "internal_error".to_owned(),
-            message: "An unexpected launcher error occurred.".to_owned(),
-            details: Some(sanitize(details.as_ref())),
-            recoverable: false,
+            code: code.into(),
+            message: message.into(),
+            details: details.as_deref().map(sanitize),
+            recoverable,
         }
+    }
+
+    pub fn internal(details: impl AsRef<str>) -> Self {
+        Self::new(
+            "internal_error",
+            "An unexpected launcher error occurred.",
+            Some(details.as_ref().to_owned()),
+            false,
+        )
     }
 
     pub fn invalid_path() -> Self {
-        Self {
-            code: "invalid_path".to_owned(),
-            message: "The requested path is outside the launcher data directory.".to_owned(),
-            details: None,
-            recoverable: false,
-        }
+        Self::new(
+            "invalid_path",
+            "The requested path is outside the launcher data directory.",
+            None,
+            false,
+        )
     }
 
     pub fn storage_unavailable() -> Self {
-        Self {
-            code: "storage_unavailable".to_owned(),
-            message: "Launcher storage is unavailable.".to_owned(),
-            details: None,
-            recoverable: true,
-        }
+        Self::new(
+            "storage_unavailable",
+            "Launcher storage is unavailable.",
+            None,
+            true,
+        )
+    }
+
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn details(&self) -> Option<&str> {
+        self.details.as_deref()
+    }
+
+    pub fn recoverable(&self) -> bool {
+        self.recoverable
     }
 }
 
@@ -53,7 +83,7 @@ fn sanitize(details: &str) -> String {
         .expect("Bearer redaction pattern is valid")
         .replace_all(details, "Bearer [REDACTED]");
     let named_token = Regex::new(
-        r#"(?i)\b(access_token|refresh_token)(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)"#,
+        r#"(?i)\b(access_token|refresh_token)(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)"#,
     )
     .expect("named token redaction pattern is valid");
 
@@ -81,10 +111,47 @@ mod tests {
             "database unavailable; access_token=access-secret; refresh_token: refresh-secret",
         );
 
-        let details = error.details.expect("sanitized details are retained");
+        let details = error.details().expect("sanitized details are retained");
         assert_eq!(
             details,
             "database unavailable; access_token=[REDACTED]; refresh_token: [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn public_error_construction_sanitizes_all_serialized_details() {
+        let error = LauncherError::new(
+            "network_error",
+            "Request failed.",
+            Some(
+                "Bearer abc.def.ghi; access_token=access-secret; refresh_token=refresh-secret"
+                    .to_owned(),
+            ),
+            true,
+        );
+        let serialized = serde_json::to_string(&error).expect("error serializes");
+
+        assert!(!serialized.contains("abc.def.ghi"));
+        assert!(!serialized.contains("access-secret"));
+        assert!(!serialized.contains("refresh-secret"));
+        assert_eq!(error.code(), "network_error");
+        assert_eq!(
+            error.details(),
+            Some("Bearer [REDACTED]; access_token=[REDACTED]; refresh_token=[REDACTED]")
+        );
+    }
+
+    #[test]
+    fn token_redaction_handles_escaped_quotes_and_preserves_boundary_safe_text() {
+        let error = LauncherError::internal(
+            r#"request timed out; access_token="abc\"def"; refresh_token="ghi\"jkl"; access_token_label=ordinary"#,
+        );
+
+        assert_eq!(
+            error.details(),
+            Some(
+                "request timed out; access_token=[REDACTED]; refresh_token=[REDACTED]; access_token_label=ordinary"
+            )
         );
     }
 }
