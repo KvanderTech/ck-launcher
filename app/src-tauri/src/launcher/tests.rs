@@ -1,6 +1,8 @@
 use super::{
     build_launch,
-    process::{ChildProcess, EventSink, GameProcessEvent, ProcessLog, ProcessSpawner},
+    process::{
+        ChildProcess, EventSink, GameProcessEvent, ProcessLog, ProcessOutcome, ProcessSpawner,
+    },
     LaunchAccount, LaunchBuildRequest, LaunchContextProvider, Launcher,
 };
 use crate::{
@@ -291,6 +293,12 @@ fn metadata_cannot_override_memory_classpath_natives_or_security_arguments() {
     for malicious in [
         "-Xmx65536M",
         "-Xms1M",
+        "-jar",
+        "-m",
+        "--module",
+        "--module=evil.module/EvilMain",
+        "@evil.args",
+        "@@nested.args",
         "-javaagent=C:\\evil.jar",
         "-agentlib:jdwp=transport=dt_socket,server=y",
         "-Djavax.net.ssl.trustStore=C:\\evil",
@@ -301,6 +309,61 @@ fn metadata_cannot_override_memory_classpath_natives_or_security_arguments() {
         let error = build_launch(request).expect_err("owned or security argument is rejected");
         assert_eq!(error.code(), "unsafe_launch_argument", "{malicious}");
     }
+}
+
+#[test]
+fn main_class_must_be_a_strict_qualified_java_class_name() {
+    for malicious in [
+        "-jar",
+        "@evil.args",
+        "9Main",
+        "net..Main",
+        ".net.minecraft.Main",
+        "net.minecraft.Main.",
+        "net.minecraft.Main/evil",
+        "net.minecraft.Main;Evil",
+    ] {
+        let mut request = fixture_request("malicious-main-class");
+        request.version.main_class = Some(malicious.to_owned());
+        let error = build_launch(request).expect_err("invalid main class is rejected");
+        assert_eq!(error.code(), "launch_argument_invalid", "{malicious}");
+    }
+}
+
+#[test]
+fn logging_argument_accepts_only_the_exact_mojang_local_path_template() {
+    for malicious in [
+        r"-Dlog4j.configurationFile=C:\outside.xml",
+        "-Dlog4j.configurationFile=https://evil.test/${path}",
+        "-Dlog4j.configurationFile=${path}${path}",
+        "-Dlog4j.configurationFile=${path}\n-Djava.security.manager=allow",
+        "-Dlog4j2.configurationFile=${path}",
+    ] {
+        let mut request = fixture_request("malicious-logging-template");
+        request.version.logging = Some(json!({
+            "client": {
+                "argument": malicious,
+                "file": {"id": "log4j.xml"}
+            }
+        }));
+        let error = build_launch(request).expect_err("logging template is rejected");
+        assert_eq!(error.code(), "launch_argument_invalid", "{malicious:?}");
+    }
+}
+
+#[test]
+fn logging_file_id_cannot_select_a_path_outside_the_verified_log_config_directory() {
+    let mut request = fixture_request("malicious-logging-path");
+    let outside = request.game_root.join("assets").join("outside.xml");
+    fs::write(&outside, b"outside").expect("outside fixture");
+    request.version.logging = Some(json!({
+        "client": {
+            "argument": "-Dlog4j.configurationFile=${path}",
+            "file": {"id": "../outside.xml"}
+        }
+    }));
+    let error = build_launch(request).expect_err("outside logging path is rejected");
+    assert_eq!(error.code(), "launch_argument_invalid");
 }
 
 #[test]
@@ -343,6 +406,7 @@ struct MockChild {
     exit_code: i32,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    post_exit_error: Option<crate::error::LauncherError>,
     release: Arc<tokio::sync::Semaphore>,
 }
 
@@ -355,11 +419,14 @@ impl ChildProcess for MockChild {
     async fn wait(
         self: Box<Self>,
         log: Arc<ProcessLog>,
-    ) -> Result<i32, crate::error::LauncherError> {
+    ) -> Result<ProcessOutcome, crate::error::LauncherError> {
         self.release.acquire().await.expect("release").forget();
         log.write_complete(&self.stdout)?;
         log.write_complete(&self.stderr)?;
-        Ok(self.exit_code)
+        Ok(ProcessOutcome {
+            exit_code: self.exit_code,
+            auxiliary_error: self.post_exit_error,
+        })
     }
 }
 
@@ -370,6 +437,7 @@ struct MockSpawner {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     exit_code: i32,
+    post_exit_error: Option<crate::error::LauncherError>,
 }
 
 #[async_trait]
@@ -392,6 +460,7 @@ impl ProcessSpawner for MockSpawner {
             exit_code: self.exit_code,
             stdout: self.stdout.clone(),
             stderr: self.stderr.clone(),
+            post_exit_error: self.post_exit_error.clone(),
             release: self.release.clone(),
         }))
     }
@@ -424,6 +493,7 @@ fn supervisor_spawns_the_exact_command_rejects_duplicates_and_emits_one_started_
             stdout: b"game output".to_vec(),
             stderr: Vec::new(),
             exit_code: 7,
+            post_exit_error: None,
         });
         let events = Arc::new(RecordingEvents::default());
         let launcher = Launcher::new(
@@ -477,6 +547,122 @@ fn supervisor_spawns_the_exact_command_rejects_duplicates_and_emits_one_started_
 }
 
 #[test]
+fn shared_latest_log_serializes_launches_across_different_profiles() {
+    tauri::async_runtime::block_on(async {
+        let request = fixture_request("global-serialization");
+        let logs = request.game_root.parent().expect("root").join("logs");
+        fs::create_dir_all(&logs).expect("logs");
+        let prepared = build_launch(request).expect("prepared");
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let spawner = Arc::new(MockSpawner {
+            commands: Mutex::new(Vec::new()),
+            release: release.clone(),
+            fail: false,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_code: 0,
+            post_exit_error: None,
+        });
+        let launcher = Launcher::new(
+            Arc::new(PreparedContext(Mutex::new(Some(prepared)))),
+            spawner.clone(),
+            Arc::new(RecordingEvents::default()),
+            logs,
+        );
+
+        let operation = launcher
+            .launch("first-profile")
+            .await
+            .expect("first launch");
+        let error = launcher
+            .launch("second-profile")
+            .await
+            .expect_err("shared log permits only one active launch");
+
+        assert_eq!(error.code(), "game_already_running");
+        assert_eq!(spawner.commands.lock().expect("commands").len(), 1);
+        release.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if launcher.status(&operation).expect("status").exit_code == Some(0) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first process exits");
+    });
+}
+
+#[test]
+fn auxiliary_output_failure_preserves_exit_status_and_emits_exit_exactly_once() {
+    tauri::async_runtime::block_on(async {
+        let request = fixture_request("auxiliary-output-failure");
+        let logs = request.game_root.parent().expect("root").join("logs");
+        fs::create_dir_all(&logs).expect("logs");
+        let prepared = build_launch(request).expect("prepared");
+        let spawner = Arc::new(MockSpawner {
+            commands: Mutex::new(Vec::new()),
+            release: Arc::new(tokio::sync::Semaphore::new(1)),
+            fail: false,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_code: 23,
+            post_exit_error: Some(crate::error::LauncherError::new(
+                "game_log_unavailable",
+                "Game output could not be written to the launcher log.",
+                Some("access_token=auxiliary-secret".to_owned()),
+                true,
+            )),
+        });
+        let events = Arc::new(RecordingEvents::default());
+        let launcher = Launcher::new(
+            Arc::new(PreparedContext(Mutex::new(Some(prepared)))),
+            spawner,
+            events.clone(),
+            logs,
+        );
+
+        let operation = launcher.launch("default").await.expect("launch");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if launcher.status(&operation).expect("status").error.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("auxiliary error recorded");
+
+        let status = launcher.status(&operation).expect("status");
+        assert_eq!(status.exit_code, Some(23));
+        assert_eq!(
+            status.error.as_ref().map(|error| error.code()),
+            Some("game_log_unavailable")
+        );
+        let recorded = events.0.lock().expect("events");
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|event| matches!(event, GameProcessEvent::Exited { exit_code: 23, .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|event| matches!(event, GameProcessEvent::Error { error, .. } if error.code() == "game_log_unavailable"))
+                .count(),
+            1
+        );
+        let serialized = serde_json::to_string(&*recorded).expect("events serialize");
+        assert!(!serialized.contains("auxiliary-secret"));
+    });
+}
+
+#[test]
 fn logs_are_bounded_and_redact_tokens_even_when_the_child_prints_them() {
     tauri::async_runtime::block_on(async {
         let request = fixture_request("redaction");
@@ -495,6 +681,7 @@ fn logs_are_bounded_and_redact_tokens_even_when_the_child_prints_them() {
             .concat(),
             stderr: b"Bearer access-secret".to_vec(),
             exit_code: 0,
+            post_exit_error: None,
         });
         let events = Arc::new(RecordingEvents::default());
         let launcher = Launcher::new(
@@ -540,6 +727,7 @@ fn spawn_failure_emits_one_error_and_releases_the_profile_registry() {
             stdout: Vec::new(),
             stderr: Vec::new(),
             exit_code: 0,
+            post_exit_error: None,
         });
         let events = Arc::new(RecordingEvents::default());
         let launcher = Launcher::new(
@@ -597,32 +785,33 @@ fn terminal_process_history_is_bounded_and_expires_the_oldest_operation() {
         .contains_key(&format!("launch-{}", super::MAX_TERMINAL_PROCESSES)));
 }
 
-#[cfg(windows)]
 #[test]
 fn every_prepared_path_is_revalidated_for_reparse_points_immediately_before_spawn() {
-    use std::os::windows::fs::symlink_file;
+    struct ReparsePointInspector {
+        inspected: Mutex<Vec<PathBuf>>,
+    }
+
+    impl super::LaunchPathInspector for ReparsePointInspector {
+        fn validate(&self, path: &std::path::Path) -> Result<(), crate::error::LauncherError> {
+            self.inspected
+                .lock()
+                .expect("inspected paths")
+                .push(path.to_path_buf());
+            if path.to_string_lossy().ends_with("ordinary-1.0.jar") {
+                return Err(super::invalid_launch_path());
+            }
+            Ok(())
+        }
+    }
+
     tauri::async_runtime::block_on(async {
         let request = fixture_request("reparse");
         let logs = request.game_root.parent().expect("root").join("logs");
         fs::create_dir_all(&logs).expect("logs");
         let prepared = build_launch(request).expect("prepared");
-        let library = prepared
-            .validated_paths
-            .iter()
-            .find(|path| path.to_string_lossy().ends_with("ordinary-1.0.jar"))
-            .expect("library")
-            .clone();
-        let outside = library.parent().expect("parent").join("outside.jar");
-        fs::write(&outside, b"outside").expect("outside");
-        fs::remove_file(&library).expect("remove library");
-        if let Err(error) = symlink_file(&outside, &library) {
-            if error.kind() == std::io::ErrorKind::PermissionDenied
-                || error.raw_os_error() == Some(1314)
-            {
-                return;
-            }
-            panic!("unexpected symlink error: {error}");
-        }
+        let inspector = Arc::new(ReparsePointInspector {
+            inspected: Mutex::new(Vec::new()),
+        });
         let spawner = Arc::new(MockSpawner {
             commands: Mutex::new(Vec::new()),
             release: Arc::new(tokio::sync::Semaphore::new(0)),
@@ -630,12 +819,14 @@ fn every_prepared_path_is_revalidated_for_reparse_points_immediately_before_spaw
             stdout: Vec::new(),
             stderr: Vec::new(),
             exit_code: 0,
+            post_exit_error: None,
         });
-        let launcher = Launcher::new(
+        let launcher = Launcher::new_with_path_inspector(
             Arc::new(PreparedContext(Mutex::new(Some(prepared)))),
             spawner.clone(),
             Arc::new(RecordingEvents::default()),
             logs,
+            inspector.clone(),
         );
         let error = launcher
             .launch("default")
@@ -643,5 +834,11 @@ fn every_prepared_path_is_revalidated_for_reparse_points_immediately_before_spaw
             .expect_err("reparse rejected");
         assert_eq!(error.code(), "invalid_launch_path");
         assert!(spawner.commands.lock().expect("commands").is_empty());
+        assert!(inspector
+            .inspected
+            .lock()
+            .expect("inspected paths")
+            .iter()
+            .any(|path| path.to_string_lossy().ends_with("ordinary-1.0.jar")));
     });
 }

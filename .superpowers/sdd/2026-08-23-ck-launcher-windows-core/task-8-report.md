@@ -17,7 +17,7 @@ Commit: `feat: build and supervise Minecraft process`. The final hash is recorde
 - Keeps ordinary absolute classpath paths for Java 8 compatibility while using canonical trusted paths for containment/reparse validation.
 - Added internal refresh-token exchange through the existing Microsoft/Xbox/XSTS/Minecraft chain. The active account and Minecraft access token never cross the DTO boundary; rotated refresh tokens return to Credential Manager.
 - Added a direct `tokio::process::Command` spawner with an argument vector, null stdin, piped stdout/stderr, current directory, and `kill_on_drop`; no shell, `cmd.exe`, string join, or frontend process permission is used.
-- Added a per-profile active-process registry, stable duplicate error, PID/exit tracking, one-shot started/exited/error events, cleanup on exit/spawn failure, and a 128-record terminal history bound.
+- Added a globally serialized active-process registry for the shared `latest.log`, stable duplicate error, PID/exit tracking, one-shot started/exited/error events, cleanup on exit/spawn failure, and a 128-record terminal history bound.
 - Captures stdout/stderr to `logs/latest.log`, redacts tokens across reader-chunk boundaries, caps the log at 1 MiB, and retains only three rotated predecessors.
 - Registered Rust commands `launch` and `launch_status` and events `launcher://game-started`, `launcher://game-exited`, and `launcher://error`.
 
@@ -48,4 +48,27 @@ Frontend checks were not required because Task 8 adds Rust commands/events witho
 
 - Immediate path/reparse validation substantially narrows the launch boundary but remains path-based; as in earlier tasks, a malicious same-user filesystem actor could theoretically race a check without a future handle-relative/no-follow Windows filesystem layer.
 - The first release intentionally requires the profile game directory to equal the backend-owned game root. A future explicit custom-directory picker should persist a separately authorized root rather than trusting arbitrary frontend path text.
-- Concurrent launches for different profiles are allowed by the per-profile rule, but all processes target the shared `logs/latest.log` convention. Task 9/10 should either serialize global launches or introduce a coordinated multi-process log sink before exposing simultaneous multi-profile play.
+- Global launch serialization intentionally trades simultaneous multi-profile play for deterministic ownership of the shared `logs/latest.log`. Per-profile concurrent launches require a future coordinated/per-profile log sink before they can be enabled safely.
+
+## Round 1 review remediation
+
+Addressed every Round 1 finding:
+
+- Metadata JVM arguments now reject all Java alternate launch modes (`-jar`, `-m`, `--module`, `--module=...`) and every leading `@` argument-file form. The main class must match a strict dotted Java identifier grammar and cannot be an option, argument file, path, descriptor, or malformed qualified name.
+- Logging accepts only Mojang's exact `-Dlog4j.configurationFile=${path}` property template. It substitutes one launcher-validated local log-configuration file and rejects raw/outside paths, URLs, extra controls, alternate properties, and repeated placeholders.
+- Child waiting now returns the OS exit code together with an optional auxiliary output-capture error. A stdout/stderr drain or log-write failure is stored and emitted as a separately sanitized error while `launcher://game-exited` is still emitted exactly once with the real exit code.
+- Launches are globally serialized while `logs/latest.log` is shared. A second profile receives the stable `game_already_running` error before context preparation or spawning.
+- Immediate pre-spawn path validation is tested through an injected path inspector that deterministically simulates reparse rejection on every platform; the test no longer depends on Windows symbolic-link privilege.
+
+Round 1 TDD evidence:
+
+1. Malicious launch-mode and malformed-main-class regressions failed because the builder accepted them; the focused launcher suite passed after strict filtering and grammar validation.
+2. Raw external logging paths initially built successfully; exact-template validation made the external path, URL, duplicate-placeholder, control-character, alternate-property, and traversal cases pass.
+3. A different-profile launch initially reached context preparation and returned `internal_error`; global reservation now returns `game_already_running` and leaves the spawner at one command.
+4. A post-exit output failure initially recorded no exit code. The outcome split now records exit code `23`, one auxiliary `game_log_unavailable` error, and exactly one matching exit event without serializing its test token.
+
+Fresh Round 1 verification:
+
+- `cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check`: passed.
+- `cargo test --manifest-path app/src-tauri/Cargo.toml`: passed — 130 library tests and 2 integration tests, 0 failures.
+- `cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`: passed with 0 warnings/errors.
