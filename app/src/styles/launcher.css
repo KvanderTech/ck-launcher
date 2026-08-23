@@ -1,0 +1,941 @@
+.launcher-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  height: 100%;
+  isolation: isolate;
+  overflow: hidden;
+  position: relative;
+}
+
+.background-carousel {
+  inset: 0 0 0 var(--sidebar-width);
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  z-index: -2;
+}
+
+.background-carousel::after {
+  background:
+    linear-gradient(90deg, rgba(5, 11, 20, 0.44), rgba(5, 11, 20, 0.12) 48%, rgba(5, 11, 20, 0.48)),
+    linear-gradient(0deg, rgba(4, 10, 20, 0.8), rgba(4, 10, 20, 0.3) 62%, rgba(5, 10, 20, 0.25));
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.background-carousel img {
+  height: 100%;
+  inset: 0;
+  object-fit: cover;
+  opacity: 0;
+  position: absolute;
+  transform: scale(1.025);
+  transition: opacity 1.4s ease, transform 12s linear;
+  width: 100%;
+}
+
+.background-carousel img.is-active {
+  opacity: 1;
+  transform: scale(1.07);
+}
+
+.carousel-dots {
+  bottom: 20px;
+  display: flex;
+  gap: 7px;
+  pointer-events: auto;
+  position: absolute;
+  right: 24px;
+  z-index: 2;
+}
+
+.carousel-dots button {
+  background: rgba(210, 225, 243, 0.35);
+  border-radius: 2px;
+  height: 4px;
+  padding: 0;
+  width: 20px;
+}
+
+.carousel-dots button[aria-pressed="true"] {
+  background: white;
+  width: 31px;
+}
+
+.sidebar {
+  background: var(--surface-sidebar);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-height: 0;
+  padding: 28px 14px 18px;
+  position: relative;
+  z-index: 3;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 8px;
+}
+
+.brand img {
+  border-radius: 11px;
+  height: 44px;
+  object-fit: cover;
+  width: 44px;
+}
+
+.brand span,
+.brand strong,
+.brand small {
+  display: block;
+}
+
+.brand strong {
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.brand small {
+  color: var(--ink-soft);
+  font-size: 0.67rem;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.sidebar nav {
+  display: grid;
+  gap: 6px;
+}
+
+.sidebar nav button {
+  align-items: center;
+  background: transparent;
+  border-radius: 10px;
+  color: var(--ink-soft);
+  display: flex;
+  font-size: 0.84rem;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 13px;
+  text-align: left;
+  transition: background-color 140ms ease, color 140ms ease;
+  width: 100%;
+}
+
+.sidebar nav button:hover {
+  background: rgba(39, 75, 112, 0.26);
+  color: var(--ink);
+}
+
+.sidebar nav button.is-active {
+  background: linear-gradient(135deg, var(--blue), var(--blue-deep));
+  box-shadow: 0 10px 28px rgba(16, 123, 221, 0.25);
+  color: white;
+}
+
+.menu-icon {
+  fill: none;
+  flex: 0 0 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.55;
+  width: 18px;
+}
+
+.account-switcher {
+  margin-top: auto;
+  min-width: 0;
+  position: relative;
+}
+
+.active-account-panel {
+  align-items: center;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  display: flex;
+  gap: 9px;
+  min-height: 58px;
+  padding: 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.active-account-panel:hover {
+  background: var(--surface-hover);
+}
+
+.active-account-panel img,
+.account-choice img,
+.avatar-fallback {
+  background: #293b4a;
+  border-radius: 7px;
+  flex: 0 0 38px;
+  height: 38px;
+  image-rendering: pixelated;
+  object-fit: cover;
+  width: 38px;
+}
+
+.avatar-fallback {
+  align-items: center;
+  display: inline-flex;
+  font-weight: 800;
+  justify-content: center;
+}
+
+.account-copy {
+  display: block;
+  min-width: 0;
+}
+
+.account-copy strong,
+.account-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-copy strong {
+  font-size: 0.78rem;
+}
+
+.account-copy small {
+  color: var(--ink-soft);
+  font-size: 0.61rem;
+  margin-top: 2px;
+}
+
+.active-account-panel > svg {
+  fill: none;
+  height: 14px;
+  margin-left: auto;
+  stroke: var(--ink-soft);
+  stroke-width: 1.5;
+  width: 14px;
+}
+
+.active-account-panel[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+
+.account-menu {
+  background: rgba(8, 18, 33, 0.98);
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  bottom: calc(100% + 8px);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 5px;
+  left: 0;
+  max-height: min(340px, calc(100vh - 130px));
+  overflow: auto;
+  padding: 8px;
+  position: absolute;
+  width: 100%;
+  z-index: 5;
+}
+
+.account-menu-label {
+  color: var(--ink-muted);
+  font-size: 0.62rem;
+  padding: 3px 7px 5px;
+}
+
+.account-choice,
+.account-menu-action {
+  background: transparent;
+  border-radius: 8px;
+  color: var(--ink);
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+}
+
+.account-choice {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.account-choice[aria-checked="true"] {
+  background: rgba(22, 129, 200, 0.22);
+}
+
+.account-choice > span:nth-child(2) {
+  min-width: 0;
+}
+
+.account-choice strong,
+.account-choice small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-choice strong {
+  font-size: 0.72rem;
+}
+
+.account-choice small {
+  color: var(--ink-soft);
+  font-size: 0.59rem;
+}
+
+.account-check {
+  color: var(--blue);
+  margin-left: auto;
+}
+
+.account-menu-action {
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  margin-top: 3px;
+}
+
+.main-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.topbar {
+  align-items: center;
+  display: flex;
+  flex: 0 0 72px;
+  justify-content: space-between;
+  padding: 16px 26px 10px;
+  position: relative;
+  z-index: 2;
+}
+
+.topbar > span {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.window-controls {
+  display: flex;
+  gap: 5px;
+}
+
+.window-controls button {
+  align-items: center;
+  background: rgba(10, 18, 31, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  display: inline-flex;
+  height: 31px;
+  justify-content: center;
+  padding: 0;
+  width: 34px;
+}
+
+.window-controls button:hover {
+  background: rgba(38, 57, 79, 0.9);
+}
+
+.window-controls .window-close:hover {
+  background: #b8404e;
+}
+
+.window-controls svg {
+  fill: none;
+  height: 14px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.4;
+  width: 14px;
+}
+
+.page-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 5.5vw 52px;
+  scrollbar-color: rgba(149, 174, 204, 0.45) transparent;
+  scrollbar-width: thin;
+}
+
+.home-page {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin: 0 auto;
+  min-height: calc(100% - 24px);
+  max-width: 930px;
+  width: 100%;
+}
+
+.hero-copy {
+  max-width: 720px;
+}
+
+.hero-copy h1 {
+  font-size: clamp(2.7rem, 5vw, 4.8rem);
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+  margin: 11px 0 17px;
+  max-width: 720px;
+}
+
+.hero-copy p,
+.page-heading p,
+.placeholder-page > p,
+.signed-out-panel > p {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.65;
+  max-width: 690px;
+}
+
+.launch-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(310px, 1fr) minmax(250px, 0.8fr);
+  margin-top: 28px;
+}
+
+.profile-card,
+.play-card,
+.progress-panel,
+.error-panel,
+.settings-card,
+.settings-page section[aria-labelledby="memory-settings-title"],
+.skin-shell,
+.signed-out-panel {
+  backdrop-filter: blur(18px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.17);
+}
+
+.profile-card {
+  padding: 17px;
+}
+
+.profile-card > label {
+  color: var(--ink-soft);
+  display: block;
+  font-size: 0.67rem;
+  margin-bottom: 7px;
+}
+
+.profile-card select {
+  appearance: none;
+  background: rgba(30, 44, 65, 0.9) linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%) calc(100% - 15px) 53%/5px 5px no-repeat;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-weight: 700;
+  min-height: 40px;
+  padding: 0 36px 0 12px;
+  width: 100%;
+}
+
+.profile-facts {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.profile-facts span,
+.profile-facts small,
+.profile-facts strong {
+  display: block;
+  min-width: 0;
+}
+
+.profile-facts small {
+  color: var(--ink-muted);
+  font-size: 0.6rem;
+}
+
+.profile-facts strong {
+  font-size: 0.7rem;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.play-card {
+  align-content: center;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  padding: 17px;
+}
+
+.state-indicator {
+  align-self: center;
+  background: var(--green);
+  border-radius: 3px;
+  height: 9px;
+  margin-right: 8px;
+  width: 9px;
+}
+
+.state-installing,
+.state-launching {
+  background: var(--blue);
+}
+
+.state-recoverable-error {
+  background: var(--amber);
+}
+
+.state-fatal-error {
+  background: var(--red);
+}
+
+.launch-state {
+  align-self: center;
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+}
+
+.play-button {
+  background: linear-gradient(135deg, #20b6f6, #187de8);
+  border-radius: 9px;
+  box-shadow: 0 15px 35px rgba(11, 126, 224, 0.28);
+  font-weight: 750;
+  grid-column: 1 / -1;
+  margin-top: 11px;
+  min-height: 51px;
+}
+
+.progress-panel,
+.error-panel {
+  margin-top: 12px;
+  padding: 16px 17px;
+}
+
+.progress-copy,
+.progress-meta,
+.error-panel {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.progress-copy strong {
+  display: block;
+  font-size: 0.77rem;
+  margin-top: 3px;
+}
+
+.progress-copy output {
+  font-size: 1.25rem;
+  font-weight: 750;
+}
+
+.progress-track {
+  background: rgba(150, 175, 206, 0.14);
+  border-radius: 3px;
+  height: 6px;
+  margin: 13px 0 8px;
+  overflow: hidden;
+}
+
+.progress-track span {
+  background: linear-gradient(90deg, var(--blue), #5cc5f7);
+  display: block;
+  height: 100%;
+  transition: width 180ms ease;
+}
+
+.progress-meta {
+  color: var(--ink-muted);
+  font-size: 0.63rem;
+}
+
+.progress-meta button,
+.error-panel button,
+.runtime-actions button,
+.microsoft-login button {
+  background: rgba(32, 52, 77, 0.92);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.error-panel {
+  gap: 20px;
+}
+
+.error-panel strong {
+  display: block;
+  font-size: 0.82rem;
+  margin-top: 5px;
+}
+
+.error-panel.is-recoverable {
+  border-color: rgba(245, 191, 103, 0.35);
+}
+
+.error-panel.is-fatal {
+  border-color: rgba(251, 115, 132, 0.35);
+}
+
+.page-heading h1,
+.placeholder-page h1,
+.signed-out-panel h1 {
+  font-size: clamp(2rem, 4vw, 3rem);
+  letter-spacing: -0.04em;
+  margin: 6px 0 8px;
+}
+
+.settings-page,
+.skins-placeholder,
+.placeholder-page {
+  margin: 0 auto;
+  max-width: 1040px;
+  width: 100%;
+}
+
+.settings-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 0.72fr) minmax(430px, 1.28fr);
+  margin-top: 18px;
+}
+
+.settings-column {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-card,
+.settings-page section[aria-labelledby="memory-settings-title"] {
+  padding: 17px;
+}
+
+.settings-card h2,
+.settings-page section[aria-labelledby="memory-settings-title"] h2 {
+  font-size: 0.88rem;
+  margin-bottom: 8px;
+}
+
+.settings-card p {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  line-height: 1.55;
+  margin-bottom: 0;
+}
+
+.settings-page section[aria-labelledby="memory-settings-title"] output {
+  background: rgba(25, 43, 67, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: inline-block;
+  font-size: 0.76rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+}
+
+.settings-page input[type="range"] {
+  accent-color: var(--blue);
+  display: block;
+  width: 100%;
+}
+
+.java-card-group > div:first-child {
+  margin-bottom: 13px;
+}
+
+.java-settings {
+  display: grid;
+  gap: 8px;
+}
+
+.java-runtime-card {
+  background: rgba(8, 19, 34, 0.48);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 7px 12px;
+  grid-template-columns: 1fr auto;
+  padding: 12px;
+}
+
+.java-runtime-card h3 {
+  font-size: 0.76rem;
+  margin: 0;
+}
+
+.runtime-status {
+  border-radius: 5px;
+  color: var(--ink-soft);
+  font-size: 0.58rem;
+  padding: 4px 7px;
+}
+
+.runtime-valid {
+  background: rgba(45, 194, 134, 0.13);
+  color: var(--green);
+}
+
+.runtime-missing,
+.runtime-invalid {
+  background: rgba(241, 94, 116, 0.12);
+  color: var(--red);
+}
+
+.java-runtime-card > p {
+  background: rgba(30, 45, 68, 0.52);
+  border-radius: 6px;
+  color: var(--ink-soft);
+  font-size: 0.62rem;
+  grid-column: 1 / -1;
+  margin: 0;
+  overflow: hidden;
+  padding: 7px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-actions {
+  display: flex;
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+
+.runtime-actions button {
+  font-size: 0.61rem;
+  min-height: 29px;
+}
+
+.placeholder-page,
+.signed-out-panel {
+  margin: 8vh auto 0;
+  max-width: 760px;
+  padding: 34px;
+}
+
+.placeholder-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 30px;
+}
+
+.placeholder-grid span {
+  background: linear-gradient(145deg, rgba(44, 68, 96, 0.6), rgba(17, 31, 49, 0.75));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  height: 126px;
+}
+
+.skin-shell {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(230px, 0.85fr) minmax(310px, 1.15fr);
+  margin-top: 18px;
+  padding: 16px;
+}
+
+.skin-preview,
+.skin-gallery {
+  background: rgba(19, 32, 51, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  min-height: 320px;
+  padding: 15px;
+}
+
+.skin-preview {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+.pixel-person {
+  align-items: center;
+  background: linear-gradient(#151c25 0 25%, #f1c5a2 25% 44%, #129bdd 44% 72%, #d8dbe1 72%);
+  border-radius: 7px;
+  box-shadow: 0 18px 44px rgba(14, 156, 220, 0.2);
+  color: white;
+  display: flex;
+  font-weight: 900;
+  height: 220px;
+  justify-content: center;
+  width: 98px;
+}
+
+.skin-gallery > div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 16px 0;
+}
+
+.skin-gallery > div span {
+  background: linear-gradient(155deg, #164d73, #172339);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  height: 110px;
+}
+
+.skin-gallery button {
+  background: rgba(28, 43, 64, 0.8);
+  border-radius: 8px;
+  min-height: 42px;
+  width: 100%;
+}
+
+.boot-screen {
+  align-items: center;
+  background: radial-gradient(circle at 50% 35%, #122c4a, #050b15 68%);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  justify-content: center;
+  padding: 30px;
+  text-align: center;
+}
+
+.boot-mark {
+  align-items: center;
+  background: linear-gradient(135deg, var(--blue), var(--blue-deep));
+  border-radius: 12px;
+  display: inline-flex;
+  font-size: 1.2rem;
+  font-weight: 850;
+  height: 54px;
+  justify-content: center;
+  margin-bottom: 12px;
+  width: 54px;
+}
+
+.microsoft-login button {
+  background: linear-gradient(135deg, var(--blue), var(--blue-deep));
+  font-weight: 700;
+  min-height: 43px;
+}
+
+.microsoft-login [role="alert"] {
+  color: var(--red);
+  font-size: 0.72rem;
+  margin: 10px 0 0;
+}
+
+@media (max-width: 900px) {
+  :root {
+    --sidebar-width: 78px;
+  }
+
+  .launcher-shell:has(.active-account-panel[aria-expanded="true"]) {
+    --sidebar-width: 216px;
+  }
+
+  .sidebar {
+    align-items: center;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .brand {
+    padding: 0;
+  }
+
+  .brand > span,
+  .sidebar nav button span,
+  .account-copy,
+  .active-account-panel > svg {
+    display: none;
+  }
+
+  .sidebar nav button {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .sidebar nav,
+  .account-switcher {
+    width: 100%;
+  }
+
+  .active-account-panel {
+    justify-content: center;
+    padding: 7px;
+  }
+
+  .account-menu {
+    bottom: 0;
+    left: calc(100% + 9px);
+    width: 190px;
+  }
+
+  .launcher-shell:has(.active-account-panel[aria-expanded="true"]) .account-menu {
+    bottom: calc(100% + 8px);
+    left: 0;
+    width: 100%;
+  }
+
+  .launcher-shell:has(.active-account-panel[aria-expanded="true"]) .account-copy,
+  .launcher-shell:has(.active-account-panel[aria-expanded="true"]) .active-account-panel > svg {
+    display: block;
+  }
+
+  .launch-grid,
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .page-scroll {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .topbar {
+    padding-left: 18px;
+    padding-right: 12px;
+  }
+
+  .hero-copy h1 {
+    font-size: 2.4rem;
+  }
+
+  .profile-facts,
+  .skin-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-copy,
+  .error-panel {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .background-carousel img {
+    transform: none !important;
+  }
+}

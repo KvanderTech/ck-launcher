@@ -38,12 +38,15 @@ describe("AccountMenu", () => {
     const api = mockApi();
     render(<AccountMenu accounts={accounts} api={api} />);
 
+    fireEvent.click(screen.getByRole("button", { name: /Alex.*Minecraft account/ }));
+
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Steve/ }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: /Steve/ }));
     });
 
     expect(api.setActiveAccount).toHaveBeenCalledWith("two");
     expect(screen.getByTestId("active-account-panel").textContent).toContain("Steve");
+    expect(screen.queryByRole("menu", { name: "Аккаунты Minecraft" })).toBeNull();
   });
 });
 

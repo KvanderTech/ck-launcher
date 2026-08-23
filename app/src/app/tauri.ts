@@ -1,10 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type {
   AccountSummary,
+  GameExitedEvent,
+  GameStartedEvent,
+  GameVersionSummary,
   JavaMajor,
   JavaRuntimeStatus,
+  LauncherErrorEvent,
+  LauncherProfile,
   MemorySettingsStatus,
+  OperationId,
+  ProgressEvent,
 } from "./types";
 
 export interface LauncherApi {
@@ -42,4 +51,53 @@ export interface SettingsApi {
 
 export const settingsApi: SettingsApi = {
   memoryStatus: () => invoke<MemorySettingsStatus>("memory_status"),
+};
+
+export interface ProfileApi {
+  listGameVersions(): Promise<GameVersionSummary[]>;
+  getProfile(): Promise<LauncherProfile>;
+  updateProfile(profile: LauncherProfile): Promise<LauncherProfile>;
+}
+
+export interface OperationApi {
+  /** Task 10 changes this adapter from `launch` to the final orchestrator command. */
+  launchOrInstall(profileId: string): Promise<OperationId>;
+  cancelOperation(operationId: OperationId): Promise<void>;
+  onProgress(handler: (event: ProgressEvent) => void): Promise<UnlistenFn>;
+  onGameStarted(handler: (event: GameStartedEvent) => void): Promise<UnlistenFn>;
+  onGameExited(handler: (event: GameExitedEvent) => void): Promise<UnlistenFn>;
+  onLauncherError(handler: (event: LauncherErrorEvent) => void): Promise<UnlistenFn>;
+}
+
+export interface AppApi extends LauncherApi, RuntimeApi, SettingsApi, ProfileApi, OperationApi {}
+
+function listenPayload<T>(eventName: string, handler: (payload: T) => void) {
+  return listen<T>(eventName, ({ payload }) => handler(payload));
+}
+
+export const appApi: AppApi = {
+  ...launcherApi,
+  ...runtimeApi,
+  ...settingsApi,
+  listGameVersions: () => invoke<GameVersionSummary[]>("list_game_versions"),
+  getProfile: () => invoke<LauncherProfile>("get_profile"),
+  updateProfile: (profile) => invoke<LauncherProfile>("update_profile", { profile }),
+  launchOrInstall: (profileId) => invoke<OperationId>("launch", { profileId }),
+  cancelOperation: (operationId) => invoke<void>("cancel_operation", { operationId }),
+  onProgress: (handler) => listenPayload("launcher://progress", handler),
+  onGameStarted: (handler) => listenPayload("launcher://game-started", handler),
+  onGameExited: (handler) => listenPayload("launcher://game-exited", handler),
+  onLauncherError: (handler) => listenPayload("launcher://error", handler),
+};
+
+export interface WindowApi {
+  minimize(): Promise<void>;
+  toggleMaximize(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export const windowApi: WindowApi = {
+  minimize: () => getCurrentWindow().minimize(),
+  toggleMaximize: () => getCurrentWindow().toggleMaximize(),
+  close: () => getCurrentWindow().close(),
 };
