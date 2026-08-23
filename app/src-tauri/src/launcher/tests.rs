@@ -309,6 +309,57 @@ fn windows_x64_rules_exclude_disallowed_and_native_libraries_and_classpath_is_de
 }
 
 #[test]
+fn windows_rule_jvm_fixture_reconstructs_exact_safe_os_properties() {
+    let mut request = fixture_request("windows-os-properties");
+    let windows_rule = Rule {
+        action: "allow".to_owned(),
+        os: Some(crate::metadata::models::OsRule {
+            name: Some("windows".to_owned()),
+            arch: Some("amd64".to_owned()),
+            version: Some(r"^10\.".to_owned()),
+        }),
+        features: None,
+    };
+    let linux_rule = Rule {
+        action: "allow".to_owned(),
+        os: Some(crate::metadata::models::OsRule {
+            name: Some("linux".to_owned()),
+            arch: None,
+            version: None,
+        }),
+        features: None,
+    };
+    request.version.arguments.jvm = vec![
+        Argument::Conditional {
+            rules: vec![windows_rule],
+            value: json!(["-Dos.name=Windows 10", "-Dos.version=10.0"]),
+        },
+        Argument::Conditional {
+            rules: vec![linux_rule],
+            value: json!(["-Dos.name=Linux", "-Dos.version=6.0"]),
+        },
+        Argument::Literal("-cp".to_owned()),
+        Argument::Literal("${classpath}".to_owned()),
+    ];
+
+    let prepared = build_launch(request).expect("official Windows JVM fixture builds");
+    let args = strings(&prepared.command.args);
+    assert_eq!(
+        args.iter()
+            .filter(|argument| argument.as_str() == "-Dos.name=Windows 10")
+            .count(),
+        1
+    );
+    assert_eq!(
+        args.iter()
+            .filter(|argument| argument.as_str() == "-Dos.version=10.0")
+            .count(),
+        1
+    );
+    assert!(!args.iter().any(|argument| argument.contains("=Linux")));
+}
+
+#[test]
 fn unknown_required_placeholders_fail_without_reaching_a_process_command() {
     let mut request = fixture_request("placeholder");
     request.version.arguments.game =
@@ -333,6 +384,8 @@ fn metadata_cannot_override_memory_classpath_natives_or_security_arguments() {
         "-Djava.library.path=C:\\evil",
         "-Djavax.net.ssl.trustStore=C:\\evil",
         "-Djava.security.manager=allow",
+        "-Dos.name=Windows 11",
+        "-Dos.version=11.0",
     ] {
         let mut request = fixture_request("malicious");
         request.version.arguments.jvm = vec![Argument::Literal(malicious.to_owned())];
