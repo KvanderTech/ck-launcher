@@ -107,3 +107,26 @@ All commands were run from the Task 6 worktree with the bundled toolchains and n
 
 - `.part` and `.part.lock` are intentionally unavailable as final filename suffixes. They are implementation-reserved across the owned download root; callers must choose a different final name.
 - Windows path identity remains ordinal case-insensitive and path-based. The previously documented same-user TOCTOU limitation is unchanged.
+
+## Fix Round 3
+
+### Reviewer finding addressed
+
+The internal namespace reservation now applies case-insensitively to every normal component of a relative destination, not only its final filename. Destinations such as `a.part/child.bin`, `a.part.lock/child.bin`, and the same reserved components deeper in a normal subtree are rejected before path or filesystem work. Consequently, a final subtree cannot use another execution's part file or lock marker as a directory prefix.
+
+### TDD evidence
+
+- The expanded separate-plan regression first failed because `a.part/child.bin` was accepted after a valid plan for `a`; only the leaf `child.bin` was inspected.
+- The planner now rejects lower- and uppercase `.part`/`.part.lock` components at the first and intermediate directory levels while continuing to accept `normal/child.bin`.
+
+### Round verification
+
+- `cargo test downloads -- --nocapture`: passed — 21 loopback/planner download tests, 0 failures.
+- `cargo fmt --all --check`: passed.
+- `cargo clippy --all-targets -- -D warnings`: passed with 0 project warnings/errors.
+- `cargo test --all-targets`: passed — 83 library tests plus 2 Task 5 integration tests, 0 failures.
+
+### Round concerns
+
+- The reserved namespace now excludes `.part` and `.part.lock` suffixes from directory components as well as final filenames. This is intentional to make the sidecar namespace universal across independent executions.
+- The existing same-user path-based TOCTOU limitation remains unchanged.
