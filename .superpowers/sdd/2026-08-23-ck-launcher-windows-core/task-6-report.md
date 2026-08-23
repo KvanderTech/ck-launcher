@@ -83,3 +83,27 @@ All commands were run from the Task 6 worktree with the bundled toolchains and n
 
 - Hashless downloads deliberately trade resume efficiency for integrity: existing correct finals remain size-verifiable and skippable, but interrupted hashless parts always restart from zero.
 - Windows case-insensitive collision checks use `CompareStringOrdinal` on already validated absolute paths. The existing same-user path-based TOCTOU limitation remains unchanged.
+
+## Fix Round 2
+
+### Reviewer findings addressed
+
+1. Final destination filenames ending case-insensitively in `.part` or `.part.lock` are now rejected as a queue-internal namespace. This invariant applies independently to every plan, so one execution's final can never be another execution's part or ownership marker even though their derived locks would otherwise differ.
+2. Collision planning no longer performs an allocation-heavy quadratic scan. Each validated final, part, and lock path is encoded into its Windows UTF-16 identity once, the identities are sorted with ordinal case-insensitive comparison, and only adjacent identities are checked. Collision detection is now O(n log n), and filesystem verification starts only after the entire namespace is proven collision-free.
+
+### TDD evidence
+
+- The separate-plan regression first accepted `a.part` as a standalone final after a plan for `a`, proving that plan-local intersection checks did not protect concurrent executions. The planner now rejects `.part`, `.PART`, `.part.lock`, and `.PART.LOCK` finals with `download_spec_invalid` in every plan.
+- A 2,048-entry manifest test proves large unique plans remain valid and that a case-only alias appended at the end is still rejected. The existing final/part/lock and direct case-alias planner cases remain green.
+
+### Round verification
+
+- `cargo test downloads -- --nocapture`: passed — 21 loopback/planner download tests, 0 failures.
+- `cargo fmt --all --check`: passed.
+- `cargo clippy --all-targets -- -D warnings`: passed with 0 project warnings/errors.
+- `cargo test --all-targets`: passed — 83 library tests plus 2 Task 5 integration tests, 0 failures.
+
+### Round concerns
+
+- `.part` and `.part.lock` are intentionally unavailable as final filename suffixes. They are implementation-reserved across the owned download root; callers must choose a different final name.
+- Windows path identity remains ordinal case-insensitive and path-based. The previously documented same-user TOCTOU limitation is unchanged.
