@@ -13,7 +13,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use client::{minecraft_not_owned, HttpMicrosoftApi, MicrosoftApi};
 use loopback::CallbackReceiver;
 use rand::RngCore;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use url::Url;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -43,6 +46,12 @@ pub struct AuthService {
     credentials: Arc<dyn CredentialStore>,
     opener: Arc<dyn BrowserOpener>,
     mutations: Arc<AccountMutationCoordinator>,
+    token_cache: Mutex<Option<CachedMinecraftAccess>>,
+}
+
+struct CachedMinecraftAccess {
+    account_id: String,
+    access: client::MinecraftAccess,
 }
 
 pub(crate) struct RefreshedMinecraftAccount {
@@ -72,6 +81,7 @@ impl AuthService {
             credentials,
             opener,
             mutations,
+            token_cache: Mutex::new(None),
         }
     }
 
@@ -173,6 +183,7 @@ impl AuthService {
             }
             return Err(error);
         }
+        self.cache_access(&profile.id, minecraft)?;
         Ok(profile)
     }
 
@@ -194,6 +205,12 @@ impl AuthService {
                     true,
                 )
             })?;
+        if let Some(access_token) = self.cached_access(&account.id)? {
+            return Ok(RefreshedMinecraftAccount {
+                account,
+                access_token,
+            });
+        }
         let refresh = self.credentials.get(&account.id)?.ok_or_else(|| {
             LauncherError::new(
                 "account_reauthentication_required",
@@ -202,15 +219,57 @@ impl AuthService {
                 true,
             )
         })?;
-        let oauth = self.api.refresh_token(&refresh).await?;
+        let oauth = self.api.refresh_token(&refresh).await.map_err(|_| {
+            LauncherError::new(
+                "account_reauthentication_required",
+                "Sign in again to launch Minecraft.",
+                None,
+                true,
+            )
+        })?;
         let xbox = self.api.xbox_live(oauth.access_token()).await?;
         let xsts = self.api.xsts(&xbox).await?;
         let access_token = self.api.minecraft(&xsts).await?;
         self.credentials.save(&account.id, oauth.refresh_token())?;
+        self.cache_access(&account.id, access_token.clone())?;
         Ok(RefreshedMinecraftAccount {
             account,
             access_token,
         })
+    }
+
+    fn cached_access(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<client::MinecraftAccess>, LauncherError> {
+        let mut cache = self
+            .token_cache
+            .lock()
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        let valid = cache
+            .as_ref()
+            .is_some_and(|cached| cached.account_id == account_id && cached.access.is_valid());
+        if valid {
+            Ok(cache.as_ref().map(|cached| cached.access.clone()))
+        } else {
+            *cache = None;
+            Ok(None)
+        }
+    }
+
+    fn cache_access(
+        &self,
+        account_id: &str,
+        access: client::MinecraftAccess,
+    ) -> Result<(), LauncherError> {
+        *self
+            .token_cache
+            .lock()
+            .map_err(|_| LauncherError::storage_unavailable())? = Some(CachedMinecraftAccess {
+            account_id: account_id.to_owned(),
+            access,
+        });
+        Ok(())
     }
 }
 
@@ -416,6 +475,7 @@ mod tests {
     struct MockMicrosoftApi {
         calls: Mutex<Vec<&'static str>>,
         profile_error: bool,
+        refresh_error: bool,
     }
 
     #[async_trait]
@@ -442,6 +502,14 @@ mod tests {
                 "refresh-secret" | "old-refresh-secret"
             ));
             self.calls.lock().expect("calls lock").push("refresh_token");
+            if self.refresh_error {
+                return Err(LauncherError::new(
+                    "oauth_exchange_failed",
+                    "The token endpoint rejected the refresh token.",
+                    Some("refresh_token=must-not-leak".to_owned()),
+                    true,
+                ));
+            }
             Ok(OAuthTokens::new(
                 "refreshed-oauth-access",
                 "rotated-refresh-secret",
@@ -498,6 +566,7 @@ mod tests {
             let api = Arc::new(MockMicrosoftApi {
                 calls: Mutex::new(Vec::new()),
                 profile_error: false,
+                refresh_error: false,
             });
             let opener = Arc::new(RecordingOpener::default());
             let service = AuthService::new(
@@ -555,6 +624,7 @@ mod tests {
             let api = Arc::new(MockMicrosoftApi {
                 calls: Mutex::new(Vec::new()),
                 profile_error: false,
+                refresh_error: false,
             });
             let service = AuthService::new(
                 Some("public-client-id".to_owned()),
@@ -570,9 +640,16 @@ mod tests {
                 .await
                 .expect("refresh");
             let (public, access_token) = refreshed.into_parts();
+            let cached = service
+                .refresh_active_minecraft_account()
+                .await
+                .expect("cached token");
+            let (cached_public, cached_access_token) = cached.into_parts();
 
             assert_eq!(public, account);
             assert_eq!(access_token, "minecraft-access");
+            assert_eq!(cached_public, account);
+            assert_eq!(cached_access_token, "minecraft-access");
             assert_eq!(
                 *api.calls.lock().expect("calls"),
                 ["refresh_token", "xbox_live", "xsts", "minecraft"]
@@ -589,6 +666,50 @@ mod tests {
     }
 
     #[test]
+    fn rejected_refresh_maps_to_reauthentication_without_exposing_the_token() {
+        tauri::async_runtime::block_on(async {
+            let storage = Arc::new(Storage::connect("sqlite::memory:").await.expect("storage"));
+            let account = AccountSummary {
+                id: "stable-account-id".to_owned(),
+                minecraft_name: "Player".to_owned(),
+                minecraft_uuid: "minecraft-uuid".to_owned(),
+                head_url: None,
+                is_active: true,
+            };
+            storage
+                .upsert_account(&account)
+                .await
+                .expect("account saves");
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            credentials
+                .save(&account.id, &RefreshToken::new("refresh-secret"))
+                .expect("credential saves");
+            let service = AuthService::new(
+                Some("public-client-id".to_owned()),
+                Arc::new(MockMicrosoftApi {
+                    calls: Mutex::new(Vec::new()),
+                    profile_error: false,
+                    refresh_error: true,
+                }),
+                storage,
+                credentials,
+                Arc::new(RecordingOpener::default()),
+                Arc::new(AccountMutationCoordinator::default()),
+            );
+
+            let error = match service.refresh_active_minecraft_account().await {
+                Ok(_) => panic!("refresh rejection requires sign-in"),
+                Err(error) => error,
+            };
+            let serialized = serde_json::to_string(&error).expect("error serializes");
+
+            assert_eq!(error.code(), "account_reauthentication_required");
+            assert!(!serialized.contains("refresh-secret"));
+            assert!(!serialized.contains("must-not-leak"));
+        });
+    }
+
+    #[test]
     fn profile_not_found_maps_to_stable_minecraft_not_owned_error() {
         tauri::async_runtime::block_on(async {
             let service = AuthService::new(
@@ -596,6 +717,7 @@ mod tests {
                 Arc::new(MockMicrosoftApi {
                     calls: Mutex::new(Vec::new()),
                     profile_error: true,
+                    refresh_error: false,
                 }),
                 Arc::new(Storage::connect("sqlite::memory:").await.expect("storage")),
                 Arc::new(InMemoryCredentialStore::default()),
@@ -634,6 +756,7 @@ mod tests {
                 Arc::new(MockMicrosoftApi {
                     calls: Mutex::new(Vec::new()),
                     profile_error: false,
+                    refresh_error: false,
                 }),
                 storage.clone(),
                 credentials.clone(),
@@ -674,6 +797,7 @@ mod tests {
                 Arc::new(MockMicrosoftApi {
                     calls: Mutex::new(Vec::new()),
                     profile_error: false,
+                    refresh_error: false,
                 }),
                 storage.clone(),
                 credentials.clone(),
@@ -742,6 +866,7 @@ mod tests {
                 Arc::new(MockMicrosoftApi {
                     calls: Mutex::new(Vec::new()),
                     profile_error: false,
+                    refresh_error: false,
                 }),
                 storage.clone(),
                 credentials.clone(),
@@ -800,6 +925,7 @@ mod tests {
             Arc::new(MockMicrosoftApi {
                 calls: Mutex::new(Vec::new()),
                 profile_error: false,
+                refresh_error: false,
             }),
             Arc::new(
                 tauri::async_runtime::block_on(Storage::connect("sqlite::memory:"))

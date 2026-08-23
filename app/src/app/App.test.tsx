@@ -144,6 +144,27 @@ describe("launcher application", () => {
     expect(screen.getByText("client.jar")).toBeTruthy();
   });
 
+  it("shows the current metadata stage and allows cancelling the active workflow", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Играть" }));
+    await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      handlers.progress?.({
+        operationId: "operation-current",
+        stage: "resolving-metadata" as ProgressEvent["stage"],
+        completedBytes: 0,
+        totalBytes: 0,
+      });
+    });
+
+    expect(screen.getByText("Получаем метаданные")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+    expect(api.cancelOperation).toHaveBeenCalledWith("operation-current");
+  });
+
   it("limits the Tauri drag region to the safe topbar area outside window buttons", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);

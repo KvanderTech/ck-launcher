@@ -58,6 +58,7 @@ pub struct GameProcessStatus {
     pub error: Option<LauncherError>,
 }
 
+#[derive(Clone)]
 pub struct Launcher {
     context: Arc<dyn LaunchContextProvider>,
     spawner: Arc<dyn ProcessSpawner>,
@@ -136,6 +137,41 @@ impl Launcher {
     pub async fn launch(&self, profile_id: &str) -> Result<OperationId, LauncherError> {
         validate_profile_id(profile_id)?;
         let operation_id = format!("launch-{:016x}", rand::random::<u64>());
+        self.reserve(profile_id, &operation_id)?;
+        let result = self.start_reserved(profile_id, &operation_id).await;
+        if let Err(error) = &result {
+            self.finish_error(profile_id, &operation_id, error.clone())?;
+        }
+        result.map(|()| operation_id)
+    }
+
+    pub(crate) fn game_active(&self) -> Result<bool, LauncherError> {
+        Ok(!self
+            .registry
+            .lock()
+            .map_err(|_| process_state_error())?
+            .active_profiles
+            .is_empty())
+    }
+
+    pub(crate) async fn launch_prepared(
+        &self,
+        profile_id: &str,
+        operation_id: &str,
+        prepared: PreparedLaunch,
+    ) -> Result<(), LauncherError> {
+        validate_profile_id(profile_id)?;
+        self.reserve(profile_id, operation_id)?;
+        let result = self
+            .start_prepared(profile_id, operation_id, prepared)
+            .await;
+        if let Err(error) = &result {
+            self.finish_error(profile_id, operation_id, error.clone())?;
+        }
+        result
+    }
+
+    fn reserve(&self, profile_id: &str, operation_id: &str) -> Result<(), LauncherError> {
         {
             let mut registry = self.registry.lock().map_err(|_| process_state_error())?;
             if !registry.active_profiles.is_empty() {
@@ -148,11 +184,11 @@ impl Launcher {
             }
             registry
                 .active_profiles
-                .insert(profile_id.to_owned(), operation_id.clone());
+                .insert(profile_id.to_owned(), operation_id.to_owned());
             registry.operations.insert(
-                operation_id.clone(),
+                operation_id.to_owned(),
                 GameProcessStatus {
-                    operation_id: operation_id.clone(),
+                    operation_id: operation_id.to_owned(),
                     profile_id: profile_id.to_owned(),
                     pid: None,
                     exit_code: None,
@@ -160,11 +196,7 @@ impl Launcher {
                 },
             );
         }
-        let result = self.start_reserved(profile_id, &operation_id).await;
-        if let Err(error) = &result {
-            self.finish_error(profile_id, &operation_id, error.clone())?;
-        }
-        result.map(|()| operation_id)
+        Ok(())
     }
 
     async fn start_reserved(
@@ -173,6 +205,16 @@ impl Launcher {
         operation_id: &str,
     ) -> Result<(), LauncherError> {
         let prepared = self.context.prepare(profile_id).await?;
+        self.start_prepared(profile_id, operation_id, prepared)
+            .await
+    }
+
+    async fn start_prepared(
+        &self,
+        profile_id: &str,
+        operation_id: &str,
+        prepared: PreparedLaunch,
+    ) -> Result<(), LauncherError> {
         let log = ProcessLog::open(&self.logs_root, prepared.secrets.clone())?;
         for path in &prepared.validated_paths {
             self.path_inspector.validate(path)?;
@@ -210,6 +252,7 @@ impl Launcher {
                             operation_id: operation_id.clone(),
                             profile_id: profile_id.clone(),
                             error,
+                            terminal: false,
                         });
                     }
                     events.emit(GameProcessEvent::Exited {
@@ -230,6 +273,7 @@ impl Launcher {
                         operation_id,
                         profile_id,
                         error,
+                        terminal: true,
                     });
                 }
             }
@@ -254,6 +298,7 @@ impl Launcher {
             operation_id: operation_id.to_owned(),
             profile_id: profile_id.to_owned(),
             error,
+            terminal: true,
         });
         Ok(())
     }

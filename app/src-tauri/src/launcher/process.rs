@@ -32,6 +32,7 @@ pub enum GameProcessEvent {
         operation_id: String,
         profile_id: String,
         error: LauncherError,
+        terminal: bool,
     },
 }
 

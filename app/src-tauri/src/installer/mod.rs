@@ -5,7 +5,8 @@ mod path_safety;
 
 use crate::{
     downloads::{
-        DownloadCancellationToken, DownloadProgress, DownloadService, DownloadSpec, ProgressSink,
+        verify_file, DownloadCancellationToken, DownloadProgress, DownloadService, DownloadSpec,
+        ProgressSink,
     },
     error::LauncherError,
     metadata::{
@@ -94,6 +95,15 @@ pub struct InstallationStatus {
     pub error: Option<LauncherError>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStatus {
+    pub operation_id: String,
+    pub profile_id: String,
+    pub state: OperationState,
+    pub error: Option<LauncherError>,
+}
+
 #[derive(Clone)]
 pub struct OperationHandle {
     pub operation_id: String,
@@ -118,23 +128,38 @@ pub struct OperationRegistry {
 struct OperationRegistryInner {
     operations: HashMap<String, OperationRecord>,
     active_versions: HashMap<String, String>,
+    active_workflow: Option<String>,
     terminal_order: VecDeque<String>,
 }
 
 pub(super) const MAX_TERMINAL_OPERATIONS: usize = 128;
 
 struct OperationRecord {
-    version_id: String,
+    subject: OperationSubject,
     state: OperationState,
     cancel_token: crate::downloads::DownloadCancellationToken,
+    spawned: bool,
     summary: Option<InstallationSummary>,
     error: Option<LauncherError>,
+}
+
+enum OperationSubject {
+    Installation { version_id: String },
+    Workflow { profile_id: String },
 }
 
 impl OperationRegistry {
     pub fn begin(&self, version_id: &str) -> Result<OperationHandle, LauncherError> {
         validate_version_id(version_id)?;
         let mut inner = self.inner.lock().map_err(|_| operation_state_error())?;
+        if inner.active_workflow.is_some() {
+            return Err(LauncherError::new(
+                "operation_in_progress",
+                "A launch or installation operation is already in progress.",
+                None,
+                true,
+            ));
+        }
         if inner.active_versions.contains_key(version_id) {
             return Err(LauncherError::new(
                 "installation_in_progress",
@@ -151,9 +176,53 @@ impl OperationRegistry {
         inner.operations.insert(
             operation_id.clone(),
             OperationRecord {
-                version_id: version_id.to_owned(),
+                subject: OperationSubject::Installation {
+                    version_id: version_id.to_owned(),
+                },
                 state: OperationState::Running,
                 cancel_token: cancel_token.clone(),
+                spawned: false,
+                summary: None,
+                error: None,
+            },
+        );
+        Ok(OperationHandle {
+            operation_id,
+            cancel_token,
+        })
+    }
+
+    pub fn begin_launch(&self, profile_id: &str) -> Result<OperationHandle, LauncherError> {
+        validate_profile_id(profile_id)?;
+        let mut inner = self.inner.lock().map_err(|_| operation_state_error())?;
+        if inner.active_workflow.is_some() {
+            return Err(LauncherError::new(
+                "game_already_running",
+                "Minecraft is already running or being prepared.",
+                None,
+                true,
+            ));
+        }
+        if !inner.active_versions.is_empty() {
+            return Err(LauncherError::new(
+                "operation_in_progress",
+                "A Minecraft installation is already in progress.",
+                None,
+                true,
+            ));
+        }
+        let operation_id = format!("launch-{:016x}", rand::random::<u64>());
+        let cancel_token = crate::downloads::DownloadCancellationToken::new();
+        inner.active_workflow = Some(operation_id.clone());
+        inner.operations.insert(
+            operation_id.clone(),
+            OperationRecord {
+                subject: OperationSubject::Workflow {
+                    profile_id: profile_id.to_owned(),
+                },
+                state: OperationState::Running,
+                cancel_token: cancel_token.clone(),
+                spawned: false,
                 summary: None,
                 error: None,
             },
@@ -170,11 +239,30 @@ impl OperationRegistry {
             if matches!(
                 record.state,
                 OperationState::Running | OperationState::Cancelling
-            ) {
+            ) && !record.spawned
+            {
                 record.cancel_token.cancel();
                 record.state = OperationState::Cancelling;
             }
         }
+        Ok(())
+    }
+
+    pub fn mark_spawned(&self, operation_id: &str) -> Result<(), LauncherError> {
+        let mut inner = self.inner.lock().map_err(|_| operation_state_error())?;
+        let record = inner
+            .operations
+            .get_mut(operation_id)
+            .ok_or_else(operation_not_found)?;
+        if !matches!(record.subject, OperationSubject::Workflow { .. }) {
+            return Err(operation_not_found());
+        }
+        if record.cancel_token.is_cancelled() || matches!(record.state, OperationState::Cancelling)
+        {
+            return Err(cancelled_error());
+        }
+        record.spawned = true;
+        record.state = OperationState::Running;
         Ok(())
     }
 
@@ -186,27 +274,43 @@ impl OperationRegistry {
         error: Option<LauncherError>,
     ) -> Result<(), LauncherError> {
         let mut inner = self.inner.lock().map_err(|_| operation_state_error())?;
-        let (version_id, newly_terminal) = {
+        let subject = {
             let record = inner
                 .operations
                 .get_mut(operation_id)
                 .ok_or_else(operation_not_found)?;
-            let newly_terminal = !matches!(
+            if matches!(
                 record.state,
                 OperationState::Completed | OperationState::Cancelled | OperationState::Failed
-            );
+            ) {
+                return Ok(());
+            }
             record.state = state;
             record.summary = summary;
             record.error = error;
-            (record.version_id.clone(), newly_terminal)
+            match &record.subject {
+                OperationSubject::Installation { version_id } => OperationSubject::Installation {
+                    version_id: version_id.clone(),
+                },
+                OperationSubject::Workflow { profile_id } => OperationSubject::Workflow {
+                    profile_id: profile_id.clone(),
+                },
+            }
         };
-        inner.active_versions.remove(&version_id);
-        if newly_terminal {
-            inner.terminal_order.push_back(operation_id.to_owned());
-            while inner.terminal_order.len() > MAX_TERMINAL_OPERATIONS {
-                if let Some(expired) = inner.terminal_order.pop_front() {
-                    inner.operations.remove(&expired);
+        match subject {
+            OperationSubject::Installation { version_id } => {
+                inner.active_versions.remove(&version_id);
+            }
+            OperationSubject::Workflow { .. } => {
+                if inner.active_workflow.as_deref() == Some(operation_id) {
+                    inner.active_workflow = None;
                 }
+            }
+        }
+        inner.terminal_order.push_back(operation_id.to_owned());
+        while inner.terminal_order.len() > MAX_TERMINAL_OPERATIONS {
+            if let Some(expired) = inner.terminal_order.pop_front() {
+                inner.operations.remove(&expired);
             }
         }
         Ok(())
@@ -218,14 +322,50 @@ impl OperationRegistry {
             .operations
             .get(operation_id)
             .ok_or_else(operation_not_found)?;
+        let OperationSubject::Installation { version_id } = &record.subject else {
+            return Err(operation_not_found());
+        };
         Ok(InstallationStatus {
             operation_id: operation_id.to_owned(),
-            version_id: record.version_id.clone(),
+            version_id: version_id.clone(),
             state: record.state.clone(),
             summary: record.summary.clone(),
             error: record.error.clone(),
         })
     }
+
+    pub fn workflow_status(&self, operation_id: &str) -> Result<WorkflowStatus, LauncherError> {
+        let inner = self.inner.lock().map_err(|_| operation_state_error())?;
+        let record = inner
+            .operations
+            .get(operation_id)
+            .ok_or_else(operation_not_found)?;
+        let OperationSubject::Workflow { profile_id } = &record.subject else {
+            return Err(operation_not_found());
+        };
+        Ok(WorkflowStatus {
+            operation_id: operation_id.to_owned(),
+            profile_id: profile_id.clone(),
+            state: record.state.clone(),
+            error: record.error.clone(),
+        })
+    }
+}
+
+fn validate_profile_id(profile_id: &str) -> Result<(), LauncherError> {
+    if profile_id.is_empty()
+        || !profile_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(LauncherError::new(
+            "invalid_profile",
+            "The launcher profile is invalid.",
+            None,
+            false,
+        ));
+    }
+    Ok(())
 }
 
 fn operation_state_error() -> LauncherError {
@@ -284,12 +424,20 @@ impl VerifiedDownloader for DownloadService {
 #[async_trait]
 pub trait InstallationStore: Send + Sync {
     async fn set_state(&self, version_id: &str, state: &str) -> Result<(), LauncherError>;
+
+    async fn is_verified(&self, _version_id: &str) -> Result<bool, LauncherError> {
+        Ok(false)
+    }
 }
 
 #[async_trait]
 impl InstallationStore for Storage {
     async fn set_state(&self, version_id: &str, state: &str) -> Result<(), LauncherError> {
         self.set_installation_state(version_id, state).await
+    }
+
+    async fn is_verified(&self, version_id: &str) -> Result<bool, LauncherError> {
+        Ok(self.installation_state(version_id).await?.as_deref() == Some("verified"))
     }
 }
 
@@ -338,6 +486,67 @@ impl Installer {
         plan_installation(&self.game_root, version)
     }
 
+    pub async fn is_verified_version(
+        &self,
+        version: &ResolvedVersion,
+    ) -> Result<bool, LauncherError> {
+        validate_version_id(&version.id)?;
+        if !self.installations.is_verified(&version.id).await? {
+            return Ok(false);
+        }
+        let plan = match plan_installation_internal(&self.game_root, version, true) {
+            Ok(plan) => plan,
+            Err(error) if error.code() == "asset_index_invalid" => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let canonical_root = self
+            .game_root
+            .canonicalize()
+            .map_err(|_| LauncherError::invalid_path())?;
+        for file in &plan.files {
+            let relative = file
+                .destination
+                .strip_prefix(&canonical_root)
+                .map_err(|_| LauncherError::invalid_path())?;
+            if file.expected_size == 0 && file.sha1.is_none() {
+                let path =
+                    AppPaths::new(self.game_root.clone()).safe_join(&self.game_root, relative)?;
+                if !path
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.file_type().is_file())
+                {
+                    return Ok(false);
+                }
+                continue;
+            }
+            let spec = DownloadSpec {
+                url: file
+                    .url
+                    .clone()
+                    .unwrap_or_else(|| "https://localhost.invalid/derived-file".to_owned()),
+                destination: file.destination.clone(),
+                expected_size: file.expected_size,
+                sha1: file.sha1.clone(),
+                sha256: None,
+            };
+            if !verify_file(&self.game_root, relative, &spec)? {
+                return Ok(false);
+            }
+        }
+        if !plan.natives.is_empty() {
+            let relative = Path::new("versions").join(&version.id).join("natives");
+            let natives =
+                AppPaths::new(self.game_root.clone()).safe_join(&self.game_root, &relative)?;
+            if !natives
+                .metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_dir())
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     pub async fn install(
         &self,
         operation_id: String,
@@ -356,11 +565,25 @@ impl Installer {
         progress: Arc<dyn ProgressSink>,
     ) -> Result<InstallationSummary, LauncherError> {
         validate_version_id(&version_id)?;
+        let version = self.versions.resolved_version(&version_id).await?;
+        self.install_resolved_with_progress(operation_id, version, cancel, progress)
+            .await
+    }
+
+    pub async fn install_resolved_with_progress(
+        &self,
+        operation_id: String,
+        version: ResolvedVersion,
+        cancel: DownloadCancellationToken,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<InstallationSummary, LauncherError> {
+        validate_version_id(&version.id)?;
+        let version_id = version.id.clone();
         self.installations
             .set_state(&version_id, "installing")
             .await?;
         let result = self
-            .install_inner(&operation_id, &version_id, &cancel, progress)
+            .install_inner(&operation_id, version, &cancel, progress)
             .await;
         match &result {
             Ok(_) => {
@@ -381,17 +604,14 @@ impl Installer {
     async fn install_inner(
         &self,
         operation_id: &str,
-        version_id: &str,
+        version: ResolvedVersion,
         cancel: &DownloadCancellationToken,
         progress: Arc<dyn ProgressSink>,
     ) -> Result<InstallationSummary, LauncherError> {
         if cancel.is_cancelled() {
             return Err(cancelled_error());
         }
-        let version = self.versions.resolved_version(version_id).await?;
-        if version.id != version_id {
-            return Err(LauncherError::metadata_invalid());
-        }
+        let version_id = version.id.clone();
         let base = plan_installation_internal(&self.game_root, &version, false)?;
         persist_resolved_version(&self.game_root, &version, cancel)?;
         let base_specs = self.resolve_download_specs(&base, cancel, None).await?;
@@ -432,7 +652,7 @@ impl Installer {
         }
         let natives_directory = natives::extract_natives_transactional(
             &self.game_root,
-            version_id,
+            &version_id,
             &complete.natives,
             cancel,
         )?;
@@ -440,7 +660,7 @@ impl Installer {
             return Err(cancelled_error());
         }
         Ok(InstallationSummary {
-            version_id: version_id.to_owned(),
+            version_id,
             files_verified: complete.files.len(),
             natives_directory,
         })

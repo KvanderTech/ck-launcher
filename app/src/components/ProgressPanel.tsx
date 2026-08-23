@@ -9,9 +9,11 @@ interface ProgressPanelProps {
 const stageLabels: Record<ProgressEvent["stage"], string> = {
   idle: "Ожидание",
   authenticating: "Проверяем аккаунт",
+  "resolving-metadata": "Получаем метаданные",
   "resolving-java": "Подбираем Java",
   checking: "Проверяем файлы",
   downloading: "Загружаем файлы",
+  installing: "Устанавливаем игру",
   launching: "Запускаем игру",
   running: "Игра запущена",
   failed: "Операция остановлена",
@@ -27,7 +29,8 @@ export function ProgressPanel({ progress, cancelling = false, onCancel }: Progre
   const percent = progress.totalBytes > 0
     ? Math.min(100, Math.floor((progress.completedBytes / progress.totalBytes) * 100))
     : 0;
-  const canCancel = progress.stage === "downloading" && Boolean(onCancel);
+  const canCancel = !["idle", "launching", "running", "failed"].includes(progress.stage)
+    && Boolean(onCancel);
 
   return (
     <section aria-live="polite" className="progress-panel">

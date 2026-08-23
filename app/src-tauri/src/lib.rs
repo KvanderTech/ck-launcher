@@ -7,6 +7,7 @@ pub mod error;
 pub mod installer;
 pub mod launcher;
 pub mod metadata;
+mod orchestration;
 pub mod paths;
 pub mod profiles;
 pub mod runtime;
@@ -50,7 +51,7 @@ pub fn run() {
             commands::install::install_version,
             commands::install::cancel_operation,
             commands::install::installation_status,
-            commands::launch::launch,
+            commands::launch::launch_or_install,
             commands::launch::launch_status,
         ])
         .setup(|app| {
@@ -74,9 +75,11 @@ pub fn run() {
             let metadata = Arc::new(metadata::resolver::MetadataService::production(
                 paths.root.join("metadata-cache"),
             )?);
+            let physical_memory: Arc<dyn profiles::PhysicalMemory> =
+                Arc::new(profiles::SystemPhysicalMemory);
             let profiles = profiles::ProfileService::new(
                 Arc::new(storage.clone()),
-                Arc::new(profiles::SystemPhysicalMemory),
+                physical_memory.clone(),
                 paths.game.to_string_lossy(),
             );
             let runtimes = Arc::new(runtime::RuntimeManager::production(paths.runtime.clone())?);
@@ -87,19 +90,34 @@ pub fn run() {
                 downloads,
                 Arc::new(storage.clone()),
             )?;
-            let install_operations = installer::OperationRegistry::default();
+            let operations = installer::OperationRegistry::default();
             let launch_context = Arc::new(launcher::ProductionLaunchContext::new(
                 auth.clone(),
                 Arc::new(storage.clone()),
                 metadata.clone(),
                 runtimes.clone(),
                 paths.clone(),
-                Arc::new(profiles::SystemPhysicalMemory),
+                physical_memory.clone(),
             ));
             let launcher = launcher::Launcher::production(
                 launch_context,
-                commands::launch::TauriGameEventSink::new(app.handle().clone()),
+                commands::launch::TauriGameEventSink::new(app.handle().clone(), operations.clone()),
                 paths.logs.clone(),
+            );
+            let workflow_backend = Arc::new(orchestration::ProductionWorkflowBackend::new(
+                auth.clone(),
+                Arc::new(storage.clone()),
+                metadata.clone(),
+                runtimes.clone(),
+                Arc::new(installer.clone()),
+                Arc::new(launcher.clone()),
+                paths.clone(),
+                physical_memory,
+            ));
+            let orchestrator = orchestration::LaunchOrchestrator::new(
+                workflow_backend,
+                operations.clone(),
+                commands::launch::TauriWorkflowEventSink::new(app.handle().clone()),
             );
 
             app.manage(paths);
@@ -110,8 +128,9 @@ pub fn run() {
             app.manage(profiles);
             app.manage(runtimes);
             app.manage(installer);
-            app.manage(install_operations);
+            app.manage(operations);
             app.manage(launcher);
+            app.manage(orchestrator);
             Ok(())
         })
         .run(tauri::generate_context!())

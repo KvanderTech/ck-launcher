@@ -2,7 +2,7 @@ use crate::{error::LauncherError, storage::AccountSummary};
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TOKEN_ENDPOINT: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const XBOX_ENDPOINT: &str = "https://user.auth.xboxlive.com/user/authenticate";
@@ -69,19 +69,35 @@ impl XstsToken {
     }
 }
 
+#[derive(Clone)]
 pub struct MinecraftAccess {
     token: String,
+    expires_at: Instant,
 }
 
 impl MinecraftAccess {
+    #[cfg(test)]
     pub(crate) fn new(token: impl Into<String>) -> Self {
+        Self::with_lifetime(token, Duration::from_secs(3_600))
+    }
+
+    fn with_lifetime(token: impl Into<String>, lifetime: Duration) -> Self {
         Self {
             token: token.into(),
+            expires_at: Instant::now()
+                .checked_add(lifetime)
+                .unwrap_or_else(Instant::now),
         }
     }
 
     pub(crate) fn token(&self) -> &str {
         &self.token
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .is_some_and(|minimum| self.expires_at > minimum)
     }
 }
 
@@ -238,7 +254,10 @@ impl MicrosoftApi for HttpMicrosoftApi {
             "minecraft_auth_failed",
         )
         .await?;
-        Ok(MinecraftAccess::new(response.access_token))
+        Ok(MinecraftAccess::with_lifetime(
+            response.access_token,
+            Duration::from_secs(response.expires_in),
+        ))
     }
 
     async fn profile(&self, token: &MinecraftAccess) -> Result<AccountSummary, LauncherError> {
@@ -369,6 +388,7 @@ struct MinecraftLoginRequest {
 #[derive(Deserialize)]
 struct MinecraftLoginResponse {
     access_token: String,
+    expires_in: u64,
 }
 
 #[derive(Deserialize)]
