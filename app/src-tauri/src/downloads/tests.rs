@@ -767,6 +767,67 @@ fn planner_rejects_final_part_lock_and_case_insensitive_aliases() {
 }
 
 #[test]
+fn planner_reserves_internal_suffixes_across_separate_executions() {
+    let root = temporary_root("reserved-download-paths")
+        .canonicalize()
+        .unwrap();
+    let make_spec = |name: &str| DownloadSpec {
+        url: "https://example.test/file".to_owned(),
+        destination: root.join(name),
+        expected_size: 1,
+        sha1: None,
+        sha256: None,
+    };
+
+    super::plan::build_plan(&root, vec![make_spec("a")])
+        .expect("a normal destination remains valid");
+
+    for reserved in ["a.part", "a.PART", "a.part.lock", "a.PART.LOCK"] {
+        let error = match super::plan::build_plan(&root, vec![make_spec(reserved)]) {
+            Ok(_) => panic!("{reserved:?} must be reserved in every plan"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "download_spec_invalid");
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn planner_handles_a_large_manifest_and_still_rejects_a_late_case_alias() {
+    const FILE_COUNT: usize = 2_048;
+    let root = temporary_root("large-download-plan")
+        .canonicalize()
+        .unwrap();
+    let make_spec = |name: String| DownloadSpec {
+        url: "https://example.test/file".to_owned(),
+        destination: root.join(name),
+        expected_size: 1,
+        sha1: None,
+        sha256: None,
+    };
+    let specs = (0..FILE_COUNT)
+        .map(|index| make_spec(format!("objects/{index:04}.bin")))
+        .collect();
+
+    let plan = super::plan::build_plan(&root, specs).expect("large unique manifest is valid");
+    assert_eq!(plan.total_bytes, FILE_COUNT as u64);
+    assert_eq!(plan.pending.len(), FILE_COUNT);
+
+    let mut colliding_specs = (0..FILE_COUNT)
+        .map(|index| make_spec(format!("objects/{index:04}.bin")))
+        .collect::<Vec<_>>();
+    colliding_specs.push(make_spec("OBJECTS/0000.BIN".to_owned()));
+    let error = match super::plan::build_plan(&root, colliding_specs) {
+        Ok(_) => panic!("late Windows case alias must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), "download_spec_invalid");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn mismatched_partial_response_is_discarded_before_a_full_retry() {
     tauri::async_runtime::block_on(async {
         let bytes = vec![0x52; 256];
