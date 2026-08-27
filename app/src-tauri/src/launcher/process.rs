@@ -63,7 +63,8 @@ pub struct TokioProcessSpawner;
 #[async_trait]
 impl ProcessSpawner for TokioProcessSpawner {
     async fn spawn(&self, command: LaunchCommand) -> Result<Box<dyn ChildProcess>, LauncherError> {
-        let mut process = tokio::process::Command::new(&command.executable);
+        let executable = background_java_executable(&command.executable);
+        let mut process = tokio::process::Command::new(executable);
         process
             .args(&command.args)
             .current_dir(&command.cwd)
@@ -76,6 +77,15 @@ impl ProcessSpawner for TokioProcessSpawner {
         }))
     }
 }
+
+#[cfg(windows)]
+fn background_java_executable(executable: &Path) -> PathBuf {
+    let javaw = executable.with_file_name("javaw.exe");
+    if javaw.is_file() { javaw } else { executable.to_path_buf() }
+}
+
+#[cfg(not(windows))]
+fn background_java_executable(executable: &Path) -> PathBuf { executable.to_path_buf() }
 
 struct TokioChild {
     child: tokio::process::Child,

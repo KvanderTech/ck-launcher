@@ -32,13 +32,15 @@ impl ProcessRunner for TokioProcessRunner {
         args: &[&str],
         timeout: Duration,
     ) -> Result<ProcessOutput, LauncherError> {
-        let child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
+            .kill_on_drop(true);
+        hide_console_window(&mut command);
+        let child = command.spawn()
             .map_err(|_| runtime_invalid())?;
         let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
@@ -52,6 +54,16 @@ impl ProcessRunner for TokioProcessRunner {
         })
     }
 }
+
+#[cfg(windows)]
+fn hide_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console_window(_command: &mut Command) {}
 
 pub async fn probe_java(
     runner: &dyn ProcessRunner,
