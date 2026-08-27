@@ -389,12 +389,17 @@ export default function App({ api = appApi }: AppProps) {
         onNavigate={setActivePage}
       />
       <main className="main-pane">
-        <header className="topbar">
+        <header
+          className="topbar"
+          onMouseDown={(event) => {
+            if (event.button !== 0 || (event.target as HTMLElement).closest(".window-controls")) return;
+            void windowApi.startDragging();
+          }}
+        >
           <div
             className="topbar-drag-region"
             data-tauri-drag-region
             onDoubleClick={() => void windowApi.toggleMaximize()}
-            onMouseDown={(event) => { if (event.button === 0) void windowApi.startDragging(); }}
           >
             <span data-tauri-drag-region>ЦК Лаунчер</span>
           </div>

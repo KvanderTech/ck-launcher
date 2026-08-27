@@ -9,6 +9,7 @@ use std::{
 use url::Url;
 
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
+const MICROSOFT_CALLBACK_PORT: u16 = 53_682;
 const SUCCESS_HTML: &str = "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>ЦК Лаунчер</title><body><h1>Авторизация завершена</h1><p>Можно вернуться в лаунчер.</p></body></html>";
 const ERROR_HTML: &str = "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>ЦК Лаунчер</title><body><h1>Вход не завершён</h1><p>Закройте эту страницу и повторите попытку.</p></body></html>";
 
@@ -21,8 +22,9 @@ pub struct CallbackReceiver {
 
 impl CallbackReceiver {
     pub fn bind(state: impl Into<String>, timeout: Duration) -> Result<Self, LauncherError> {
-        let listener =
-            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|_| callback_unavailable())?;
+        let port = if cfg!(test) { 0 } else { MICROSOFT_CALLBACK_PORT };
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .map_err(|_| callback_unavailable())?;
         listener
             .set_nonblocking(true)
             .map_err(|_| callback_unavailable())?;

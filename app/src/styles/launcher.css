@@ -81,6 +81,8 @@
   gap: 10px;
   min-height: 52px;
   padding: 0 8px;
+  -webkit-app-region: drag;
+  user-select: none;
 }
 
 .brand img {
@@ -338,6 +340,7 @@
   padding: 16px 26px 10px;
   position: relative;
   z-index: 2;
+  -webkit-app-region: drag;
 }
 
 .topbar-drag-region {
@@ -359,6 +362,7 @@
 .window-controls {
   display: flex;
   gap: 5px;
+  -webkit-app-region: no-drag;
 }
 
 .window-controls button {
@@ -942,7 +946,7 @@
     padding-right: 10px;
   }
 
-  .brand {
+.brand {
     padding: 0;
   }
 
