@@ -5,6 +5,8 @@ import { Sidebar, type PageId } from "../components/Sidebar";
 import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
 import { OfflineLogin } from "../features/accounts/OfflineLogin";
+import { ContentPage } from "../features/content/ContentPage";
+import { SkinsPage } from "../features/skins/SkinsPage";
 import { HomePage, type LauncherViewState } from "../features/home/HomePage";
 import { JavaSettings } from "../features/settings/JavaSettings";
 import { MemorySettings } from "../features/settings/MemorySettings";
@@ -432,11 +434,19 @@ export default function App({ api = appApi }: AppProps) {
               onRuntimeAction={(requirement, action) => void updateRuntime(requirement, action)}
               runtimes={runtimes}
             />
+          ) : activePage === "content" ? (
+            <ContentPage
+              api={api}
+              versions={versions}
+              onBuildSelected={async () => {
+                const next = await api.getProfile();
+                profileRef.current = next;
+                setProfile(next);
+              }}
+            />
           ) : activePage === "skins" ? (
-            <SkinsPlaceholder account={accounts.find((account) => account.isActive) ?? accounts[0]} />
-          ) : (
-            <PostMvpPlaceholder page={activePage} />
-          )}
+            <SkinsPage api={api} account={accounts.find((account) => account.isActive) ?? accounts[0]} />
+          ) : null}
         </div>
       </main>
     </div>
@@ -497,36 +507,6 @@ function SettingsPage({
             statuses={runtimes}
           />
         </div>
-      </div>
-    </section>
-  );
-}
-
-const placeholderCopy: Record<Exclude<PageId, "home" | "settings" | "skins">, { title: string; copy: string }> = {
-  builds: { title: "Сборки", copy: "Создание и управление сборками запланировано после первого Vanilla-релиза." },
-  mods: { title: "Моды", copy: "Каталог Modrinth и управление модами появятся на следующем этапе." },
-  library: { title: "Библиотека", copy: "Здесь позже будут собраны установленные версии и сборки." },
-};
-
-function PostMvpPlaceholder({ page }: { page: Exclude<PageId, "home" | "settings" | "skins"> }) {
-  const content = placeholderCopy[page];
-  return (
-    <section className="placeholder-page">
-      <span className="eyebrow">После первого релиза</span>
-      <h1>{content.title}</h1>
-      <p>{content.copy}</p>
-      <div className="placeholder-grid" aria-hidden="true"><span /><span /><span /></div>
-    </section>
-  );
-}
-
-function SkinsPlaceholder({ account }: { account: AccountSummary }) {
-  return (
-    <section className="skins-placeholder">
-      <div className="page-heading"><span className="eyebrow">После первого релиза</span><h1>Скины и плащи</h1><p>Галерея аккаунта {account.minecraftName} появится после подключения Minecraft Services.</p></div>
-      <div className="skin-shell" aria-label="Предпросмотр будущей галереи">
-        <div className="skin-preview"><span aria-hidden="true" className="pixel-person">ЦК</span></div>
-        <div className="skin-gallery"><strong>Сохранённые образы</strong><div><span /><span /><span /></div><button disabled type="button">Управление недоступно в первом релизе</button></div>
       </div>
     </section>
   );

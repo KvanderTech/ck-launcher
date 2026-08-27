@@ -34,6 +34,43 @@ pub struct AccountSummary {
     pub is_active: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildSummary {
+    pub id: String,
+    pub name: String,
+    pub game_version: String,
+    pub loader: String,
+    pub loader_version: Option<String>,
+    pub game_dir: String,
+    pub icon_url: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledContent {
+    pub id: String,
+    pub build_id: String,
+    pub project_id: String,
+    pub version_id: String,
+    pub project_type: String,
+    pub title: String,
+    pub filename: String,
+    pub icon_url: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineSkin {
+    pub id: String,
+    pub account_id: String,
+    pub name: String,
+    pub file_path: String,
+    pub is_active: bool,
+}
+
 #[async_trait]
 pub trait AccountStore: Send + Sync {
     async fn upsert_account(&self, account: &AccountSummary) -> Result<(), LauncherError>;
@@ -300,6 +337,253 @@ impl Storage {
             .await
             .map_err(|_| LauncherError::storage_unavailable())
     }
+
+    pub async fn list_builds(&self) -> Result<Vec<BuildSummary>, LauncherError> {
+        let rows = sqlx::query("SELECT id, name, game_version, loader, loader_version, game_dir, icon_url, is_active FROM builds ORDER BY is_active DESC, created_at DESC")
+            .fetch_all(&self.pool).await.map_err(|_| LauncherError::storage_unavailable())?;
+        rows.into_iter().map(build_from_row).collect()
+    }
+
+    pub async fn upsert_build(&self, build: &BuildSummary) -> Result<(), LauncherError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        if build.is_active {
+            sqlx::query("UPDATE builds SET is_active = 0")
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        sqlx::query("INSERT INTO builds (id,name,game_version,loader,loader_version,game_dir,icon_url,is_active,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,game_version=excluded.game_version,loader=excluded.loader,loader_version=excluded.loader_version,game_dir=excluded.game_dir,icon_url=excluded.icon_url,is_active=excluded.is_active")
+            .bind(&build.id).bind(&build.name).bind(&build.game_version).bind(&build.loader).bind(&build.loader_version).bind(&build.game_dir).bind(&build.icon_url).bind(build.is_active).bind(now_timestamp())
+            .execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
+        tx.commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
+
+    pub async fn select_build(&self, build_id: &str) -> Result<BuildSummary, LauncherError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        let row = sqlx::query("SELECT id,name,game_version,loader,loader_version,game_dir,icon_url,is_active FROM builds WHERE id=?")
+            .bind(build_id).fetch_optional(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?
+            .ok_or_else(|| LauncherError::new("build_not_found", "The selected build was not found.", None, true))?;
+        let mut build = build_from_row(row)?;
+        sqlx::query("UPDATE builds SET is_active=0")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("UPDATE builds SET is_active=1 WHERE id=?")
+            .bind(build_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("UPDATE profiles SET name=?, version_id=?, game_dir=? WHERE id='default'")
+            .bind(&build.name)
+            .bind(&build.game_version)
+            .bind(&build.game_dir)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        tx.commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        build.is_active = true;
+        Ok(build)
+    }
+
+    pub async fn delete_build(&self, build_id: &str) -> Result<(), LauncherError> {
+        sqlx::query("DELETE FROM builds WHERE id=?")
+            .bind(build_id)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
+
+    pub async fn list_installed_content(
+        &self,
+        build_id: &str,
+    ) -> Result<Vec<InstalledContent>, LauncherError> {
+        let rows = sqlx::query("SELECT id,build_id,project_id,version_id,project_type,title,filename,icon_url,enabled FROM installed_content WHERE build_id=? ORDER BY installed_at DESC")
+            .bind(build_id).fetch_all(&self.pool).await.map_err(|_| LauncherError::storage_unavailable())?;
+        rows.into_iter().map(content_from_row).collect()
+    }
+
+    pub async fn upsert_installed_content(
+        &self,
+        item: &InstalledContent,
+    ) -> Result<(), LauncherError> {
+        sqlx::query("INSERT INTO installed_content (id,build_id,project_id,version_id,project_type,title,filename,icon_url,enabled,installed_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(build_id,project_id) DO UPDATE SET version_id=excluded.version_id,project_type=excluded.project_type,title=excluded.title,filename=excluded.filename,icon_url=excluded.icon_url,enabled=excluded.enabled,installed_at=excluded.installed_at")
+            .bind(&item.id).bind(&item.build_id).bind(&item.project_id).bind(&item.version_id).bind(&item.project_type).bind(&item.title).bind(&item.filename).bind(&item.icon_url).bind(item.enabled).bind(now_timestamp())
+            .execute(&self.pool).await.map(|_| ()).map_err(|_| LauncherError::storage_unavailable())
+    }
+
+    pub async fn remove_installed_content(
+        &self,
+        build_id: &str,
+        project_id: &str,
+    ) -> Result<Option<InstalledContent>, LauncherError> {
+        let row = sqlx::query("DELETE FROM installed_content WHERE build_id=? AND project_id=? RETURNING id,build_id,project_id,version_id,project_type,title,filename,icon_url,enabled")
+            .bind(build_id).bind(project_id).fetch_optional(&self.pool).await.map_err(|_| LauncherError::storage_unavailable())?;
+        row.map(content_from_row).transpose()
+    }
+
+    pub async fn list_offline_skins(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<OfflineSkin>, LauncherError> {
+        let rows = sqlx::query("SELECT id,account_id,name,file_path,is_active FROM offline_skins WHERE account_id=? ORDER BY is_active DESC,created_at DESC")
+            .bind(account_id).fetch_all(&self.pool).await.map_err(|_| LauncherError::storage_unavailable())?;
+        rows.into_iter().map(skin_from_row).collect()
+    }
+
+    pub async fn add_offline_skin(&self, skin: &OfflineSkin) -> Result<(), LauncherError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("UPDATE offline_skins SET is_active=0 WHERE account_id=?")
+            .bind(&skin.account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("INSERT INTO offline_skins (id,account_id,name,file_path,is_active,created_at) VALUES (?,?,?,?,1,?)")
+            .bind(&skin.id).bind(&skin.account_id).bind(&skin.name).bind(&skin.file_path).bind(now_timestamp()).execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
+        tx.commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
+
+    pub async fn select_offline_skin(
+        &self,
+        account_id: &str,
+        skin_id: &str,
+    ) -> Result<(), LauncherError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("UPDATE offline_skins SET is_active=0 WHERE account_id=?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        let changed =
+            sqlx::query("UPDATE offline_skins SET is_active=1 WHERE account_id=? AND id=?")
+                .bind(account_id)
+                .bind(skin_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        if changed.rows_affected() != 1 {
+            return Err(LauncherError::new(
+                "skin_not_found",
+                "The selected skin was not found.",
+                None,
+                true,
+            ));
+        }
+        tx.commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
+}
+
+fn now_timestamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string()
+}
+
+fn build_from_row(row: sqlx::sqlite::SqliteRow) -> Result<BuildSummary, LauncherError> {
+    Ok(BuildSummary {
+        id: row
+            .try_get("id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        name: row
+            .try_get("name")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        game_version: row
+            .try_get("game_version")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        loader: row
+            .try_get("loader")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        loader_version: row
+            .try_get("loader_version")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        game_dir: row
+            .try_get("game_dir")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        icon_url: row
+            .try_get("icon_url")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        is_active: row
+            .try_get("is_active")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+    })
+}
+
+fn content_from_row(row: sqlx::sqlite::SqliteRow) -> Result<InstalledContent, LauncherError> {
+    Ok(InstalledContent {
+        id: row
+            .try_get("id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        build_id: row
+            .try_get("build_id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        project_id: row
+            .try_get("project_id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        version_id: row
+            .try_get("version_id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        project_type: row
+            .try_get("project_type")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        title: row
+            .try_get("title")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        filename: row
+            .try_get("filename")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        icon_url: row
+            .try_get("icon_url")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        enabled: row
+            .try_get("enabled")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+    })
+}
+
+fn skin_from_row(row: sqlx::sqlite::SqliteRow) -> Result<OfflineSkin, LauncherError> {
+    Ok(OfflineSkin {
+        id: row
+            .try_get("id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        account_id: row
+            .try_get("account_id")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        name: row
+            .try_get("name")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        file_path: row
+            .try_get("file_path")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        is_active: row
+            .try_get("is_active")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+    })
 }
 
 #[async_trait]

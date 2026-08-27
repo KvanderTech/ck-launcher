@@ -125,6 +125,7 @@ pub struct OsRule {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct JavaVersion {
     pub component: String,
     pub major_version: u32,
@@ -174,5 +175,22 @@ impl From<VersionJson> for ResolvedVersion {
             arguments: version.arguments,
             minecraft_arguments: version.minecraft_arguments,
         }
+    }
+}
+
+#[cfg(test)]
+mod current_mojang_shape_tests {
+    use super::VersionJson;
+
+    #[test]
+    fn accepts_camel_case_java_major_version() {
+        let version: VersionJson = serde_json::from_str(
+            r#"{"id":"26.2","javaVersion":{"component":"java-runtime-epsilon","majorVersion":25}}"#,
+        )
+        .expect("current Mojang javaVersion shape is supported");
+        assert_eq!(
+            version.java_version.expect("java version").major_version,
+            25
+        );
     }
 }

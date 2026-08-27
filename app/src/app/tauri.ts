@@ -14,6 +14,11 @@ import type {
   MemorySettingsStatus,
   OperationId,
   ProgressEvent,
+  BuildSummary,
+  InstalledContent,
+  ModrinthProjectType,
+  ModrinthSearchResult,
+  OfflineSkin,
 } from "./types";
 
 export interface LauncherApi {
@@ -77,7 +82,21 @@ export interface OperationApi {
   onLauncherError(handler: (event: LauncherErrorEvent) => void): Promise<UnlistenFn>;
 }
 
-export interface AppApi extends LauncherApi, RuntimeApi, SettingsApi, ProfileApi, OperationApi {}
+export interface ContentApi {
+  listBuilds(): Promise<BuildSummary[]>;
+  createBuild(name: string, gameVersion: string, loader: string): Promise<BuildSummary>;
+  selectBuild(buildId: string): Promise<BuildSummary>;
+  deleteBuild(buildId: string): Promise<void>;
+  searchModrinth(query: string, projectType: ModrinthProjectType, gameVersion?: string, loader?: string, offset?: number): Promise<ModrinthSearchResult>;
+  installModrinthProject(projectId: string, buildId: string): Promise<InstalledContent>;
+  listInstalledContent(buildId: string): Promise<InstalledContent[]>;
+  removeInstalledContent(buildId: string, projectId: string): Promise<void>;
+  listOfflineSkins(accountId: string): Promise<OfflineSkin[]>;
+  addOfflineSkin(accountId: string): Promise<OfflineSkin | null>;
+  selectOfflineSkin(accountId: string, skinId: string): Promise<OfflineSkin>;
+}
+
+export interface AppApi extends LauncherApi, RuntimeApi, SettingsApi, ProfileApi, OperationApi, ContentApi {}
 
 type LaunchInvoke = (command: string, args?: Record<string, unknown>) => Promise<OperationId>;
 
@@ -108,6 +127,17 @@ export const appApi: AppApi = {
   onGameStarted: (handler) => listenPayload("launcher://game-started", handler),
   onGameExited: (handler) => listenPayload("launcher://game-exited", handler),
   onLauncherError: (handler) => listenPayload("launcher://error", handler),
+  listBuilds: () => invoke<BuildSummary[]>("list_builds"),
+  createBuild: (name, gameVersion, loader) => invoke<BuildSummary>("create_build", { name, gameVersion, loader }),
+  selectBuild: (buildId) => invoke<BuildSummary>("select_build", { buildId }),
+  deleteBuild: (buildId) => invoke<void>("delete_build", { buildId }),
+  searchModrinth: (query, projectType, gameVersion, loader, offset = 0) => invoke<ModrinthSearchResult>("search_modrinth", { query, projectType, gameVersion, loader, offset }),
+  installModrinthProject: (projectId, buildId) => invoke<InstalledContent>("install_modrinth_project", { projectId, buildId }),
+  listInstalledContent: (buildId) => invoke<InstalledContent[]>("list_installed_content", { buildId }),
+  removeInstalledContent: (buildId, projectId) => invoke<void>("remove_installed_content", { buildId, projectId }),
+  listOfflineSkins: (accountId) => invoke<OfflineSkin[]>("list_offline_skins", { accountId }),
+  addOfflineSkin: (accountId) => invoke<OfflineSkin | null>("add_offline_skin", { accountId }),
+  selectOfflineSkin: (accountId, skinId) => invoke<OfflineSkin>("select_offline_skin", { accountId, skinId }),
 };
 
 export interface WindowApi {

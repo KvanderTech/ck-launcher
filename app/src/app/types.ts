@@ -69,6 +69,60 @@ export interface LauncherProfile {
   javaOverride: string | null;
 }
 
+export interface BuildSummary {
+  id: string;
+  name: string;
+  gameVersion: string;
+  loader: "vanilla" | "fabric" | string;
+  loaderVersion?: string;
+  gameDir: string;
+  iconUrl?: string;
+  isActive: boolean;
+}
+
+export type ModrinthProjectType = "modpack" | "mod" | "resourcepack" | "shader";
+
+export interface ModrinthProject {
+  project_id: string;
+  project_type: ModrinthProjectType;
+  title: string;
+  description: string;
+  author: string;
+  categories: string[];
+  versions: string[];
+  downloads: number;
+  follows: number;
+  icon_url?: string;
+  date_modified: string;
+}
+
+export interface ModrinthSearchResult {
+  hits: ModrinthProject[];
+  offset: number;
+  limit: number;
+  total_hits: number;
+}
+
+export interface InstalledContent {
+  id: string;
+  buildId: string;
+  projectId: string;
+  versionId: string;
+  projectType: ModrinthProjectType;
+  title: string;
+  filename: string;
+  iconUrl?: string;
+  enabled: boolean;
+}
+
+export interface OfflineSkin {
+  id: string;
+  accountId: string;
+  name: string;
+  dataUrl: string;
+  isActive: boolean;
+}
+
 export interface GameStartedEvent {
   kind?: "started";
   operationId: OperationId;
