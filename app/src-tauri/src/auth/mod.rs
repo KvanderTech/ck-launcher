@@ -21,6 +21,7 @@ use std::{
 use url::Url;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
+const DEFAULT_MICROSOFT_CLIENT_ID: &str = "69a61395-3c9e-485e-8662-dcb1bfa73472";
 const AUTHORIZE_ENDPOINT: &str =
     "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize";
 
@@ -149,7 +150,8 @@ impl AuthService {
     ) -> Result<Self, LauncherError> {
         let client_id = std::env::var("CK_LAUNCHER_MICROSOFT_CLIENT_ID")
             .ok()
-            .filter(|value| !value.trim().is_empty());
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| Some(DEFAULT_MICROSOFT_CLIENT_ID.to_owned()));
         let api = Arc::new(HttpMicrosoftApi::new(
             client_id.clone().unwrap_or_default(),
         )?);
