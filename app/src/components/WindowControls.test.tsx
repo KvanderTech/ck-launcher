@@ -7,6 +7,7 @@ import { WindowControls } from "./WindowControls";
 describe("WindowControls", () => {
   it("routes minimize, maximize, and close through the injected window boundary", () => {
     const api: WindowApi = {
+      startDragging: vi.fn(async () => undefined),
       minimize: vi.fn(async () => undefined),
       toggleMaximize: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),

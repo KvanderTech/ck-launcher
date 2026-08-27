@@ -141,12 +141,14 @@ export const appApi: AppApi = {
 };
 
 export interface WindowApi {
+  startDragging(): Promise<void>;
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;
   close(): Promise<void>;
 }
 
 export const windowApi: WindowApi = {
+  startDragging: () => getCurrentWindow().startDragging(),
   minimize: () => getCurrentWindow().minimize(),
   toggleMaximize: () => getCurrentWindow().toggleMaximize(),
   close: () => getCurrentWindow().close(),
