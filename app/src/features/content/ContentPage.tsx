@@ -66,9 +66,19 @@ export function ContentPage({ api, versions, onBuildSelected }: Props) {
   }
 
   async function install(project: ModrinthProject) {
-    if (!activeBuild) { setCreating(true); setError("Сначала создайте сборку, в которую будет установлен контент."); return; }
     setBusy(project.project_id); setError(undefined);
-    try { await api.installModrinthProject(project.project_id, activeBuild.id); await reloadBuilds(); await onBuildSelected(); }
+    try {
+      let destination = activeBuild;
+      if (project.project_type === "modpack") {
+        destination = await api.createBuild(project.title, gameVersion, loader);
+      } else if (!destination) {
+        setCreating(true);
+        setError("Для отдельного мода сначала создайте сборку или установите готовую сборку Modrinth.");
+        return;
+      }
+      await api.installModrinthProject(project.project_id, destination.id);
+      await reloadBuilds(); await onBuildSelected();
+    }
     catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(undefined); }
   }
