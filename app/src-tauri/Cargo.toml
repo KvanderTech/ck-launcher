@@ -1,6 +1,6 @@
 [package]
 name = "ck-launcher"
-version = "0.1.2"
+version = "0.1.3"
 description = "Windows launcher for licensed Minecraft: Java Edition"
 authors = ["CK Launcher"]
 edition = "2021"
