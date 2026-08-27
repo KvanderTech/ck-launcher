@@ -12,7 +12,7 @@ import { JavaSettings } from "../features/settings/JavaSettings";
 import { MemorySettings } from "../features/settings/MemorySettings";
 import "../styles/tokens.css";
 import "../styles/launcher.css";
-import { appApi, type AppApi } from "./tauri";
+import { appApi, windowApi, type AppApi } from "./tauri";
 import type {
   AccountSummary,
   GameExitedEvent,
@@ -390,7 +390,12 @@ export default function App({ api = appApi }: AppProps) {
       />
       <main className="main-pane">
         <header className="topbar">
-          <div className="topbar-drag-region" data-tauri-drag-region>
+          <div
+            className="topbar-drag-region"
+            data-tauri-drag-region
+            onDoubleClick={() => void windowApi.toggleMaximize()}
+            onMouseDown={(event) => { if (event.button === 0) void windowApi.startDragging(); }}
+          >
             <span data-tauri-drag-region>ЦК Лаунчер</span>
           </div>
           <WindowControls />
