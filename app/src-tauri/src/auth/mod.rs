@@ -642,7 +642,7 @@ mod tests {
             assert!(!verifier.is_empty());
             let redirect = url::Url::parse(redirect_uri).expect("redirect parses");
             assert_eq!(redirect.host_str(), Some("localhost"));
-            assert_eq!(redirect.path(), "/callback");
+            assert_eq!(redirect.path(), "/");
             assert!(redirect.port().is_some());
             self.calls.lock().expect("calls lock").push("exchange_code");
             Ok(OAuthTokens::new("oauth-access", "refresh-secret"))
