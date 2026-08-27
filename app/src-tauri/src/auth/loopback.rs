@@ -9,7 +9,6 @@ use std::{
 use url::Url;
 
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
-const MICROSOFT_CALLBACK_PORT: u16 = 53_682;
 const SUCCESS_HTML: &str = "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>ЦК Лаунчер</title><body><h1>Авторизация завершена</h1><p>Можно вернуться в лаунчер.</p></body></html>";
 const ERROR_HTML: &str = "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>ЦК Лаунчер</title><body><h1>Вход не завершён</h1><p>Закройте эту страницу и повторите попытку.</p></body></html>";
 
@@ -22,8 +21,7 @@ pub struct CallbackReceiver {
 
 impl CallbackReceiver {
     pub fn bind(state: impl Into<String>, timeout: Duration) -> Result<Self, LauncherError> {
-        let port = if cfg!(test) { 0 } else { MICROSOFT_CALLBACK_PORT };
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| callback_unavailable())?;
         listener
             .set_nonblocking(true)
@@ -46,7 +44,7 @@ impl CallbackReceiver {
     }
 
     pub fn redirect_uri(&self) -> String {
-        format!("http://localhost:{}/callback", self.address().port())
+        format!("http://localhost:{}", self.address().port())
     }
 
     pub fn receive(&mut self) -> Result<String, LauncherError> {
@@ -116,7 +114,7 @@ impl CallbackReceiver {
         let target = read_request_target(stream)?;
         let callback =
             Url::parse(&format!("http://localhost{target}")).map_err(|_| invalid_callback())?;
-        if callback.path() != "/callback" {
+        if callback.path() != "/" {
             write_response(stream, false);
             return Err(invalid_callback());
         }
@@ -263,10 +261,10 @@ mod tests {
         assert_ne!(receiver.address().port(), 0);
         assert_eq!(
             receiver.redirect_uri(),
-            format!("http://localhost:{}/callback", receiver.address().port())
+            format!("http://localhost:{}", receiver.address().port())
         );
 
-        let client = send_callback(&receiver, "/callback?state=expected-state&code=oauth-code");
+        let client = send_callback(&receiver, "/?state=expected-state&code=oauth-code");
         assert_eq!(receiver.receive().expect("callback succeeds"), "oauth-code");
         let response = client.join().expect("client completes");
         assert!(response.contains("HTTP/1.1 200 OK"));
@@ -277,10 +275,10 @@ mod tests {
     fn rejects_wrong_state_and_missing_code_with_visible_error_pages() {
         for (target, expected_code) in [
             (
-                "/callback?state=wrong&code=oauth-code",
+                "/?state=wrong&code=oauth-code",
                 "auth_invalid_state",
             ),
-            ("/callback?state=expected-state", "auth_missing_code"),
+            ("/?state=expected-state", "auth_missing_code"),
         ] {
             let mut receiver =
                 CallbackReceiver::bind("expected-state", Duration::from_secs(2)).expect("binds");
@@ -297,7 +295,7 @@ mod tests {
     fn callback_receiver_is_one_shot() {
         let mut receiver = CallbackReceiver::bind("state", Duration::from_secs(2)).expect("binds");
         let address = receiver.address();
-        let client = send_callback(&receiver, "/callback?state=state&code=first");
+        let client = send_callback(&receiver, "/?state=state&code=first");
         assert_eq!(receiver.receive().expect("first use works"), "first");
         client.join().expect("client completes");
         assert!(TcpStream::connect(address).is_err());
