@@ -1,4 +1,4 @@
-import type { LauncherApi } from "../app/tauri";
+import { windowApi, type LauncherApi } from "../app/tauri";
 import type { AccountSummary } from "../app/types";
 import logo from "../assets/logo.png";
 import { AccountMenu } from "../features/accounts/AccountMenu";
@@ -31,7 +31,7 @@ export function Sidebar({
 }: SidebarProps) {
   return (
     <aside className="sidebar">
-      <div className="brand">
+      <div className="brand" onMouseDown={(event) => { if (event.button === 0) void windowApi.startDragging(); }}>
         <img alt="Логотип ЦК" src={logo} />
         <span><strong>ЦК Лаунчер</strong><small>Твой мир — твои правила</small></span>
       </div>
