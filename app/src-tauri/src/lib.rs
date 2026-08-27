@@ -40,6 +40,17 @@ pub fn run() {
             commands::accounts::cancel_microsoft_login,
             commands::accounts::remove_account,
             commands::accounts::set_active_account,
+            commands::content::search_modrinth,
+            commands::content::create_build,
+            commands::content::list_builds,
+            commands::content::select_build,
+            commands::content::delete_build,
+            commands::content::install_modrinth_project,
+            commands::content::list_installed_content,
+            commands::content::remove_installed_content,
+            commands::content::list_offline_skins,
+            commands::content::add_offline_skin,
+            commands::content::select_offline_skin,
             commands::versions::list_game_versions,
             commands::versions::required_java_for_version,
             commands::versions::get_profile,
@@ -78,6 +89,11 @@ pub fn run() {
             let metadata = Arc::new(metadata::resolver::MetadataService::production(
                 paths.root.join("metadata-cache"),
             )?);
+            let content = commands::content::ContentService::new(
+                paths.clone(),
+                storage.clone(),
+                metadata.clone(),
+            )?;
             let physical_memory: Arc<dyn profiles::PhysicalMemory> =
                 Arc::new(profiles::SystemPhysicalMemory);
             let profiles = profiles::ProfileService::new(
@@ -126,6 +142,7 @@ pub fn run() {
             app.manage(auth);
             app.manage(accounts);
             app.manage(metadata);
+            app.manage(content);
             app.manage(profiles);
             app.manage(runtimes);
             app.manage(installer);

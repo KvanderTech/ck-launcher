@@ -243,6 +243,21 @@ impl MetadataService {
         self.resolved_version_cancellable(id, DownloadCancellationToken::new())
             .await
     }
+
+    pub fn register_custom_version(&self, version: &VersionJson) -> Result<(), LauncherError> {
+        if version.id.trim().is_empty() {
+            return Err(LauncherError::metadata_invalid());
+        }
+        let body = serde_json::to_string(version).map_err(|_| LauncherError::metadata_invalid())?;
+        self.cache.save(
+            &format!("custom-version-{}", version.id),
+            &CacheEntry {
+                body,
+                etag: None,
+                verified: true,
+            },
+        )
+    }
     pub(crate) async fn resolved_version_cancellable(
         &self,
         id: &str,
@@ -266,6 +281,19 @@ impl MetadataService {
         ensure_not_cancelled(&cancel)?;
         if depth >= MAX_INHERITANCE_DEPTH || !visiting.insert(id.to_owned()) {
             return Err(LauncherError::metadata_invalid());
+        }
+        if let Some(entry) = self.cache.load(&format!("custom-version-{id}"))? {
+            let child: VersionJson =
+                serde_json::from_str(&entry.body).map_err(|_| LauncherError::metadata_invalid())?;
+            let result = if let Some(parent_id) = child.inherits_from.clone() {
+                let parent =
+                    Box::pin(self.resolve(&parent_id, depth + 1, visiting, cancel)).await?;
+                merge(parent, child)
+            } else {
+                into_resolved(child)
+            };
+            visiting.remove(id);
+            return Ok(result);
         }
         let manifest = self.manifest(cancel.clone()).await?;
         let entry = manifest
