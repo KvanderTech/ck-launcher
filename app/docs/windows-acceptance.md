@@ -16,15 +16,15 @@ The expected paths for a release build are:
 
 The application uses Authorization Code with PKCE in the system browser. Its listener binds
 only to IPv4 `127.0.0.1` on a random free port, while both OAuth requests use the exact
-redirect form `http://localhost:<random-port>/callback`. Microsoft Entra ignores the port
-when matching a `localhost` loopback redirect, but the `/callback` path must match. Register
+redirect form `http://localhost:<random-port>`. Microsoft Entra ignores the port
+when matching a `localhost` loopback redirect. Register
 a **public client** in Microsoft Entra ID as follows:
 
 1. Create an App registration for the Microsoft account population your release supports.
    This implementation uses the `consumers` authority, so select **Personal Microsoft
    accounts** (or an account type that includes them).
 2. In **Authentication**, add the platform **Mobile and desktop applications** and add the
-   redirect URI `http://localhost/callback`. Do not register `127.0.0.1`, a fixed port, or
+   redirect URI `http://localhost`. Do not register `127.0.0.1`, a fixed port, or
    a client secret for this desktop public-client flow.
 3. Enable public client flows only if the tenant policy asks for it. The implemented flow
    is authorization-code + PKCE, not a client-secret flow.
