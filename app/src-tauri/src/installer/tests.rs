@@ -208,6 +208,13 @@ fn maven_coordinates_and_metadata_paths_are_safe_and_deterministic() {
             .expect("classified extension"),
         PathBuf::from("org/example/demo/1.2.3/demo-1.2.3-natives-windows.zip")
     );
+    assert_eq!(
+        maven_artifact_path("net.fabricmc:sponge-mixin:0.17.3+mixin.0.8.7")
+            .expect("Fabric Maven versions may contain a plus sign"),
+        PathBuf::from(
+            "net/fabricmc/sponge-mixin/0.17.3+mixin.0.8.7/sponge-mixin-0.17.3+mixin.0.8.7.jar"
+        )
+    );
     for unsafe_coordinate in ["../evil:x:1", "a:b", "a:b:1@../zip", "a::1"] {
         assert!(
             maven_artifact_path(unsafe_coordinate).is_err(),

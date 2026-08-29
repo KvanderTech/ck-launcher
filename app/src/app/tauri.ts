@@ -89,8 +89,10 @@ export interface ContentApi {
   deleteBuild(buildId: string): Promise<void>;
   searchModrinth(query: string, projectType: ModrinthProjectType, gameVersion?: string, loader?: string, offset?: number): Promise<ModrinthSearchResult>;
   installModrinthProject(projectId: string, buildId: string): Promise<InstalledContent>;
+  installModrinthModpack(projectId: string): Promise<InstalledContent>;
   listInstalledContent(buildId: string): Promise<InstalledContent[]>;
   removeInstalledContent(buildId: string, projectId: string): Promise<void>;
+  setInstalledContentEnabled(buildId: string, projectId: string, enabled: boolean): Promise<InstalledContent>;
   listOfflineSkins(accountId: string): Promise<OfflineSkin[]>;
   addOfflineSkin(accountId: string): Promise<OfflineSkin | null>;
   selectOfflineSkin(accountId: string, skinId: string): Promise<OfflineSkin>;
@@ -133,8 +135,10 @@ export const appApi: AppApi = {
   deleteBuild: (buildId) => invoke<void>("delete_build", { buildId }),
   searchModrinth: (query, projectType, gameVersion, loader, offset = 0) => invoke<ModrinthSearchResult>("search_modrinth", { query, projectType, gameVersion, loader, offset }),
   installModrinthProject: (projectId, buildId) => invoke<InstalledContent>("install_modrinth_project", { projectId, buildId }),
+  installModrinthModpack: (projectId) => invoke<InstalledContent>("install_modrinth_modpack", { projectId }),
   listInstalledContent: (buildId) => invoke<InstalledContent[]>("list_installed_content", { buildId }),
   removeInstalledContent: (buildId, projectId) => invoke<void>("remove_installed_content", { buildId, projectId }),
+  setInstalledContentEnabled: (buildId, projectId, enabled) => invoke<InstalledContent>("set_installed_content_enabled", { buildId, projectId, enabled }),
   listOfflineSkins: (accountId) => invoke<OfflineSkin[]>("list_offline_skins", { accountId }),
   addOfflineSkin: (accountId) => invoke<OfflineSkin | null>("add_offline_skin", { accountId }),
   selectOfflineSkin: (accountId, skinId) => invoke<OfflineSkin>("select_offline_skin", { accountId, skinId }),

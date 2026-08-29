@@ -7,8 +7,10 @@ use crate::{
 use base64::Engine;
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 use std::{
+    collections::HashSet,
     fs,
     io::{Cursor, Read},
     path::{Component, Path, PathBuf},
@@ -76,6 +78,7 @@ struct ProjectVersion {
 #[derive(Debug, Clone, Deserialize)]
 struct ProjectDependency {
     project_id: Option<String>,
+    version_id: Option<String>,
     dependency_type: String,
 }
 
@@ -90,6 +93,7 @@ struct ProjectFile {
 #[derive(Debug, Clone, Deserialize)]
 struct FileHashes {
     sha512: Option<String>,
+    sha1: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +104,15 @@ struct FabricLoaderEntry {
 struct FabricLoaderVersion {
     version: String,
     stable: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuiltLoaderEntry {
+    loader: QuiltLoaderVersion,
+}
+#[derive(Debug, Deserialize)]
+struct QuiltLoaderVersion {
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,10 +241,10 @@ impl ContentService {
                 "Введите название сборки до 48 символов.",
             ));
         }
-        if !["vanilla", "fabric"].contains(&loader.as_str()) {
+        if !["vanilla", "fabric", "quilt"].contains(&loader.as_str()) {
             return Err(input_error(
                 "loader_not_supported",
-                "Сейчас поддерживаются Vanilla и Fabric.",
+                "Сейчас поддерживаются Vanilla, Fabric и Quilt.",
             ));
         }
         let id = format!(
@@ -243,14 +256,14 @@ impl ContentService {
         );
         let game_dir = self.paths.root.join("instances").join(&id);
         fs::create_dir_all(&game_dir).map_err(|_| LauncherError::storage_unavailable())?;
-        let loader_version = if loader == "fabric" {
-            Some(self.install_fabric_profile(&game_version, None).await?)
-        } else {
-            None
+        let loader_version = match loader.as_str() {
+            "fabric" => Some(self.install_fabric_profile(&game_version, None).await?),
+            "quilt" => Some(self.install_quilt_profile(&game_version, None).await?),
+            _ => None,
         };
         let version_id = loader_version
             .as_ref()
-            .map(|value| format!("fabric-loader-{value}-{game_version}"))
+            .map(|value| format!("{loader}-loader-{value}-{game_version}"))
             .unwrap_or_else(|| game_version.clone());
         let build = BuildSummary {
             id,
@@ -301,11 +314,55 @@ impl ContentService {
         Ok(loader)
     }
 
+    async fn install_quilt_profile(
+        &self,
+        game_version: &str,
+        requested: Option<&str>,
+    ) -> Result<String, LauncherError> {
+        let versions: Vec<QuiltLoaderEntry> = self
+            .json(&format!(
+                "https://meta.quiltmc.org/v3/versions/loader/{game_version}"
+            ))
+            .await?;
+        let loader = requested
+            .map(str::to_owned)
+            .or_else(|| versions.first().map(|entry| entry.loader.version.clone()))
+            .ok_or_else(|| input_error(
+                "quilt_unavailable",
+                "Для этой версии Minecraft не найден Quilt Loader.",
+            ))?;
+        let mut profile: VersionJson = self
+            .json(&format!(
+                "https://meta.quiltmc.org/v3/versions/loader/{game_version}/{loader}/profile/json"
+            ))
+            .await?;
+        profile.id = format!("quilt-loader-{loader}-{game_version}");
+        self.metadata.register_custom_version(&profile)?;
+        Ok(loader)
+    }
+
     pub async fn install_project(
         &self,
         project_id: String,
         build_id: String,
     ) -> Result<InstalledContent, LauncherError> {
+        let mut visiting = HashSet::new();
+        self.install_project_inner(project_id, build_id, &mut visiting)
+            .await
+    }
+
+    async fn install_project_inner(
+        &self,
+        project_id: String,
+        build_id: String,
+        visiting: &mut HashSet<String>,
+    ) -> Result<InstalledContent, LauncherError> {
+        if !visiting.insert(project_id.clone()) {
+            return Err(input_error(
+                "dependency_cycle",
+                "Modrinth вернул циклическую зависимость. Установка остановлена безопасно.",
+            ));
+        }
         let build = self
             .storage
             .list_builds()
@@ -353,6 +410,7 @@ impl ContentService {
             )
         })?;
         if project.project_type == "modpack" {
+            visiting.remove(&project_id);
             return self.install_mrpack(project, version, build).await;
         }
         if project.project_type == "mod" && build.loader == "vanilla" {
@@ -361,7 +419,108 @@ impl ContentService {
                 "Для модов создайте сборку Fabric.",
             ));
         }
-        self.install_regular(project, version, build).await
+        let installed = self.storage.list_installed_content(&build.id).await?;
+        for dependency in &version.dependencies {
+            let dependency_project = dependency.project_id.as_deref().or_else(|| {
+                dependency.version_id.as_deref()
+            });
+            let Some(dependency_project) = dependency_project else {
+                continue;
+            };
+            if dependency.dependency_type == "incompatible"
+                && installed.iter().any(|item| {
+                    item.project_id == dependency_project || item.version_id == dependency_project
+                })
+            {
+                visiting.remove(&project_id);
+                return Err(input_error(
+                    "incompatible_content",
+                    "Установка заблокирована: в сборке найден несовместимый проект.",
+                ));
+            }
+        }
+        for dependency in version
+            .dependencies
+            .iter()
+            .filter(|item| item.dependency_type == "required")
+        {
+            let Some(dependency_project) = dependency.project_id.clone() else {
+                continue;
+            };
+            if installed.iter().any(|item| item.project_id == dependency_project) {
+                continue;
+            }
+            Box::pin(self.install_project_inner(
+                dependency_project,
+                build.id.clone(),
+                visiting,
+            ))
+            .await?;
+        }
+        let result = self.install_regular(project, version, build).await;
+        visiting.remove(&project_id);
+        result
+    }
+
+    pub async fn install_modpack_as_build(
+        &self,
+        project_id: String,
+    ) -> Result<InstalledContent, LauncherError> {
+        let project: ProjectDetails = self
+            .json(&format!("{MODRINTH_API}/project/{project_id}"))
+            .await?;
+        if project.project_type != "modpack" {
+            return Err(input_error(
+                "modpack_required",
+                "Этот проект не является готовой сборкой Modrinth.",
+            ));
+        }
+        let versions: Vec<ProjectVersion> = self
+            .client
+            .get(format!("{MODRINTH_API}/project/{}/version", project.id))
+            .query(&[("include_changelog", "false")])
+            .send()
+            .await
+            .map_err(|_| network_error())?
+            .error_for_status()
+            .map_err(|_| network_error())?
+            .json()
+            .await
+            .map_err(|_| network_error())?;
+        let version = versions.into_iter().next().ok_or_else(|| {
+            input_error(
+                "compatible_version_not_found",
+                "У этой сборки нет доступной версии для установки.",
+            )
+        })?;
+        let id = format!(
+            "build-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let game_dir = self.paths.root.join("instances").join(&id);
+        fs::create_dir_all(&game_dir).map_err(|_| LauncherError::storage_unavailable())?;
+        let build = BuildSummary {
+            id: id.clone(),
+            name: project.title.clone(),
+            game_version: "pending".to_owned(),
+            loader: "vanilla".to_owned(),
+            loader_version: None,
+            game_dir: game_dir.to_string_lossy().into_owned(),
+            icon_url: project.icon_url.clone(),
+            is_active: true,
+        };
+        self.storage.upsert_build(&build).await?;
+        match self.install_mrpack(project, version, build).await {
+            Ok(item) => Ok(item),
+            Err(error) => {
+                let _ = self.storage.delete_build(&id).await;
+                let _ = fs::remove_dir_all(game_dir);
+                Err(error)
+            }
+        }
     }
 
     async fn install_regular(
@@ -391,7 +550,12 @@ impl ContentService {
         let target_dir = PathBuf::from(&build.game_dir).join(folder);
         fs::create_dir_all(&target_dir).map_err(|_| LauncherError::storage_unavailable())?;
         let target = safe_child(&target_dir, &file.filename)?;
-        self.download_verified(&file.url, &target, file.hashes.sha512.as_deref())
+        self.download_verified(
+            &file.url,
+            &target,
+            file.hashes.sha512.as_deref(),
+            file.hashes.sha1.as_deref(),
+        )
             .await?;
         let item = InstalledContent {
             id: format!("{}:{}", build.id, project.id),
@@ -422,7 +586,11 @@ impl ContentService {
             .ok_or_else(network_error)?
             .clone();
         let bytes = self
-            .download_bytes(&file.url, file.hashes.sha512.as_deref())
+            .download_bytes(
+                &file.url,
+                file.hashes.sha512.as_deref(),
+                file.hashes.sha1.as_deref(),
+            )
             .await?;
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
             .map_err(|_| input_error("mrpack_invalid", "Файл сборки Modrinth повреждён."))?;
@@ -461,6 +629,13 @@ impl ContentService {
                     Some(installed.clone()),
                     format!("fabric-loader-{installed}-{minecraft}"),
                 )
+            } else if let Some(quilt) = index.dependencies.get("quilt-loader") {
+                let installed = self.install_quilt_profile(&minecraft, Some(quilt)).await?;
+                (
+                    "quilt".to_owned(),
+                    Some(installed.clone()),
+                    format!("quilt-loader-{installed}-{minecraft}"),
+                )
             } else {
                 ("vanilla".to_owned(), None, minecraft.clone())
             };
@@ -479,7 +654,12 @@ impl ContentService {
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|_| LauncherError::storage_unavailable())?;
             }
-            self.download_verified(url, &target, entry.hashes.sha512.as_deref())
+            self.download_verified(
+                url,
+                &target,
+                entry.hashes.sha512.as_deref(),
+                entry.hashes.sha1.as_deref(),
+            )
                 .await?;
         }
         for prefix in ["overrides/", "client-overrides/"] {
@@ -525,15 +705,25 @@ impl ContentService {
         url: &str,
         target: &Path,
         sha512: Option<&str>,
+        sha1: Option<&str>,
     ) -> Result<(), LauncherError> {
-        let bytes = self.download_bytes(url, sha512).await?;
-        fs::write(target, bytes).map_err(|_| LauncherError::storage_unavailable())
+        let bytes = self.download_bytes(url, sha512, sha1).await?;
+        let temporary = target.with_extension(format!(
+            "{}.part",
+            target.extension().and_then(|value| value.to_str()).unwrap_or("download")
+        ));
+        fs::write(&temporary, bytes).map_err(|_| LauncherError::storage_unavailable())?;
+        fs::rename(&temporary, target).map_err(|_| {
+            let _ = fs::remove_file(&temporary);
+            LauncherError::storage_unavailable()
+        })
     }
 
     async fn download_bytes(
         &self,
         url: &str,
         sha512: Option<&str>,
+        sha1: Option<&str>,
     ) -> Result<Vec<u8>, LauncherError> {
         let bytes = self
             .client
@@ -549,6 +739,13 @@ impl ContentService {
             .to_vec();
         if let Some(expected) = sha512 {
             if format!("{:x}", Sha512::digest(&bytes)) != expected.to_ascii_lowercase() {
+                return Err(input_error(
+                    "download_hash_mismatch",
+                    "Контрольная сумма файла не совпала.",
+                ));
+            }
+        } else if let Some(expected) = sha1 {
+            if format!("{:x}", Sha1::digest(&bytes)) != expected.to_ascii_lowercase() {
                 return Err(input_error(
                     "download_hash_mismatch",
                     "Контрольная сумма файла не совпала.",
@@ -574,7 +771,7 @@ impl ContentService {
 }
 
 fn base_game_version(build: &BuildSummary) -> &str {
-    if build.loader == "fabric" {
+    if build.loader == "fabric" || build.loader == "quilt" {
         build
             .game_version
             .rsplit('-')
@@ -656,8 +853,31 @@ pub async fn delete_build(
         .into_iter()
         .find(|item| item.id == build_id)
         .ok_or_else(|| input_error("build_not_found", "Сборка не найдена."))?;
-    service.storage.delete_build(&build.id).await?;
-    let _ = fs::remove_dir_all(build.game_dir);
+    let source = PathBuf::from(&build.game_dir);
+    let trash = service.paths.root.join("trash");
+    fs::create_dir_all(&trash).map_err(|_| LauncherError::storage_unavailable())?;
+    let destination = trash.join(format!(
+        "{}-{}",
+        build.id,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    ));
+    if source.exists() {
+        fs::rename(&source, &destination).map_err(|_| LauncherError::new(
+            "build_trash_failed",
+            "Не удалось переместить сборку в корзину.",
+            None,
+            true,
+        ))?;
+    }
+    if let Err(error) = service.storage.delete_build(&build.id).await {
+        if destination.exists() {
+            let _ = fs::rename(&destination, &source);
+        }
+        return Err(error);
+    }
     Ok(())
 }
 #[tauri::command(rename_all = "camelCase")]
@@ -667,6 +887,14 @@ pub async fn install_modrinth_project(
     service: State<'_, ContentService>,
 ) -> Result<InstalledContent, LauncherError> {
     service.install_project(project_id, build_id).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn install_modrinth_modpack(
+    project_id: String,
+    service: State<'_, ContentService>,
+) -> Result<InstalledContent, LauncherError> {
+    service.install_modpack_as_build(project_id).await
 }
 #[tauri::command(rename_all = "camelCase")]
 pub async fn list_installed_content(
@@ -703,6 +931,56 @@ pub async fn remove_installed_content(
         }
     }
     Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_installed_content_enabled(
+    build_id: String,
+    project_id: String,
+    enabled: bool,
+    storage: State<'_, Storage>,
+) -> Result<InstalledContent, LauncherError> {
+    let build = storage
+        .list_builds()
+        .await?
+        .into_iter()
+        .find(|item| item.id == build_id)
+        .ok_or_else(|| input_error("build_not_found", "Сборка не найдена."))?;
+    let mut item = storage
+        .list_installed_content(&build.id)
+        .await?
+        .into_iter()
+        .find(|item| item.project_id == project_id)
+        .ok_or_else(|| input_error("content_not_found", "Элемент сборки не найден."))?;
+    if item.enabled == enabled {
+        return Ok(item);
+    }
+    let folder = match item.project_type.as_str() {
+        "mod" => "mods",
+        "resourcepack" => "resourcepacks",
+        "shader" => "shaderpacks",
+        _ => return Err(input_error("content_toggle_unsupported", "Этот элемент нельзя отключить отдельно.")),
+    };
+    let root = PathBuf::from(build.game_dir).join(folder);
+    let normal = safe_child(&root, &item.filename)?;
+    let disabled = safe_child(&root, &format!("{}.disabled", item.filename))?;
+    let (source, destination) = if enabled { (&disabled, &normal) } else { (&normal, &disabled) };
+    fs::rename(source, destination).map_err(|_| LauncherError::new(
+        "content_toggle_failed",
+        "Не удалось изменить состояние файла. Возможно, он был перемещён вручную.",
+        None,
+        true,
+    ))?;
+    item.enabled = enabled;
+    service_upsert_installed(&storage, &item).await?;
+    Ok(item)
+}
+
+async fn service_upsert_installed(
+    storage: &Storage,
+    item: &InstalledContent,
+) -> Result<(), LauncherError> {
+    storage.upsert_installed_content(item).await
 }
 
 #[tauri::command(rename_all = "camelCase")]

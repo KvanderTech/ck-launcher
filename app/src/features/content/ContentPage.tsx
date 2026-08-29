@@ -68,15 +68,22 @@ export function ContentPage({ api, versions, onBuildSelected }: Props) {
   async function install(project: ModrinthProject) {
     setBusy(project.project_id); setError(undefined);
     try {
-      let destination = activeBuild;
       if (project.project_type === "modpack") {
-        destination = await api.createBuild(project.title, gameVersion, loader);
-      } else if (!destination) {
-        setCreating(true);
-        setError("Для отдельного мода сначала создайте сборку или установите готовую сборку Modrinth.");
-        return;
+        await api.installModrinthModpack(project.project_id);
+      } else {
+        let targetBuild = activeBuild;
+        if (!targetBuild) {
+          const requiredLoader = project.project_type === "mod"
+            ? (loader === "vanilla" ? "fabric" : loader)
+            : "vanilla";
+          targetBuild = await api.createBuild(
+            `${project.title} — ${gameVersion}`,
+            gameVersion,
+            requiredLoader,
+          );
+        }
+        await api.installModrinthProject(project.project_id, targetBuild.id);
       }
-      await api.installModrinthProject(project.project_id, destination.id);
       await reloadBuilds(); await onBuildSelected();
     }
     catch (reason) { setError(errorMessage(reason)); }
@@ -87,6 +94,14 @@ export function ContentPage({ api, versions, onBuildSelected }: Props) {
     if (!activeBuild) return;
     setBusy(item.projectId);
     try { await api.removeInstalledContent(activeBuild.id, item.projectId); await reloadBuilds(); }
+    catch (reason) { setError(errorMessage(reason)); }
+    finally { setBusy(undefined); }
+  }
+
+  async function toggle(item: InstalledContent) {
+    if (!activeBuild) return;
+    setBusy(item.projectId); setError(undefined);
+    try { await api.setInstalledContentEnabled(activeBuild.id, item.projectId, !item.enabled); await reloadBuilds(); }
     catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(undefined); }
   }
@@ -110,7 +125,7 @@ export function ContentPage({ api, versions, onBuildSelected }: Props) {
       {creating && <div className="create-build-card">
         <label>Название<input value={newName} onChange={(event) => setNewName(event.target.value)} /></label>
         <label>Версия<select value={gameVersion} onChange={(event) => setGameVersion(event.target.value)}>{versions.map((version) => <option key={version.id}>{version.id}</option>)}</select></label>
-        <label>Загрузчик<select value={loader} onChange={(event) => setLoader(event.target.value)}><option value="fabric">Fabric</option><option value="vanilla">Vanilla</option></select></label>
+        <label>Загрузчик<select value={loader} onChange={(event) => setLoader(event.target.value)}><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="vanilla">Vanilla</option></select></label>
         <button disabled={busy === "create"} onClick={() => void create()} type="button">{busy === "create" ? "Создаём…" : "Создать"}</button>
       </div>}
 
@@ -118,7 +133,7 @@ export function ContentPage({ api, versions, onBuildSelected }: Props) {
       <form className="catalog-search" onSubmit={(event) => { event.preventDefault(); void search(); }}>
         <input aria-label="Поиск Modrinth" placeholder={`Поиск: ${tabs.find((tab) => tab.id === type)?.label.toLowerCase()}…`} value={query} onChange={(event) => setQuery(event.target.value)} />
         <select aria-label="Версия Minecraft" value={gameVersion} onChange={(event) => setGameVersion(event.target.value)}>{versions.slice(0, 40).map((version) => <option key={version.id}>{version.id}</option>)}</select>
-        {type !== "resourcepack" && type !== "shader" && <select aria-label="Загрузчик" value={loader} onChange={(event) => setLoader(event.target.value)}><option value="fabric">Fabric</option><option value="vanilla">Vanilla</option></select>}
+        {type !== "resourcepack" && type !== "shader" && <select aria-label="Загрузчик" value={loader} onChange={(event) => setLoader(event.target.value)}><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="vanilla">Vanilla</option></select>}
         <button type="submit">Найти</button>
       </form>
       {error && <div className="catalog-error" role="alert">{error}</div>}
@@ -135,12 +150,12 @@ export function ContentPage({ api, versions, onBuildSelected }: Props) {
           })}
           {!busy && projects.length === 0 && <div className="catalog-empty">По вашему запросу ничего не найдено.</div>}
         </div>
-        <aside className="installed-panel"><h2>В сборке</h2><strong>{activeBuild?.name ?? "Сборка не выбрана"}</strong><div>{installed.map((item) => <div className="installed-row" key={item.id}>{item.iconUrl ? <img alt="" src={item.iconUrl} /> : <span /> }<b>{item.title}</b><button aria-label={`Удалить ${item.title}`} onClick={() => void remove(item)} type="button">×</button></div>)}{installed.length === 0 && <p>Установленного контента пока нет.</p>}</div></aside>
+        <aside className="installed-panel"><h2>В сборке</h2><strong>{activeBuild?.name ?? "Сборка не выбрана"}</strong><div>{installed.map((item) => <div className={item.enabled ? "installed-row" : "installed-row disabled"} key={item.id}>{item.iconUrl ? <img alt="" src={item.iconUrl} /> : <span /> }<b>{item.title}</b><button aria-label={`${item.enabled ? "Отключить" : "Включить"} ${item.title}`} onClick={() => void toggle(item)} type="button">{item.enabled ? "●" : "○"}</button><button aria-label={`Удалить ${item.title}`} onClick={() => void remove(item)} type="button">×</button></div>)}{installed.length === 0 && <p>Установленного контента пока нет.</p>}</div></aside>
       </div>
     </section>
   );
 }
 
-function baseVersion(build: BuildSummary) { const parts = build.gameVersion.split("-"); return build.loader === "fabric" ? parts[parts.length - 1] : build.gameVersion; }
+function baseVersion(build: BuildSummary) { const parts = build.gameVersion.split("-"); return build.loader === "fabric" || build.loader === "quilt" ? parts[parts.length - 1] : build.gameVersion; }
 function compact(value: number) { return new Intl.NumberFormat("ru", { notation: "compact", maximumFractionDigits: 1 }).format(value); }
 function errorMessage(reason: unknown) { if (reason && typeof reason === "object" && "message" in reason && typeof reason.message === "string") return reason.message; return "Операция не выполнена."; }

@@ -6,6 +6,7 @@ import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
 import { OfflineLogin } from "../features/accounts/OfflineLogin";
 import { ContentPage } from "../features/content/ContentPage";
+import { LibraryPage } from "../features/library/LibraryPage";
 import { SkinsPage } from "../features/skins/SkinsPage";
 import { HomePage, type LauncherViewState } from "../features/home/HomePage";
 import { JavaSettings } from "../features/settings/JavaSettings";
@@ -453,6 +454,17 @@ export default function App({ api = appApi }: AppProps) {
                 profileRef.current = next;
                 setProfile(next);
               }}
+            />
+          ) : activePage === "library" ? (
+            <LibraryPage
+              api={api}
+              onBuildSelected={async () => {
+                const next = await api.getProfile();
+                profileRef.current = next;
+                setProfile(next);
+              }}
+              onOpenCatalog={() => setActivePage("content")}
+              onPlay={startPlay}
             />
           ) : activePage === "skins" ? (
             <SkinsPage api={api} account={accounts.find((account) => account.isActive) ?? accounts[0]} />

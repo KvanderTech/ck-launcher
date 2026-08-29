@@ -70,7 +70,9 @@ export function MicrosoftLogin({
 }
 
 function errorMessageFrom(error: unknown): string {
-  if (isLauncherError(error)) return error.message;
+  if (isLauncherError(error)) {
+    return error.details ? `${error.message} (${error.details})` : error.message;
+  }
   return "Не удалось войти через Microsoft.";
 }
 

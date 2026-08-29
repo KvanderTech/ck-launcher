@@ -50,13 +50,20 @@ pub(super) fn safe_metadata_jvm(
     let allowed = [
         "-XstartOnFirstThread".to_owned(),
         "-Xss1M".to_owned(),
+        "--sun-misc-unsafe-memory-access=allow".to_owned(),
+        "--enable-native-access=ALL-UNNAMED".to_owned(),
         "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
             .to_owned(),
         format!("-Djna.tmpdir={expected_natives}"),
+        format!("-Djava.library.path={expected_natives}/java"),
+        format!("-Djna.tmpdir={expected_natives}/jna"),
         format!("-Dorg.lwjgl.system.SharedLibraryExtractPath={expected_natives}"),
+        format!("-Dorg.lwjgl.system.SharedLibraryExtractPath={expected_natives}/lwjgl"),
         format!("-Dio.netty.native.workdir={expected_natives}"),
+        format!("-Dio.netty.native.workdir={expected_natives}/netty"),
         format!("-Dminecraft.launcher.brand={expected_launcher_name}"),
         format!("-Dminecraft.launcher.version={expected_launcher_version}"),
+        "-DFabricMcEmu= net.minecraft.client.main.Main ".to_owned(),
     ];
     let mut safe = Vec::new();
     let mut requests_windows_os_name = false;
