@@ -12,7 +12,8 @@ support, and game launching.
 
 The launcher uses the Microsoft OAuth 2.0 Authorization Code flow with PKCE.
 Authentication happens in the user's system browser, and the response is
-received by a temporary loopback listener at `http://localhost/callback`.
+received by a temporary loopback listener using the registered
+`http://localhost` redirect with a dynamically selected local port.
 The desktop application is a public client and does not use a client secret.
 
 After Microsoft sign-in, the native Rust process performs the Xbox Live, XSTS,
