@@ -12,4 +12,5 @@ app/assets/
 app/logs/
 app/screenshots/
 app/*-current.png
+release/
 *.part

@@ -153,7 +153,7 @@ fn safe_token(token: &str) -> bool {
         && token != ".."
         && token
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+'))
 }
 
 fn metadata_invalid() -> LauncherError {

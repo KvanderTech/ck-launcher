@@ -395,6 +395,33 @@ fn metadata_cannot_override_memory_classpath_natives_or_security_arguments() {
 }
 
 #[test]
+fn minecraft_26_2_and_fabric_java_25_arguments_are_accepted_exactly() {
+    let mut request = fixture_request("minecraft-26.2-fabric");
+    request.version.arguments.jvm = vec![
+        Argument::Literal("--sun-misc-unsafe-memory-access=allow".to_owned()),
+        Argument::Literal("--enable-native-access=ALL-UNNAMED".to_owned()),
+        Argument::Literal("-Djava.library.path=${natives_directory}/java".to_owned()),
+        Argument::Literal("-Djna.tmpdir=${natives_directory}/jna".to_owned()),
+        Argument::Literal(
+            "-Dorg.lwjgl.system.SharedLibraryExtractPath=${natives_directory}/lwjgl".to_owned(),
+        ),
+        Argument::Literal("-Dio.netty.native.workdir=${natives_directory}/netty".to_owned()),
+        Argument::Literal("-Dminecraft.launcher.brand=${launcher_name}".to_owned()),
+        Argument::Literal("-Dminecraft.launcher.version=${launcher_version}".to_owned()),
+        Argument::Literal("-cp".to_owned()),
+        Argument::Literal("${classpath}".to_owned()),
+        Argument::Literal("-DFabricMcEmu= net.minecraft.client.main.Main ".to_owned()),
+    ];
+
+    let prepared = build_launch(request).expect("official Minecraft 26.2 arguments build");
+    let args = strings(&prepared.command.args);
+    assert!(args.iter().any(|value| value == "--sun-misc-unsafe-memory-access=allow"));
+    assert!(args.iter().any(|value| value == "--enable-native-access=ALL-UNNAMED"));
+    assert!(args.iter().any(|value| value == "-DFabricMcEmu= net.minecraft.client.main.Main "));
+    assert!(args.iter().any(|value| value.ends_with("/java") && value.starts_with("-Djava.library.path=")));
+}
+
+#[test]
 fn metadata_jvm_rejects_source_file_mode_and_every_unexpected_operand() {
     let malicious_sequences = [
         vec![
