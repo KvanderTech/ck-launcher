@@ -61,7 +61,7 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
       <section className="skin-viewer-card cosmetics-preview">
         <div className="preview-badge">{selected ? "Предпросмотр" : "Текущий скин"}</div>
         {previewSkin ? <SkinCanvas skin={previewSkin} cape={selected ? undefined : cosmetics?.capes.find((cape) => cape.state === "ACTIVE")?.url} /> : <div className="skin-empty"><span className="skin-empty-icon">＋</span>Добавьте PNG-скин<br />64×64 или 64×32</div>}
-        <div className="preview-meta"><strong>{selected?.name ?? account.minecraftName}</strong><small>Зажмите и вращайте модель</small></div>
+        <div className="preview-meta"><strong>{selected?.name ?? account.minecraftName}</strong></div>
       </section>
       <div className="cosmetics-content">
         <section className="cosmetics-panel">
@@ -84,7 +84,7 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
 
 function SkinCanvas({ skin, cape, compact = false }: { skin: string; cape?: string; compact?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 116 : 330, height: compact ? 138 : 390, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = !compact; viewer.autoRotateSpeed = 0.55; viewer.zoom = compact ? 0.72 : 0.82; return () => viewer.dispose(); }, [cape, compact, skin]);
+  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 150 : 280, height: compact ? 190 : 340, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = false; viewer.zoom = compact ? 0.82 : 0.88; viewer.playerObject.rotation.y = 0.34; viewer.controls.enableRotate = false; viewer.controls.enablePan = false; viewer.controls.enableZoom = false; return () => viewer.dispose(); }, [cape, compact, skin]);
   return <canvas className={compact ? "skin-canvas compact" : "skin-canvas"} ref={canvas} />;
 }
 

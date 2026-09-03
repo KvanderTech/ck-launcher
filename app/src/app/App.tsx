@@ -10,6 +10,7 @@ import { SkinsPage } from "../features/skins/SkinsPage";
 import { HomePage, type LauncherViewState } from "../features/home/HomePage";
 import { JavaSettings } from "../features/settings/JavaSettings";
 import { MemorySettings } from "../features/settings/MemorySettings";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import "../styles/tokens.css";
 import "../styles/launcher.css";
 import "../styles/instance-repair.css";
@@ -522,16 +523,11 @@ export default function App({ api = appApi }: AppProps) {
               error={operationError}
               logPath={operationLogPath}
               warning={operationWarning}
-              cancelling={cancelling}
-              onCancel={() => void cancelCurrentOperation()}
               onPlay={() => setActivePage("library")}
               onOpenLog={() => void openLatestGameLog()}
               onOpenExternal={(url) => void api.openExternalUrl(url)}
               onRetry={() => void startPlay()}
-              profile={profile}
-              progress={progress}
               state={viewState}
-              builds={builds}
             />
           ) : activePage === "settings" ? (
             <SettingsPage
@@ -582,6 +578,7 @@ export default function App({ api = appApi }: AppProps) {
         </div>
       </main>
       {contentInstallTask && <aside className={`content-install-toast global-install-toast${contentInstallTask.error ? " is-error" : ""}`} role={contentInstallTask.error ? "alert" : "status"}>{contentInstallTask.project.icon_url ? <img alt="" src={contentInstallTask.project.icon_url} /> : <span>{contentInstallTask.project.title[0]}</span>}<div><strong>{contentInstallTask.project.title}</strong><p>{contentInstallTask.error ?? contentInstallTask.stage}</p></div>{contentInstallTask.error ? <button aria-label="Закрыть сообщение об установке" onClick={() => setContentInstallTask(undefined)} type="button">×</button> : <><i /><small>{contentInstallTask.step}/3</small></>}</aside>}
+      {progress && (viewState === "installing" || viewState === "launching") && (() => { const activeBuild = builds.find((build) => build.isActive); const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i className="determinate" style={{ width: `${percent}%` }} /><small>{percent}%</small><button aria-label={cancelling ? "Отменяем…" : "Отменить"} disabled={cancelling} onClick={() => void cancelCurrentOperation()} type="button">×</button></aside>; })()}
       {deleteTask && <aside className={`delete-build-toast${deleteTask.error ? " is-error" : ""}`} role={deleteTask.error ? "alert" : "dialog"}>{deleteTask.build.iconUrl ? <img alt="" src={deleteTask.build.iconUrl} /> : <span>{deleteTask.build.name[0]}</span>}<div><strong>{deleteTask.deleting ? "Удаляем сборку…" : `Удалить «${deleteTask.build.name}»?`}</strong><p>{deleteTask.error ?? "Сборка будет перемещена во внутреннюю корзину."}</p><div className="delete-toast-actions"><button disabled={deleteTask.deleting} onClick={() => setDeleteTask(undefined)} type="button">Отмена</button><button disabled={deleteTask.deleting} onClick={() => void confirmBuildDelete()} type="button">{deleteTask.deleting ? "Удаление…" : "Удалить"}</button></div></div></aside>}
     </div>
   );
@@ -611,6 +608,42 @@ function SettingsPage({
   onRuntimeAction,
   runtimes,
 }: SettingsPageProps) {
+  const [update, setUpdate] = useState<Update>();
+  const [updateStatus, setUpdateStatus] = useState("Готово к проверке");
+  const [updateBusy, setUpdateBusy] = useState(false);
+
+  async function checkForUpdates() {
+    setUpdateBusy(true);
+    setUpdateStatus("Проверяем GitHub…");
+    try {
+      const available = await check();
+      setUpdate(available ?? undefined);
+      setUpdateStatus(available ? `Доступна версия ${available.version}` : "Установлена последняя версия");
+    } catch {
+      setUpdateStatus("Не удалось проверить обновления");
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  async function installUpdate() {
+    if (!update) return;
+    setUpdateBusy(true);
+    let downloaded = 0;
+    let total = 0;
+    try {
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") total = event.data.contentLength ?? 0;
+        if (event.event === "Progress") downloaded += event.data.chunkLength;
+        if (event.event === "Finished") setUpdateStatus("Запускаем установку…");
+        else if (total > 0) setUpdateStatus(`Загрузка ${Math.min(100, Math.round(downloaded / total * 100))}%`);
+      });
+    } catch {
+      setUpdateStatus("Обновление не установлено");
+      setUpdateBusy(false);
+    }
+  }
+
   return (
     <section className="settings-page">
       <div className="page-heading"><span className="eyebrow">Параметры запуска</span><h1>Настройки</h1><p>Память и реальные установки Java сохраняются через ядро лаунчера.</p></div>
@@ -627,9 +660,9 @@ function SettingsPage({
             <code>{gameDir}</code>
             <button onClick={onChooseGameDirectory} type="button">Выбрать папку игры</button>
           </section>
-          <section className="settings-card">
-            <h2>Оформление</h2>
-            <p>Затемнённые фоновые кадры автоматически охватывают всё окно.</p>
+          <section className="settings-card update-card">
+            <div><h2>Обновление лаунчера</h2><p>{updateStatus}</p></div>
+            {update ? <button disabled={updateBusy} onClick={() => void installUpdate()} type="button">{updateBusy ? "Загрузка…" : `Обновить до ${update.version}`}</button> : <button disabled={updateBusy} onClick={() => void checkForUpdates()} type="button">{updateBusy ? "Проверяем…" : "Проверить обновления"}</button>}
           </section>
         </div>
         <div className="settings-card java-card-group">
@@ -644,6 +677,15 @@ function SettingsPage({
       </div>
     </section>
   );
+}
+
+function progressLabel(stage: ProgressEvent["stage"]) {
+  const labels: Record<ProgressEvent["stage"], string> = {
+    idle: "Ожидание", authenticating: "Проверяем аккаунт", "resolving-metadata": "Получаем метаданные",
+    "resolving-java": "Подбираем Java", checking: "Проверяем файлы", downloading: "Загружаем файлы",
+    installing: "Устанавливаем игру", launching: "Запускаем игру", running: "Игра запущена", failed: "Операция остановлена",
+  };
+  return labels[stage];
 }
 
 function launcherErrorFrom(error: unknown): LauncherErrorDto {

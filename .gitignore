@@ -13,4 +13,5 @@ app/logs/
 app/screenshots/
 app/*-current.png
 release/
+.signing/
 *.part
