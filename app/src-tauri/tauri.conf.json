@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ЦК Лаунчер",
-  "version": "0.1.16",
+  "version": "0.1.46-beta.1",
   "identifier": "ru.cklauncher.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,6 +31,15 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "fileAssociations": [
+      {
+        "ext": ["mrpack"],
+        "mimeType": "application/x-modrinth-modpack+zip",
+        "name": "Сборка Modrinth",
+        "description": "Сборка Modrinth для установки в ЦК Лаунчер",
+        "role": "Editor"
+      }
+    ],
     "shortDescription": "Windows launcher for licensed Minecraft: Java Edition.",
     "windows": {
       "nsis": {

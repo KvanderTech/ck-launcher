@@ -1,87 +1,61 @@
-import { useEffect, useState } from "react";
-
+import { useEffect, useMemo, useState } from "react";
 import type { AppApi } from "../../app/tauri";
-import type { BuildSummary } from "../../app/types";
+import type { BuildFileEntry, BuildLogSummary, BuildSummary, BuildWorldSummary, InstalledContent, ModrinthProjectType } from "../../app/types";
 
-interface Props {
-  api: AppApi;
-  onBuildSelected(): Promise<void>;
-  onOpenCatalog(): void;
-  onPlay(): Promise<void>;
-}
+interface Props { api: AppApi; initialBuildId?: string; onBuildSelected(): Promise<void>; onOpenCatalog(): void; onCreateBuild(): void; onPlay(): Promise<void>; onRequestDelete(build: BuildSummary): void; }
+type DetailTab = "content" | "files" | "worlds" | "logs";
 
-export function LibraryPage({ api, onBuildSelected, onOpenCatalog, onPlay }: Props) {
-  const [builds, setBuilds] = useState<BuildSummary[]>([]);
-  const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<string>();
-
-  async function reload() {
-    setBuilds(await api.listBuilds());
-  }
-
+export function LibraryPage({ api, initialBuildId, onBuildSelected, onOpenCatalog, onCreateBuild, onPlay, onRequestDelete }: Props) {
+  const [builds, setBuilds] = useState<BuildSummary[]>([]), [detailId, setDetailId] = useState<string | undefined>(initialBuildId);
+  const [items, setItems] = useState<InstalledContent[]>([]), [tab, setTab] = useState<DetailTab>("content");
+  const [filter, setFilter] = useState<"all" | ModrinthProjectType>("all"), [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<string>(), [settings, setSettings] = useState(false);
+  const detail = builds.find((build) => build.id === detailId);
+  const visible = useMemo(() => filter === "all" ? items : items.filter((item) => item.projectType === filter), [filter, items]);
+  async function reload() { const next = await api.listBuilds(); setBuilds(next); return next; }
+  async function reloadItems(id: string) { setItems(await api.listInstalledContent(id)); }
   useEffect(() => { void reload().catch(() => setError("Не удалось открыть библиотеку.")); }, [api]);
+  useEffect(() => { if (detailId) void reloadItems(detailId).catch(() => setError("Не удалось загрузить содержимое сборки.")); }, [detailId]);
+  async function select(build: BuildSummary, play = false) { setBusy(build.id); setError(undefined); try { await api.selectBuild(build.id); await onBuildSelected(); await reload(); if (play) await onPlay(); } catch (reason) { setError(messageFrom(reason)); } finally { setBusy(undefined); } }
+  async function browse(build: BuildSummary) { await select(build); onOpenCatalog(); }
+  async function importLocal(type: ModrinthProjectType) { if (!detail) return; setBusy(`local:${type}`); try { await api.importLocalContent(detail.id, type); await reloadItems(detail.id); } catch (reason) { setError(messageFrom(reason)); } finally { setBusy(undefined); } }
+  async function toggle(item: InstalledContent) { if (!detail) return; setBusy(item.projectId); try { await api.setInstalledContentEnabled(detail.id, item.projectId, !item.enabled); await reloadItems(detail.id); } catch (reason) { setError(messageFrom(reason)); } finally { setBusy(undefined); } }
+  async function removeItem(item: InstalledContent) { if (!detail) return; setBusy(item.projectId); try { await api.removeInstalledContent(detail.id, item.projectId); await reloadItems(detail.id); } catch (reason) { setError(messageFrom(reason)); } finally { setBusy(undefined); } }
+  async function repair(build: BuildSummary) { setBusy(`repair:${build.id}`); try { await api.repairBuild(build.id); await reloadItems(build.id); await reload(); await onBuildSelected(); } catch (reason) { setError(messageFrom(reason)); } finally { setBusy(undefined); } }
 
-  async function select(build: BuildSummary, play = false) {
-    setBusy(build.id); setError(undefined);
-    try {
-      await api.selectBuild(build.id);
-      await onBuildSelected();
-      await reload();
-      if (play) await onPlay();
-    } catch (reason) {
-      setError(messageFrom(reason));
-    } finally {
-      setBusy(undefined);
-    }
-  }
+  if (detail) return <section className="instance-page"><button className="instance-back" onClick={() => setDetailId(undefined)} type="button">← Библиотека</button>
+    <header className="instance-hero">{detail.iconUrl ? <img alt="" src={detail.iconUrl} /> : <span className="instance-letter">{detail.name[0]}</span>}<div><span className="eyebrow">УСТАНОВЛЕННАЯ СБОРКА</span><h1>{detail.name}</h1><p>{loaderName(detail.loader)} · Minecraft {baseVersion(detail)}</p></div><button className="instance-play" disabled={Boolean(busy)} onClick={() => void select(detail, true)} type="button">▶ Играть</button><button className="instance-settings" onClick={() => setSettings(true)} title="Настройки сборки" type="button">⚙</button></header>
+    <nav className="instance-tabs">{(["content", "files", "worlds", "logs"] as const).map((value) => <button className={tab === value ? "active" : ""} onClick={() => setTab(value)} key={value} type="button">{{ content: "Контент", files: "Файлы", worlds: "Миры", logs: "Логи" }[value]}{value === "content" && <span>{items.length}</span>}</button>)}</nav>
+    {error && <div className="catalog-error" role="alert">{error}</div>}
+    {tab === "content" ? <ContentPanel detail={detail} visible={visible} filter={filter} busy={busy} setFilter={setFilter} browse={browse} importLocal={importLocal} toggle={toggle} removeItem={removeItem} /> : tab === "files" ? <FilesPanel api={api} build={detail} /> : tab === "worlds" ? <WorldsPanel api={api} build={detail} /> : <LogsPanel api={api} build={detail} />}
+    {settings && <div className="instance-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSettings(false)}><section className="instance-modal" role="dialog" aria-modal="true"><header><div><span className="eyebrow">НАСТРОЙКИ СБОРКИ</span><h2>{detail.name}</h2></div><button onClick={() => setSettings(false)} type="button">×</button></header><div className="instance-settings-grid"><article><h3>Установка</h3><dl><div><dt>Minecraft</dt><dd>{baseVersion(detail)}</dd></div><div><dt>Загрузчик</dt><dd>{loaderName(detail.loader)} {detail.loaderVersion}</dd></div></dl><button disabled={Boolean(busy)} onClick={() => void repair(detail)} type="button">{busy === `repair:${detail.id}` ? "Восстанавливаем…" : "Переустановить и восстановить"}</button></article><article><h3>Файлы</h3><p>Конфигурации, моды, ресурсы, миры и логи находятся в отдельной папке.</p><button onClick={() => void api.openBuildFolder(detail.id)} type="button">Открыть папку</button></article><article className="danger-zone"><h3>Опасная зона</h3><p>Сборка будет перемещена во внутреннюю корзину.</p><button onClick={() => onRequestDelete(detail)} type="button">Удалить сборку</button></article></div></section></div>}
+  </section>;
 
-  async function remove(build: BuildSummary) {
-    if (!window.confirm(`Переместить сборку «${build.name}» в корзину ЦК Лаунчера?`)) return;
-    setBusy(build.id); setError(undefined);
-    try {
-      await api.deleteBuild(build.id);
-      await reload();
-      await onBuildSelected();
-    } catch (reason) {
-      setError(messageFrom(reason));
-    } finally {
-      setBusy(undefined);
-    }
-  }
-
-  return (
-    <section className="library-page">
-      <div className="content-heading">
-        <div><span className="eyebrow">УСТАНОВЛЕННОЕ</span><h1>Библиотека</h1><p>Все версии и сборки в одном месте.</p></div>
-        <button className="primary-small" onClick={onOpenCatalog} type="button">+ Найти сборку</button>
-      </div>
-      {error && <div className="catalog-error" role="alert">{error}</div>}
-      {builds.length === 0 ? (
-        <div className="library-empty"><h2>Библиотека пока пуста</h2><p>Установите модпак из Modrinth или создайте собственную сборку.</p><button onClick={onOpenCatalog} type="button">Открыть каталог</button></div>
-      ) : (
-        <div className="library-grid">
-          {builds.map((build) => <article className={build.isActive ? "library-card active" : "library-card"} key={build.id}>
-            {build.iconUrl ? <img alt="" src={build.iconUrl} /> : <span className="library-icon">{build.name.slice(0, 1).toUpperCase()}</span>}
-            <div className="library-card-copy"><h2>{build.name}</h2><p>{loaderName(build.loader)} · {baseVersion(build)}</p>{build.isActive && <small>Текущая сборка</small>}</div>
-            <div className="library-actions">
-              <button disabled={busy === build.id} onClick={() => void select(build, true)} type="button">Играть</button>
-              <button disabled={busy === build.id || build.isActive} onClick={() => void select(build)} type="button">Выбрать</button>
-              <button className="danger-quiet" disabled={busy === build.id} onClick={() => void remove(build)} type="button">Удалить</button>
-            </div>
-          </article>)}
-        </div>
-      )}
-    </section>
-  );
+  return <section className="library-page"><div className="content-heading"><div><span className="eyebrow">УСТАНОВЛЕННОЕ</span><h1>Библиотека</h1><p>Все версии и сборки в одном месте.</p></div><div className="content-heading-actions"><button className="secondary-small" onClick={onCreateBuild} type="button">+ Создать сборку</button><button className="primary-small" onClick={onOpenCatalog} type="button">+ Найти сборку</button></div></div>{error && <div className="catalog-error" role="alert">{error}</div>}{!builds.length ? <Empty title="Библиотека пока пуста" text="Установите модпак из каталога или создайте собственную сборку." /> : <div className="library-grid">{builds.map((build) => <article className={build.isActive ? "library-card active" : "library-card"} key={build.id} onDoubleClick={() => setDetailId(build.id)}>{build.iconUrl ? <img alt="" src={build.iconUrl} /> : <span className="library-icon">{build.name[0]}</span>}<div className="library-card-copy"><h2>{build.name}</h2><p>{loaderName(build.loader)} · {baseVersion(build)}</p>{build.isActive && <small>Текущая сборка</small>}</div><div className="library-actions"><button onClick={() => setDetailId(build.id)} type="button">Открыть</button><button disabled={busy === build.id} onClick={() => void select(build, true)} type="button">Играть</button><button className="danger-quiet" disabled={busy === build.id} onClick={() => onRequestDelete(build)} type="button">Удалить</button></div></article>)}</div>}</section>;
 }
 
-function baseVersion(build: BuildSummary) {
-  const parts = build.gameVersion.split("-");
-  return build.loader === "fabric" || build.loader === "quilt" ? parts[parts.length - 1] ?? build.gameVersion : build.gameVersion;
+function ContentPanel(p: { detail: BuildSummary; visible: InstalledContent[]; filter: "all" | ModrinthProjectType; busy?: string; setFilter(v: "all" | ModrinthProjectType): void; browse(b: BuildSummary): Promise<void>; importLocal(t: ModrinthProjectType): Promise<void>; toggle(i: InstalledContent): Promise<void>; removeItem(i: InstalledContent): Promise<void> }) {
+  return <><div className="instance-content-toolbar"><div className="instance-filters">{(["all", "mod", "resourcepack", "shader"] as const).map((v) => <button className={p.filter === v ? "active" : ""} key={v} onClick={() => p.setFilter(v)} type="button">{{ all: "Всё", mod: "Моды", resourcepack: "Ресурспаки", shader: "Шейдеры" }[v]}</button>)}</div><button className="instance-local" onClick={() => void p.importLocal(p.filter === "all" ? "mod" : p.filter)} type="button">↑ С устройства</button><button className="instance-browse" onClick={() => void p.browse(p.detail)} type="button">＋ Каталог</button></div>{p.visible.length ? <div className="instance-content-list">{p.visible.map((item) => <article className={item.enabled ? "instance-content-row" : "instance-content-row disabled"} key={item.id}>{item.iconUrl ? <img alt="" src={item.iconUrl} /> : <span className="content-file-icon">{item.projectType === "mod" ? "◆" : "▧"}</span>}<div><h2>{item.title}</h2><p>{item.projectType} · {item.versionId === "local" ? "Локальный файл" : "Modrinth"}</p><small>{item.filename}</small></div><button className="content-toggle" disabled={p.busy === item.projectId} onClick={() => void p.toggle(item)} type="button">{item.enabled ? "Включён" : "Выключен"}</button><button className="content-remove" onClick={() => void p.removeItem(item)} type="button">×</button></article>)}</div> : <Empty title="Дополнительного контента пока нет" text="Добавьте совместимые файлы из каталога или с компьютера." />}</>;
 }
-function loaderName(loader: string) { return loader === "vanilla" ? "Vanilla" : loader.slice(0, 1).toUpperCase() + loader.slice(1); }
-function messageFrom(reason: unknown) {
-  return reason && typeof reason === "object" && "message" in reason && typeof reason.message === "string"
-    ? reason.message
-    : "Операция не выполнена.";
+
+function FilesPanel({ api, build }: { api: AppApi; build: BuildSummary }) {
+  const [path, setPath] = useState(""), [files, setFiles] = useState<BuildFileEntry[]>([]), [query, setQuery] = useState(""); const reload = () => api.listBuildFiles(build.id, path).then(setFiles); useEffect(() => { void reload(); }, [build.id, path]); const shown = files.filter((f) => f.name.toLowerCase().includes(query.toLowerCase()));
+  return <section className="instance-browser"><div className="browser-toolbar"><button disabled={!path} onClick={() => setPath(path.split("/").slice(0, -1).join("/"))} type="button">←</button><div className="browser-crumbs"><button onClick={() => setPath("")} type="button">⌂ Сборка</button>{path.split("/").filter(Boolean).map((part, i, all) => <button key={`${part}${i}`} onClick={() => setPath(all.slice(0, i + 1).join("/"))} type="button">› {part}</button>)}</div><input placeholder="Поиск файлов" value={query} onChange={(e) => setQuery(e.target.value)} /><button onClick={() => void reload()} type="button">↻</button><button onClick={() => void api.openBuildPath(build.id, path)} type="button">Открыть</button></div>{shown.length ? <div className="file-table"><div className="file-head"><span>Имя</span><span>Размер</span><span>Изменён</span><span /></div>{shown.map((file) => <div className="file-row" key={file.relativePath} onDoubleClick={() => file.kind === "directory" ? setPath(file.relativePath) : void api.openBuildPath(build.id, file.relativePath)}><span><b>{file.kind === "directory" ? "▰" : "▧"}</b>{file.name}</span><span>{file.kind === "directory" ? "—" : formatBytes(file.size)}</span><span>{formatDate(file.modifiedAt)}</span><button onClick={() => file.kind === "directory" ? setPath(file.relativePath) : void api.openBuildPath(build.id, file.relativePath)} type="button">{file.kind === "directory" ? "Открыть" : "Показать"}</button></div>)}</div> : <Empty title="Папка пуста" text="Здесь пока нет файлов." />}</section>;
 }
+
+function WorldsPanel({ api, build }: { api: AppApi; build: BuildSummary }) {
+  const [worlds, setWorlds] = useState<BuildWorldSummary[]>([]), [query, setQuery] = useState(""); const reload = () => api.listBuildWorlds(build.id).then(setWorlds); useEffect(() => { void reload(); }, [build.id]); const shown = worlds.filter((w) => w.name.toLowerCase().includes(query.toLowerCase()));
+  return <section className="instance-browser"><div className="browser-toolbar"><input placeholder="Поиск миров" value={query} onChange={(e) => setQuery(e.target.value)} /><button onClick={() => void reload()} type="button">↻</button><button onClick={() => void api.openBuildPath(build.id, "saves")} type="button">Папка миров</button></div>{shown.length ? <div className="world-grid">{shown.map((world) => <article key={world.relativePath}><span>◉</span><div><h3>{world.name}</h3><p>{formatBytes(world.size)} · {formatDate(world.modifiedAt)}</p></div><button onClick={() => void api.openBuildPath(build.id, world.relativePath)} type="button">Открыть</button></article>)}</div> : <Empty title="Сохранённых миров нет" text="Созданные в игре миры появятся здесь автоматически." />}</section>;
+}
+
+function LogsPanel({ api, build }: { api: AppApi; build: BuildSummary }) {
+  const [logs, setLogs] = useState<BuildLogSummary[]>([]), [selected, setSelected] = useState(""), [body, setBody] = useState(""), [query, setQuery] = useState(""), [level, setLevel] = useState("all"); async function reload() { const next = await api.listBuildLogs(build.id); setLogs(next); const target = selected || next[0]?.relativePath; if (target) { setSelected(target); setBody(await api.readBuildLog(build.id, target)); } } useEffect(() => { void reload(); }, [build.id]); useEffect(() => { if (selected) void api.readBuildLog(build.id, selected).then(setBody); }, [selected]); const lines = body.split("\n").filter((line) => (level === "all" || line.toLowerCase().includes(level)) && line.toLowerCase().includes(query.toLowerCase()));
+  return <section className="instance-browser logs-browser"><div className="browser-toolbar"><input placeholder="Поиск в логе" value={query} onChange={(e) => setQuery(e.target.value)} /><select value={selected} onChange={(e) => setSelected(e.target.value)}>{logs.map((log) => <option value={log.relativePath} key={log.relativePath}>{log.name}</option>)}</select><button onClick={() => void reload()} type="button">↻</button><button disabled={!selected} onClick={() => void api.openBuildPath(build.id, selected)} type="button">Открыть файл</button></div><div className="log-levels">{["all", "error", "warn", "info"].map((v) => <button className={level === v ? "active" : ""} onClick={() => setLevel(v)} key={v} type="button">{v === "all" ? "Все" : v.toUpperCase()}</button>)}</div>{logs.length ? <pre className="log-console">{lines.join("\n") || "Нет строк с выбранным фильтром."}</pre> : <Empty title="Логов пока нет" text="После первого запуска здесь появятся журналы Minecraft." />}</section>;
+}
+
+function Empty({ title, text }: { title: string; text: string }) { return <section className="instance-empty-content"><div className="instance-empty-symbol">◇</div><h2>{title}</h2><p>{text}</p></section>; }
+function baseVersion(b: BuildSummary) { const p = b.loaderVersion ? `${b.loader}-loader-${b.loaderVersion}-` : ""; return p && b.gameVersion.startsWith(p) ? b.gameVersion.slice(p.length) : b.gameVersion; }
+function loaderName(v: string) { return v === "vanilla" ? "Vanilla" : v === "neoforge" ? "NeoForge" : v[0].toUpperCase() + v.slice(1); }
+function formatBytes(v: number) { if (!v) return "0 Б"; const u = ["Б", "КБ", "МБ", "ГБ"], i = Math.min(Math.floor(Math.log(v) / Math.log(1024)), 3); return `${(v / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`; }
+function formatDate(v: number) { return v ? new Intl.DateTimeFormat("ru", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(v * 1000) : "—"; }
+function messageFrom(reason: unknown) { return reason && typeof reason === "object" && "message" in reason && typeof reason.message === "string" ? reason.message : "Операция не выполнена."; }

@@ -17,11 +17,40 @@ mod webview2;
 use paths::AppPaths;
 use std::sync::Arc;
 use storage::{credentials::WindowsCredentialStore, AccountMutationCoordinator, Storage};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use webview2::{
     check_availability, missing_runtime_instruction, show_missing_runtime_instruction,
     WindowsWebView2Registry,
 };
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), error::LauncherError> {
+    const ALLOWED: [&str; 3] = [
+        "https://t.me/comfortcentr",
+        "https://discord.gg/2CkZsVN8nm",
+        "https://github.com/KvanderTech/ck-launcher",
+    ];
+    if !ALLOWED.contains(&url.as_str()) {
+        return Err(error::LauncherError::new(
+            "external_url_denied",
+            "Эта ссылка не разрешена.",
+            None,
+            false,
+        ));
+    }
+    std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .spawn()
+        .map_err(|_| {
+            error::LauncherError::new(
+                "browser_open_failed",
+                "Не удалось открыть системный браузер.",
+                None,
+                true,
+            )
+        })?;
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,34 +61,57 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
+            if let Some(path) = args
+                .into_iter()
+                .find(|arg| arg.to_ascii_lowercase().ends_with(".mrpack"))
+            {
+                app.state::<commands::content::PendingMrpackPath>()
+                    .replace(path.clone());
+                let _ = app.emit("launcher://open-mrpack", path);
+            }
         }))
         .manage(webview2_availability)
         .invoke_handler(tauri::generate_handler![
+            open_external_url,
             commands::accounts::list_accounts,
             commands::accounts::begin_microsoft_login,
-            commands::accounts::create_offline_account,
             commands::accounts::cancel_microsoft_login,
             commands::accounts::remove_account,
             commands::accounts::set_active_account,
             commands::content::search_modrinth,
+            commands::content::modrinth_project,
+            commands::content::modrinth_project_versions,
             commands::content::create_build,
             commands::content::list_builds,
+            commands::content::repair_build,
             commands::content::select_build,
             commands::content::delete_build,
             commands::content::install_modrinth_project,
             commands::content::install_modrinth_modpack,
+            commands::content::import_mrpack,
+            commands::content::pending_mrpack_path,
             commands::content::list_installed_content,
             commands::content::remove_installed_content,
             commands::content::set_installed_content_enabled,
+            commands::content::import_local_content,
+            commands::content::open_build_folder,
+            commands::content::list_build_files,
+            commands::content::list_build_worlds,
+            commands::content::list_build_logs,
+            commands::content::read_build_log,
+            commands::content::open_build_path,
             commands::content::list_offline_skins,
             commands::content::add_offline_skin,
             commands::content::select_offline_skin,
+            commands::content::minecraft_cosmetics,
+            commands::content::apply_minecraft_skin,
+            commands::content::activate_minecraft_cape,
             commands::versions::list_game_versions,
             commands::versions::required_java_for_version,
             commands::versions::get_profile,
@@ -79,6 +131,11 @@ pub fn run() {
             commands::launch::open_latest_game_log,
         ])
         .setup(|app| {
+            let pending_mrpack =
+                std::env::args().find(|arg| arg.to_ascii_lowercase().ends_with(".mrpack"));
+            app.manage(commands::content::PendingMrpackPath(std::sync::Mutex::new(
+                pending_mrpack,
+            )));
             let paths = AppPaths::windows_default()?;
             paths.create_directories()?;
             let storage = tauri::async_runtime::block_on(Storage::connect_file(&paths.database))?;

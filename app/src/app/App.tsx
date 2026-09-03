@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BackgroundCarousel } from "../components/BackgroundCarousel";
 import { Sidebar, type PageId } from "../components/Sidebar";
 import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
-import { OfflineLogin } from "../features/accounts/OfflineLogin";
-import { ContentPage } from "../features/content/ContentPage";
+import { ContentPage, type ContentInstallTask } from "../features/content/ContentPage";
 import { LibraryPage } from "../features/library/LibraryPage";
 import { SkinsPage } from "../features/skins/SkinsPage";
 import { HomePage, type LauncherViewState } from "../features/home/HomePage";
@@ -13,9 +12,13 @@ import { JavaSettings } from "../features/settings/JavaSettings";
 import { MemorySettings } from "../features/settings/MemorySettings";
 import "../styles/tokens.css";
 import "../styles/launcher.css";
+import "../styles/instance-repair.css";
+import "../styles/home-redesign.css";
+import "../styles/interface-redesign.css";
 import { appApi, windowApi, type AppApi } from "./tauri";
 import type {
   AccountSummary,
+  BuildSummary,
   GameExitedEvent,
   GameStartedEvent,
   GameVersionSummary,
@@ -24,6 +27,9 @@ import type {
   LauncherErrorDto,
   LauncherErrorEvent,
   LauncherProfile,
+  MinecraftCosmetics,
+  ModrinthProject,
+  OfflineSkin,
   OperationId,
   ProgressEvent,
 } from "./types";
@@ -40,13 +46,24 @@ type BufferedOperationEvent =
   | { kind: "exited"; value: GameExitedEvent }
   | { kind: "error"; value: LauncherErrorEvent };
 
+const texturePreloadCache = new Map<string, HTMLImageElement>();
+
+function preloadTexture(url: string) {
+  const secure = url.replace("http://", "https://");
+  if (texturePreloadCache.has(secure)) return;
+  const image = new Image();
+  image.decoding = "async";
+  image.src = secure;
+  texturePreloadCache.set(secure, image);
+}
+
 export default function App({ api = appApi }: AppProps) {
   const [activePage, setActivePage] = useState<PageId>("home");
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [versions, setVersions] = useState<GameVersionSummary[]>([]);
+  const [builds, setBuilds] = useState<BuildSummary[]>([]);
   const [profile, setProfile] = useState<LauncherProfile>();
   const [runtimes, setRuntimes] = useState<JavaRuntimeStatus[]>([]);
-  const [requiredJava, setRequiredJava] = useState<JavaMajor>();
   const [bootState, setBootState] = useState<BootState>("loading");
   const [viewState, setViewState] = useState<LauncherViewState>("ready");
   const [progress, setProgress] = useState<ProgressEvent>();
@@ -55,16 +72,108 @@ export default function App({ api = appApi }: AppProps) {
   const [operationLogPath, setOperationLogPath] = useState<string>();
   const [cancelling, setCancelling] = useState(false);
   const [memorySaveState, setMemorySaveState] = useState<MemorySaveState>("idle");
+  const [contentInstallTask, setContentInstallTask] = useState<ContentInstallTask>();
+  const [libraryTarget, setLibraryTarget] = useState<{ id: string; nonce: number }>();
+  const [catalogForBuild, setCatalogForBuild] = useState(false);
+  const [contentNonce, setContentNonce] = useState(0);
+  const [createBuildOnOpen, setCreateBuildOnOpen] = useState(false);
+  const [deleteTask, setDeleteTask] = useState<{ build: BuildSummary; deleting?: boolean; error?: string }>();
+  const [skinLibraries, setSkinLibraries] = useState<Record<string, OfflineSkin[]>>({});
+  const [cosmeticsByAccount, setCosmeticsByAccount] = useState<Record<string, MinecraftCosmetics>>({});
+  const [cosmeticsErrors, setCosmeticsErrors] = useState<Record<string, string | undefined>>({});
+  const [cosmeticsLoading, setCosmeticsLoading] = useState<Record<string, boolean>>({});
+  const cosmeticsRequests = useRef(new Map<string, Promise<void>>());
   const operationId = useRef<OperationId | undefined>(undefined);
   const profileRef = useRef<LauncherProfile | undefined>(undefined);
   const awaitingOperationId = useRef(false);
   const bufferedOperationEvents = useRef<BufferedOperationEvent[]>([]);
-  const requiredJavaRequest = useRef(0);
   const savedMemory = useRef<number | undefined>(undefined);
   const desiredMemory = useRef<number | undefined>(undefined);
   const memoryTimer = useRef<number | undefined>(undefined);
   const memoryPersistence = useRef<Promise<void> | undefined>(undefined);
   const memoryActive = useRef(true);
+
+  const warmCosmetics = useCallback((accountId: string) => {
+    const pending = cosmeticsRequests.current.get(accountId);
+    if (pending) return pending;
+    setCosmeticsLoading((current) => ({ ...current, [accountId]: true }));
+    const request = Promise.allSettled([
+      api.listOfflineSkins(accountId),
+      api.minecraftCosmetics(accountId),
+    ]).then(([skinsResult, cosmeticsResult]) => {
+      if (skinsResult.status === "fulfilled") {
+        setSkinLibraries((current) => ({ ...current, [accountId]: skinsResult.value }));
+        skinsResult.value.forEach((skin) => preloadTexture(skin.dataUrl));
+      }
+      if (cosmeticsResult.status === "fulfilled") {
+        setCosmeticsByAccount((current) => ({ ...current, [accountId]: cosmeticsResult.value }));
+        cosmeticsResult.value.skins.forEach((skin) => preloadTexture(skin.url));
+        cosmeticsResult.value.capes.forEach((cape) => preloadTexture(cape.url));
+      }
+      const failed = skinsResult.status === "rejected" || cosmeticsResult.status === "rejected";
+      setCosmeticsErrors((current) => ({
+        ...current,
+        [accountId]: failed ? "Не удалось обновить данные профиля. Показаны последние загруженные данные." : undefined,
+      }));
+    }).finally(() => {
+      cosmeticsRequests.current.delete(accountId);
+      setCosmeticsLoading((current) => ({ ...current, [accountId]: false }));
+    });
+    cosmeticsRequests.current.set(accountId, request);
+    return request;
+  }, [api]);
+
+  const syncBuildSelection = useCallback(async () => {
+    const [nextProfile, nextBuilds] = await Promise.all([api.getProfile(), api.listBuilds()]);
+    profileRef.current = nextProfile;
+    setProfile(nextProfile);
+    setBuilds(nextBuilds);
+  }, [api]);
+
+  const importAssociatedMrpack = useCallback(async (sourcePath: string) => {
+    const project: ModrinthProject = { project_id: "associated-mrpack", project_type: "modpack", title: "Сборка из файла", description: "Импорт файла .mrpack", author: "Локальный файл", categories: [], versions: [], downloads: 0, follows: 0, date_modified: "" };
+    setContentInstallTask({ project, stage: "Установка сборки", step: 1 });
+    try {
+      const result = await api.importMrpack(sourcePath);
+      if (!result) { setContentInstallTask(undefined); return; }
+      setContentInstallTask({ project: { ...project, title: result.title }, stage: "Сборка установлена", step: 3 });
+      await syncBuildSelection();
+      setActivePage("library");
+      window.setTimeout(() => setContentInstallTask(undefined), 1200);
+    } catch (reason) {
+      const message = reason && typeof reason === "object" && "message" in reason && typeof reason.message === "string" ? reason.message : "Не удалось установить файл .mrpack.";
+      setContentInstallTask({ project, stage: "Установка не завершена", step: 0, error: message });
+    }
+  }, [api, syncBuildSelection]);
+
+  useEffect(() => {
+    if (!api.pendingMrpackPath || !api.onOpenMrpack) return;
+    let active = true;
+    const registration = api.onOpenMrpack((path) => { if (active) void importAssociatedMrpack(path); });
+    void api.pendingMrpackPath().then((path) => { if (active && path) void importAssociatedMrpack(path); });
+    return () => { active = false; void registration.then((stop) => stop()); };
+  }, [api, importAssociatedMrpack]);
+
+  async function openSidebarBuild(buildId: string) {
+    await api.selectBuild(buildId);
+    await syncBuildSelection();
+    setLibraryTarget({ id: buildId, nonce: Date.now() });
+    setActivePage("library");
+  }
+
+  async function confirmBuildDelete() {
+    if (!deleteTask || deleteTask.deleting) return;
+    setDeleteTask({ ...deleteTask, deleting: true, error: undefined });
+    try {
+      await api.deleteBuild(deleteTask.build.id);
+      await syncBuildSelection();
+      setLibraryTarget({ id: "", nonce: Date.now() });
+      setDeleteTask(undefined);
+    } catch (reason) {
+      const error = reason && typeof reason === "object" && "message" in reason && typeof reason.message === "string" ? reason.message : "Не удалось удалить сборку.";
+      setDeleteTask({ build: deleteTask.build, error });
+    }
+  }
 
   function applyOperationEvent(event: BufferedOperationEvent) {
     switch (event.kind) {
@@ -122,8 +231,9 @@ export default function App({ api = appApi }: AppProps) {
       api.listGameVersions(),
       api.getProfile(),
       api.runtimeStatuses(),
+      api.listBuilds(),
     ]).then(
-      ([nextAccounts, nextVersions, nextProfile, nextRuntimes]) => {
+      ([nextAccounts, nextVersions, nextProfile, nextRuntimes, nextBuilds]) => {
         if (!active) return;
         setAccounts(nextAccounts);
         setVersions(nextVersions.filter((version) => version.type === "release"));
@@ -132,6 +242,7 @@ export default function App({ api = appApi }: AppProps) {
         savedMemory.current = nextProfile.memoryMb;
         desiredMemory.current = nextProfile.memoryMb;
         setRuntimes(nextRuntimes);
+        setBuilds(nextBuilds);
         setBootState("loaded");
       },
       () => {
@@ -144,6 +255,11 @@ export default function App({ api = appApi }: AppProps) {
     };
   }, [api]);
 
+  const activeAccountId = accounts.find((account) => account.isActive)?.id ?? accounts[0]?.id;
+  useEffect(() => {
+    if (activeAccountId) void warmCosmetics(activeAccountId);
+  }, [activeAccountId, warmCosmetics]);
+
   useEffect(() => {
     memoryActive.current = true;
     return () => {
@@ -151,21 +267,6 @@ export default function App({ api = appApi }: AppProps) {
       if (memoryTimer.current !== undefined) window.clearTimeout(memoryTimer.current);
     };
   }, []);
-
-  useEffect(() => {
-    const versionId = profile?.versionId;
-    const request = ++requiredJavaRequest.current;
-    setRequiredJava(undefined);
-    if (!versionId) return;
-    void api.requiredJavaForVersion(versionId).then(
-      (requirement) => {
-        if (request === requiredJavaRequest.current) setRequiredJava(requirement);
-      },
-      () => {
-        if (request === requiredJavaRequest.current) setRequiredJava(undefined);
-      },
-    );
-  }, [api, profile?.versionId]);
 
   useEffect(() => {
     let active = true;
@@ -230,14 +331,6 @@ export default function App({ api = appApi }: AppProps) {
       setOperationError(safeError);
       setViewState(safeError.recoverable ? "recoverable-error" : "fatal-error");
     }
-  }
-
-  function updateVersion(versionId: string) {
-    const current = profileRef.current;
-    if (!current) return;
-    const next = { ...current, versionId };
-    profileRef.current = next;
-    setProfile(next);
   }
 
   function mergeMemory(memoryMb: number) {
@@ -362,6 +455,14 @@ export default function App({ api = appApi }: AppProps) {
     setAccounts((current) => current.map((item) => ({ ...item, isActive: item.id === account.id })));
   }
 
+  function accountRemoved(accountId: string) {
+    setAccounts((current) => {
+      const remaining = current.filter((account) => account.id !== accountId);
+      if (!remaining.length || remaining.some((account) => account.isActive)) return remaining;
+      return remaining.map((account, index) => ({ ...account, isActive: index === 0 }));
+    });
+  }
+
   if (bootState === "loading") {
     return <main aria-live="polite" className="boot-screen"><span className="boot-mark">ЦК</span><p>Подготавливаем лаунчер…</p></main>;
   }
@@ -379,15 +480,18 @@ export default function App({ api = appApi }: AppProps) {
   const signedOut = accounts.length === 0;
 
   return (
-    <div className="launcher-shell">
+    <div className={`launcher-shell is-compact${activePage === "home" ? " is-home" : ""}`}>
       <BackgroundCarousel />
       <Sidebar
         accountApi={api}
         accounts={accounts}
         activePage={activePage}
+        builds={builds}
         onAccountAdded={accountAdded}
+        onAccountRemoved={accountRemoved}
         onActiveAccountChange={activeAccountChanged}
-        onNavigate={setActivePage}
+        onNavigate={(page) => { if (page === "content") { setCatalogForBuild(false); setCreateBuildOnOpen(false); setContentNonce((value) => value + 1); } setActivePage(page); }}
+        onOpenBuild={(buildId) => void openSidebarBuild(buildId)}
       />
       <main className="main-pane">
         <header
@@ -402,7 +506,6 @@ export default function App({ api = appApi }: AppProps) {
             data-tauri-drag-region
             onDoubleClick={() => void windowApi.toggleMaximize()}
           >
-            <span data-tauri-drag-region>ЦК Лаунчер</span>
           </div>
           <WindowControls />
         </header>
@@ -413,8 +516,6 @@ export default function App({ api = appApi }: AppProps) {
               <h1>Войдите, чтобы продолжить</h1>
               <p>Авторизация откроется в системном браузере. Пароль и refresh-токен не передаются интерфейсу.</p>
               <MicrosoftLogin api={api} onAuthenticated={accountAdded} />
-              <div className="auth-divider"><span>или</span></div>
-              <OfflineLogin api={api} onAuthenticated={accountAdded} />
             </section>
           ) : activePage === "home" ? (
             <HomePage
@@ -423,16 +524,14 @@ export default function App({ api = appApi }: AppProps) {
               warning={operationWarning}
               cancelling={cancelling}
               onCancel={() => void cancelCurrentOperation()}
-              onPlay={() => void startPlay()}
+              onPlay={() => setActivePage("library")}
               onOpenLog={() => void openLatestGameLog()}
+              onOpenExternal={(url) => void api.openExternalUrl(url)}
               onRetry={() => void startPlay()}
-              onVersionChange={updateVersion}
               profile={profile}
               progress={progress}
-              requiredJava={requiredJava}
-              runtimes={runtimes}
               state={viewState}
-              versions={versions}
+              builds={builds}
             />
           ) : activePage === "settings" ? (
             <SettingsPage
@@ -448,29 +547,42 @@ export default function App({ api = appApi }: AppProps) {
           ) : activePage === "content" ? (
             <ContentPage
               api={api}
+              forBuild={catalogForBuild}
+              key={`content-${contentNonce}-${catalogForBuild ? "build" : "root"}`}
               versions={versions}
-              onBuildSelected={async () => {
-                const next = await api.getProfile();
-                profileRef.current = next;
-                setProfile(next);
-              }}
+              installTask={contentInstallTask}
+              startCreating={createBuildOnOpen}
+              onInstallTaskChange={setContentInstallTask}
+              onBuildSelected={syncBuildSelection}
             />
           ) : activePage === "library" ? (
             <LibraryPage
+              initialBuildId={libraryTarget?.id}
+              key={libraryTarget?.nonce ?? "library"}
               api={api}
-              onBuildSelected={async () => {
-                const next = await api.getProfile();
-                profileRef.current = next;
-                setProfile(next);
-              }}
-              onOpenCatalog={() => setActivePage("content")}
+              onBuildSelected={syncBuildSelection}
+              onOpenCatalog={() => { setCatalogForBuild(true); setActivePage("content"); }}
+              onCreateBuild={() => { setCatalogForBuild(false); setCreateBuildOnOpen(true); setContentNonce((value) => value + 1); setActivePage("content"); }}
               onPlay={startPlay}
+              onRequestDelete={(build) => setDeleteTask({ build })}
             />
           ) : activePage === "skins" ? (
-            <SkinsPage api={api} account={accounts.find((account) => account.isActive) ?? accounts[0]} />
+            <SkinsPage
+              api={api}
+              account={accounts.find((account) => account.isActive) ?? accounts[0]}
+              cosmetics={cosmeticsByAccount[activeAccountId!]}
+              error={cosmeticsErrors[activeAccountId!]}
+              loading={cosmeticsLoading[activeAccountId!] === true}
+              onCosmeticsChange={(next) => setCosmeticsByAccount((current) => ({ ...current, [activeAccountId!]: next }))}
+              onRefresh={() => void warmCosmetics(activeAccountId!)}
+              onSkinsChange={(next) => setSkinLibraries((current) => ({ ...current, [activeAccountId!]: next }))}
+              skins={skinLibraries[activeAccountId!] ?? []}
+            />
           ) : null}
         </div>
       </main>
+      {contentInstallTask && <aside className={`content-install-toast global-install-toast${contentInstallTask.error ? " is-error" : ""}`} role={contentInstallTask.error ? "alert" : "status"}>{contentInstallTask.project.icon_url ? <img alt="" src={contentInstallTask.project.icon_url} /> : <span>{contentInstallTask.project.title[0]}</span>}<div><strong>{contentInstallTask.project.title}</strong><p>{contentInstallTask.error ?? contentInstallTask.stage}</p></div>{contentInstallTask.error ? <button aria-label="Закрыть сообщение об установке" onClick={() => setContentInstallTask(undefined)} type="button">×</button> : <><i /><small>{contentInstallTask.step}/3</small></>}</aside>}
+      {deleteTask && <aside className={`delete-build-toast${deleteTask.error ? " is-error" : ""}`} role={deleteTask.error ? "alert" : "dialog"}>{deleteTask.build.iconUrl ? <img alt="" src={deleteTask.build.iconUrl} /> : <span>{deleteTask.build.name[0]}</span>}<div><strong>{deleteTask.deleting ? "Удаляем сборку…" : `Удалить «${deleteTask.build.name}»?`}</strong><p>{deleteTask.error ?? "Сборка будет перемещена во внутреннюю корзину."}</p><div className="delete-toast-actions"><button disabled={deleteTask.deleting} onClick={() => setDeleteTask(undefined)} type="button">Отмена</button><button disabled={deleteTask.deleting} onClick={() => void confirmBuildDelete()} type="button">{deleteTask.deleting ? "Удаление…" : "Удалить"}</button></div></div></aside>}
     </div>
   );
 }
@@ -516,8 +628,8 @@ function SettingsPage({
             <button onClick={onChooseGameDirectory} type="button">Выбрать папку игры</button>
           </section>
           <section className="settings-card">
-            <h2>Фоновые кадры</h2>
-            <p>Затемнённые кадры меняются каждые 12 секунд. При уменьшенном движении смена отключена.</p>
+            <h2>Оформление</h2>
+            <p>Затемнённые фоновые кадры автоматически охватывают всё окно.</p>
           </section>
         </div>
         <div className="settings-card java-card-group">

@@ -40,8 +40,7 @@ impl ProcessRunner for TokioProcessRunner {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         hide_console_window(&mut command);
-        let child = command.spawn()
-            .map_err(|_| runtime_invalid())?;
+        let child = command.spawn().map_err(|_| runtime_invalid())?;
         let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
             .map_err(|_| runtime_invalid())?

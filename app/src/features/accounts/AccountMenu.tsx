@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { launcherApi, type LauncherApi } from "../../app/tauri";
 import type { AccountSummary } from "../../app/types";
@@ -10,6 +10,7 @@ interface AccountMenuProps {
   closeSignal?: string;
   onActiveAccountChange?: (account: AccountSummary) => void;
   onAuthenticated?: (account: AccountSummary) => void;
+  onAccountRemoved?: (accountId: string) => void;
 }
 
 export function AccountMenu({
@@ -18,11 +19,14 @@ export function AccountMenu({
   closeSignal,
   onActiveAccountChange,
   onAuthenticated,
+  onAccountRemoved,
 }: AccountMenuProps) {
   const initialActiveId = accounts.find((account) => account.isActive)?.id;
   const [activeId, setActiveId] = useState(initialActiveId);
   const [switchingId, setSwitchingId] = useState<string>();
+  const [removing, setRemoving] = useState(false);
   const [open, setOpen] = useState(false);
+  const switcherRef = useRef<HTMLElement>(null);
   const activeAccount = useMemo(
     () => accounts.find((account) => account.id === activeId) ?? accounts[0],
     [accounts, activeId],
@@ -31,6 +35,15 @@ export function AccountMenu({
   useEffect(() => {
     setOpen(false);
   }, [closeSignal]);
+
+  useEffect(() => {
+    if (!open) return;
+    function closeOutside(event: PointerEvent) {
+      if (!switcherRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
 
   useEffect(() => {
     const nextActiveId = accounts.find((account) => account.isActive)?.id;
@@ -51,12 +64,24 @@ export function AccountMenu({
     }
   }
 
+  async function removeActiveAccount() {
+    if (!activeAccount || removing) return;
+    setRemoving(true);
+    try {
+      await api.removeAccount(activeAccount.id);
+      onAccountRemoved?.(activeAccount.id);
+      setOpen(false);
+    } finally {
+      setRemoving(false);
+    }
+  }
+
   if (!activeAccount) {
-    return <p className="account-empty">Аккаунты ещё не добавлены.</p>;
+    return null;
   }
 
   return (
-    <section aria-label="Аккаунты Minecraft" className="account-switcher">
+    <section aria-label="Аккаунты Minecraft" className="account-switcher" ref={switcherRef}>
       {open ? (
         <div aria-label="Аккаунты Minecraft" className="account-menu" role="menu">
           <span className="account-menu-label">Аккаунты Minecraft</span>
@@ -84,6 +109,9 @@ export function AccountMenu({
               setOpen(false);
             }}
           />
+          <button className="account-logout" disabled={removing} onClick={() => void removeActiveAccount()} role="menuitem" type="button">
+            <span aria-hidden="true">↪</span>{removing ? "Выходим…" : "Выйти из аккаунта"}
+          </button>
         </div>
       ) : null}
       <button

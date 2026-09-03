@@ -81,11 +81,17 @@ impl ProcessSpawner for TokioProcessSpawner {
 #[cfg(windows)]
 fn background_java_executable(executable: &Path) -> PathBuf {
     let javaw = executable.with_file_name("javaw.exe");
-    if javaw.is_file() { javaw } else { executable.to_path_buf() }
+    if javaw.is_file() {
+        javaw
+    } else {
+        executable.to_path_buf()
+    }
 }
 
 #[cfg(not(windows))]
-fn background_java_executable(executable: &Path) -> PathBuf { executable.to_path_buf() }
+fn background_java_executable(executable: &Path) -> PathBuf {
+    executable.to_path_buf()
+}
 
 struct TokioChild {
     child: tokio::process::Child,

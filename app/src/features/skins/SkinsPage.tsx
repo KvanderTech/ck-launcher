@@ -2,68 +2,92 @@ import { useEffect, useRef, useState } from "react";
 import { SkinViewer } from "skinview3d";
 
 import type { AppApi } from "../../app/tauri";
-import type { AccountSummary, OfflineSkin } from "../../app/types";
+import type { AccountSummary, MinecraftCosmetics, OfflineSkin } from "../../app/types";
 
-export function SkinsPage({ api, account }: { api: AppApi; account: AccountSummary }) {
-  const [skins, setSkins] = useState<OfflineSkin[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const active = skins.find((skin) => skin.isActive) ?? skins[0];
-
-  useEffect(() => {
-    void api.listOfflineSkins(account.id).then(setSkins, () => setError("Не удалось открыть локальную галерею."));
-  }, [account.id, api]);
-
-  async function addSkin() {
-    setBusy(true); setError(undefined);
-    try {
-      const skin = await api.addOfflineSkin(account.id);
-      if (skin) setSkins((current) => [...current.map((item) => ({ ...item, isActive: false })), skin]);
-    } catch (reason) { setError(errorMessage(reason)); }
-    finally { setBusy(false); }
-  }
-
-  async function selectSkin(skinId: string) {
-    try {
-      await api.selectOfflineSkin(account.id, skinId);
-      setSkins((current) => current.map((item) => ({ ...item, isActive: item.id === skinId })));
-    } catch (reason) { setError(errorMessage(reason)); }
-  }
-
-  return (
-    <section className="skins-page">
-      <div className="page-heading"><span className="eyebrow">Локальный профиль</span><h1>Скины и плащи</h1><p>Скины хранятся только на этом компьютере для профиля {account.minecraftName}.</p></div>
-      <div className="offline-skin-layout">
-        <section className="skin-viewer-card">
-          {active ? <SkinCanvas skin={active.dataUrl} /> : <div className="skin-empty">Добавьте PNG-скин 64×64 или 64×32</div>}
-          <strong>{active?.name ?? account.minecraftName}</strong>
-          <small>Перетаскивайте модель для вращения</small>
-        </section>
-        <section className="saved-skins-card">
-          <div className="content-section-title"><div><h2>Сохранённые скины</h2><p>Доступны без входа Microsoft.</p></div><button disabled={busy} onClick={() => void addSkin()} type="button">{busy ? "Добавление…" : "+ Добавить PNG"}</button></div>
-          {error ? <p className="content-error" role="alert">{error}</p> : null}
-          <div className="saved-skin-grid">
-            {skins.map((skin) => <button className={skin.isActive ? "saved-skin active" : "saved-skin"} key={skin.id} onClick={() => void selectSkin(skin.id)} type="button"><SkinCanvas skin={skin.dataUrl} compact /><span>{skin.name}</span></button>)}
-          </div>
-          <div className="cape-note"><strong>Плащи</strong><p>Локальные плащи будут подключены через клиентский мод; официальный плащ требует Minecraft Services.</p></div>
-        </section>
-      </div>
-    </section>
-  );
+interface SkinsPageProps {
+  api: AppApi;
+  account: AccountSummary;
+  skins: OfflineSkin[];
+  cosmetics?: MinecraftCosmetics;
+  error?: string;
+  loading: boolean;
+  onSkinsChange(skins: OfflineSkin[]): void;
+  onCosmeticsChange(cosmetics: MinecraftCosmetics): void;
+  onRefresh(): void;
 }
 
-function SkinCanvas({ skin, compact = false }: { skin: string; compact?: boolean }) {
-  const canvas = useRef<HTMLCanvasElement>(null);
+export function SkinsPage({ api, account, skins, cosmetics, error: loadError, loading, onSkinsChange, onCosmeticsChange, onRefresh }: SkinsPageProps) {
+  const [selectedId, setSelectedId] = useState<string | null>();
+  const [variant, setVariant] = useState<"classic" | "slim">("classic");
+  const [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<string>();
+  const selected = selectedId === null ? undefined : skins.find((skin) => skin.id === selectedId) ?? skins.find((skin) => skin.isActive) ?? skins[0];
+  const licensedSkin = cosmetics?.skins.find((skin) => skin.state === "ACTIVE") ?? cosmetics?.skins[0];
+  const previewSkin = selected?.dataUrl ?? licensedSkin?.url;
+
+  useEffect(() => { setSelectedId(undefined); }, [account.id]);
   useEffect(() => {
-    if (!canvas.current) return;
-    const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 128 : 330, height: compact ? 150 : 390, skin });
-    viewer.autoRotate = !compact; viewer.autoRotateSpeed = 0.7; viewer.zoom = compact ? 0.72 : 0.82;
-    return () => viewer.dispose();
-  }, [compact, skin]);
+    const activeVariant = cosmetics?.skins.find((skin) => skin.state === "ACTIVE")?.variant;
+    if (activeVariant) setVariant(activeVariant.toLowerCase() === "slim" ? "slim" : "classic");
+  }, [cosmetics]);
+
+  async function addSkin() {
+    setBusy("add"); setError(undefined);
+    try {
+      const skin = await api.addOfflineSkin(account.id);
+      if (skin) { onSkinsChange([skin, ...skins.map((item) => ({ ...item, isActive: false }))]); setSelectedId(skin.id); }
+    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(undefined); }
+  }
+
+  async function applySkin() {
+    if (!selected) return;
+    setBusy("skin"); setError(undefined);
+    try {
+      onCosmeticsChange(await api.applyMinecraftSkin(account.id, selected.id, variant)); setSelectedId(null);
+      onSkinsChange(skins.map((item) => ({ ...item, isActive: item.id === selected.id })));
+    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(undefined); }
+  }
+
+  async function setCape(capeId?: string) {
+    setBusy(`cape:${capeId ?? "none"}`); setError(undefined);
+    try { onCosmeticsChange(await api.activateMinecraftCape(account.id, capeId)); }
+    catch (reason) { setError(errorMessage(reason)); } finally { setBusy(undefined); }
+  }
+
+  return <section className="skins-page cosmetics-page">
+    <div className="page-heading"><span className="eyebrow">Minecraft-профиль</span><h1>Скины и плащи</h1><p>Управляйте внешностью лицензионного профиля {account.minecraftName}.</p></div>
+    {error || loadError ? <div className="cosmetics-alert" role="alert">{error ?? loadError}{loadError ? <button onClick={onRefresh} type="button">Повторить</button> : null}</div> : null}
+    <div className="cosmetics-layout">
+      <section className="skin-viewer-card cosmetics-preview">
+        <div className="preview-badge">{selected ? "Предпросмотр" : "Текущий скин"}</div>
+        {previewSkin ? <SkinCanvas skin={previewSkin} cape={selected ? undefined : cosmetics?.capes.find((cape) => cape.state === "ACTIVE")?.url} /> : <div className="skin-empty"><span className="skin-empty-icon">＋</span>Добавьте PNG-скин<br />64×64 или 64×32</div>}
+        <div className="preview-meta"><strong>{selected?.name ?? account.minecraftName}</strong><small>Зажмите и вращайте модель</small></div>
+      </section>
+      <div className="cosmetics-content">
+        <section className="cosmetics-panel">
+          <div className="cosmetics-panel-head"><div><span className="section-kicker">Библиотека</span><h2>Мои скины</h2><p>PNG хранятся на этом компьютере и доступны для быстрой смены.</p></div><button className="add-png-button" disabled={Boolean(busy)} onClick={() => void addSkin()} type="button"><span>＋</span>{busy === "add" ? "Добавление…" : "Добавить PNG"}</button></div>
+          <div className="saved-skin-grid cosmetics-skin-grid">
+            {licensedSkin ? <button className={!selected ? "saved-skin active licensed-skin" : "saved-skin licensed-skin"} onClick={() => setSelectedId(null)} type="button"><SkinCanvas skin={licensedSkin.url} compact /><span>Текущий скин</span><small>На аккаунте</small></button> : null}
+            {skins.map((skin) => <button className={selected?.id === skin.id ? "saved-skin active" : "saved-skin"} key={skin.id} onClick={() => setSelectedId(skin.id)} type="button"><SkinCanvas skin={skin.dataUrl} compact /><span>{skin.name}</span><small>{skin.isActive ? "Установлен" : "PNG"}</small></button>)}
+            {!skins.length ? <button className="skin-library-empty" onClick={() => void addSkin()} type="button"><span>＋</span><strong>Добавить первый скин</strong><small>PNG · 64×64 или 64×32</small></button> : null}
+          </div>
+          {selected ? <div className="skin-apply-bar"><div className="variant-switch" aria-label="Модель скина"><button className={variant === "classic" ? "active" : ""} onClick={() => setVariant("classic")} type="button">Классическая</button><button className={variant === "slim" ? "active" : ""} onClick={() => setVariant("slim")} type="button">Тонкая</button></div><button className="primary-cosmetics-action" disabled={Boolean(busy)} onClick={() => void applySkin()} type="button">{busy === "skin" ? "Устанавливаем…" : "Установить на аккаунт"}</button></div> : null}
+        </section>
+        <section className="cosmetics-panel capes-panel">
+          <div className="cosmetics-panel-head"><div><span className="section-kicker">Коллекция аккаунта</span><h2>Плащи</h2><p>Доступны только плащи, полученные этим Minecraft-аккаунтом.</p></div></div>
+          {cosmetics ? <div className="cape-grid"><button className={cosmetics.capes.every((cape) => cape.state !== "ACTIVE") ? "cape-card active" : "cape-card"} disabled={Boolean(busy)} onClick={() => void setCape()} type="button"><div className="cape-none">Без плаща</div><strong>Не использовать</strong></button>{cosmetics.capes.map((cape) => <button className={cape.state === "ACTIVE" ? "cape-card active" : "cape-card"} disabled={Boolean(busy)} key={cape.id} onClick={() => void setCape(cape.id)} type="button"><span className="cape-texture"><img alt={`Плащ ${cape.alias}`} src={secureUrl(cape.url)} /></span><strong>{capeName(cape.alias)}</strong><small>{cape.state === "ACTIVE" ? "Надет" : "Надеть"}</small></button>)}{!cosmetics.capes.length ? <div className="capes-empty"><span>◇</span><div><strong>Плащей пока нет</strong><p>Когда плащ появится на аккаунте, он автоматически отобразится здесь.</p></div></div> : null}</div> : <div className="capes-empty"><span>◇</span><div><strong>{loading ? "Загружаем плащи…" : "Данные пока недоступны"}</strong><p>{loading ? "Получаем коллекцию из Minecraft Services." : "Обновите данные профиля повторно."}</p></div></div>}
+        </section>
+      </div>
+    </div>
+  </section>;
+}
+
+function SkinCanvas({ skin, cape, compact = false }: { skin: string; cape?: string; compact?: boolean }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 116 : 330, height: compact ? 138 : 390, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = !compact; viewer.autoRotateSpeed = 0.55; viewer.zoom = compact ? 0.72 : 0.82; return () => viewer.dispose(); }, [cape, compact, skin]);
   return <canvas className={compact ? "skin-canvas compact" : "skin-canvas"} ref={canvas} />;
 }
 
-function errorMessage(error: unknown) {
-  if (typeof error === "object" && error && "message" in error && typeof error.message === "string") return error.message;
-  return "Операция со скином не выполнена.";
-}
+function secureUrl(url: string) { return url.replace("http://", "https://"); }
+function capeName(alias: string) { return alias.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" "); }
+function errorMessage(error: unknown) { if (typeof error === "object" && error && "message" in error && typeof error.message === "string") return error.message; return "Не удалось изменить внешний вид Minecraft-профиля."; }

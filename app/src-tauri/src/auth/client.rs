@@ -78,10 +78,6 @@ pub struct MinecraftAccess {
 }
 
 impl MinecraftAccess {
-    pub(crate) fn offline() -> Self {
-        Self::with_lifetime("0", Duration::from_secs(365 * 24 * 60 * 60))
-    }
-
     #[cfg(test)]
     pub(crate) fn new(token: impl Into<String>) -> Self {
         Self::with_lifetime(token, Duration::from_secs(3_600))

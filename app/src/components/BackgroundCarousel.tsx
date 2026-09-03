@@ -10,36 +10,12 @@ export function BackgroundCarousel() {
   const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    if (reducedMotion) return;
-    const timer = window.setInterval(() => {
-      setActiveIndex((current) => (current + 1) % backgrounds.length);
-    }, 12_000);
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const timer = window.setInterval(() => setActiveIndex((current) => (current + 1) % backgrounds.length), 14_000);
     return () => window.clearInterval(timer);
   }, []);
 
-  return (
-    <div aria-label="Фоновый кадр" className="background-carousel">
-      {backgrounds.map((background, index) => (
-        <img
-          alt=""
-          aria-hidden="true"
-          className={index === activeIndex ? "is-active" : ""}
-          key={background}
-          src={background}
-        />
-      ))}
-      <div className="carousel-dots">
-        {backgrounds.map((background, index) => (
-          <button
-            aria-label={`Кадр ${index + 1}`}
-            aria-pressed={index === activeIndex}
-            key={background}
-            onClick={() => setActiveIndex(index)}
-            type="button"
-          />
-        ))}
-      </div>
-    </div>
-  );
+  return <div aria-hidden="true" className="background-carousel">
+    {backgrounds.map((background, index) => <img className={index === activeIndex ? "is-active" : ""} key={background} src={background} />)}
+  </div>;
 }

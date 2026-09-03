@@ -398,36 +398,68 @@ impl Storage {
     }
 
     pub async fn delete_build(&self, build_id: &str) -> Result<(), LauncherError> {
-        let mut tx = self.pool.begin().await.map_err(|_| LauncherError::storage_unavailable())?;
-        let was_active: Option<bool> = sqlx::query_scalar("SELECT is_active FROM builds WHERE id=?")
-            .bind(build_id)
-            .fetch_optional(&mut *tx)
+        let mut tx = self
+            .pool
+            .begin()
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
+        let was_active: Option<bool> =
+            sqlx::query_scalar("SELECT is_active FROM builds WHERE id=?")
+                .bind(build_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
         sqlx::query("DELETE FROM builds WHERE id=?")
             .bind(build_id)
             .execute(&mut *tx)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
         if was_active == Some(true) {
-            let fallback = sqlx::query("SELECT id,name,game_version,game_dir FROM builds ORDER BY created_at DESC LIMIT 1")
-                .fetch_optional(&mut *tx)
+            let fallback = sqlx::query(
+                "SELECT id,name,game_version,game_dir FROM builds ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+            if let Some(row) = fallback {
+                let id: String = row
+                    .try_get("id")
+                    .map_err(|_| LauncherError::storage_unavailable())?;
+                let name: String = row
+                    .try_get("name")
+                    .map_err(|_| LauncherError::storage_unavailable())?;
+                let version: String = row
+                    .try_get("game_version")
+                    .map_err(|_| LauncherError::storage_unavailable())?;
+                let game_dir: String = row
+                    .try_get("game_dir")
+                    .map_err(|_| LauncherError::storage_unavailable())?;
+                sqlx::query("UPDATE builds SET is_active=1 WHERE id=?")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| LauncherError::storage_unavailable())?;
+                sqlx::query(
+                    "UPDATE profiles SET name=?,version_id=?,game_dir=? WHERE id='default'",
+                )
+                .bind(name)
+                .bind(version)
+                .bind(game_dir)
+                .execute(&mut *tx)
                 .await
                 .map_err(|_| LauncherError::storage_unavailable())?;
-            if let Some(row) = fallback {
-                let id: String = row.try_get("id").map_err(|_| LauncherError::storage_unavailable())?;
-                let name: String = row.try_get("name").map_err(|_| LauncherError::storage_unavailable())?;
-                let version: String = row.try_get("game_version").map_err(|_| LauncherError::storage_unavailable())?;
-                let game_dir: String = row.try_get("game_dir").map_err(|_| LauncherError::storage_unavailable())?;
-                sqlx::query("UPDATE builds SET is_active=1 WHERE id=?").bind(id).execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
-                sqlx::query("UPDATE profiles SET name=?,version_id=?,game_dir=? WHERE id='default'")
-                    .bind(name).bind(version).bind(game_dir).execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
             } else {
-                sqlx::query("UPDATE profiles SET name='Default',version_id=NULL WHERE id='default'")
-                    .execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
+                sqlx::query(
+                    "UPDATE profiles SET name='Default',version_id=NULL WHERE id='default'",
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
             }
         }
-        tx.commit().await.map_err(|_| LauncherError::storage_unavailable())
+        tx.commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
     }
 
     pub async fn list_installed_content(

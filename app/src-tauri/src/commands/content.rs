@@ -14,12 +14,23 @@ use std::{
     fs,
     io::{Cursor, Read},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::State;
 
 const MODRINTH_API: &str = "https://api.modrinth.com/v2";
+
+#[derive(Default)]
+pub struct PendingMrpackPath(pub Mutex<Option<String>>);
+
+impl PendingMrpackPath {
+    pub fn replace(&self, path: String) {
+        if let Ok(mut pending) = self.0.lock() {
+            *pending = Some(path);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ContentService {
@@ -54,17 +65,37 @@ pub struct ModrinthProject {
     pub date_modified: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProjectDetails {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectDetails {
     id: String,
     title: String,
     project_type: String,
     icon_url: Option<String>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    followers: u64,
+    #[serde(default)]
+    categories: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ProjectVersion {
     id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version_number: String,
+    #[serde(default)]
+    version_type: String,
+    #[serde(default)]
+    date_published: String,
+    #[serde(default)]
+    downloads: u64,
     #[serde(default)]
     dependencies: Vec<ProjectDependency>,
     #[serde(default)]
@@ -72,6 +103,18 @@ struct ProjectVersion {
     #[serde(default)]
     loaders: Vec<String>,
     #[serde(default)]
+    game_versions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModrinthVersionView {
+    id: String,
+    name: String,
+    version_number: String,
+    version_type: String,
+    date_published: String,
+    downloads: u64,
+    loaders: Vec<String>,
     game_versions: Vec<String>,
 }
 
@@ -150,6 +193,27 @@ pub struct OfflineSkinView {
     is_active: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildFileEntry {
+    name: String,
+    relative_path: String,
+    kind: String,
+    size: u64,
+    modified_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildWorldSummary {
+    name: String,
+    relative_path: String,
+    size: u64,
+    modified_at: u64,
+}
+
+pub type BuildLogSummary = BuildFileEntry;
+
 impl ContentService {
     pub fn new(
         paths: AppPaths,
@@ -200,6 +264,9 @@ impl ContentService {
         project_type: String,
         game_version: Option<String>,
         loader: Option<String>,
+        category: Option<String>,
+        environment: Option<String>,
+        index: Option<String>,
         offset: u32,
     ) -> Result<ModrinthSearchResult, LauncherError> {
         let mut facets = vec![vec![format!("project_type:{project_type}")]];
@@ -209,12 +276,26 @@ impl ContentService {
         if let Some(loader) = loader.filter(|value| !value.is_empty() && value != "vanilla") {
             facets.push(vec![format!("categories:{loader}")]);
         }
+        if let Some(category) = category.filter(|value| !value.is_empty()) {
+            facets.push(vec![format!("categories:{category}")]);
+        }
+        if let Some(environment) = environment.filter(|value| !value.is_empty()) {
+            facets.push(vec![
+                format!("{environment}_side:required"),
+                format!("{environment}_side:optional"),
+            ]);
+        }
+        let index = index
+            .filter(|value| {
+                ["relevance", "downloads", "follows", "newest", "updated"].contains(&value.as_str())
+            })
+            .unwrap_or_else(|| "relevance".to_owned());
         self.client
             .get(format!("{MODRINTH_API}/search"))
             .query(&[
                 ("query", query),
                 ("facets", serde_json::to_string(&facets).unwrap_or_default()),
-                ("index", "relevance".to_owned()),
+                ("index", index),
                 ("offset", offset.to_string()),
                 ("limit", "20".to_owned()),
             ])
@@ -327,10 +408,12 @@ impl ContentService {
         let loader = requested
             .map(str::to_owned)
             .or_else(|| versions.first().map(|entry| entry.loader.version.clone()))
-            .ok_or_else(|| input_error(
-                "quilt_unavailable",
-                "Для этой версии Minecraft не найден Quilt Loader.",
-            ))?;
+            .ok_or_else(|| {
+                input_error(
+                    "quilt_unavailable",
+                    "Для этой версии Minecraft не найден Quilt Loader.",
+                )
+            })?;
         let mut profile: VersionJson = self
             .json(&format!(
                 "https://meta.quiltmc.org/v3/versions/loader/{game_version}/{loader}/profile/json"
@@ -345,9 +428,10 @@ impl ContentService {
         &self,
         project_id: String,
         build_id: String,
+        version_id: Option<String>,
     ) -> Result<InstalledContent, LauncherError> {
         let mut visiting = HashSet::new();
-        self.install_project_inner(project_id, build_id, &mut visiting)
+        self.install_project_inner(project_id, build_id, version_id, &mut visiting)
             .await
     }
 
@@ -355,6 +439,7 @@ impl ContentService {
         &self,
         project_id: String,
         build_id: String,
+        requested_version_id: Option<String>,
         visiting: &mut HashSet<String>,
     ) -> Result<InstalledContent, LauncherError> {
         if !visiting.insert(project_id.clone()) {
@@ -403,7 +488,11 @@ impl ContentService {
             .json()
             .await
             .map_err(|_| network_error())?;
-        let version = versions.into_iter().next().ok_or_else(|| {
+        let version = match requested_version_id.as_deref() {
+            Some(id) => versions.iter().find(|version| version.id == id).cloned(),
+            None => versions.into_iter().next(),
+        }
+        .ok_or_else(|| {
             input_error(
                 "compatible_version_not_found",
                 "Совместимая версия проекта не найдена.",
@@ -421,9 +510,10 @@ impl ContentService {
         }
         let installed = self.storage.list_installed_content(&build.id).await?;
         for dependency in &version.dependencies {
-            let dependency_project = dependency.project_id.as_deref().or_else(|| {
-                dependency.version_id.as_deref()
-            });
+            let dependency_project = dependency
+                .project_id
+                .as_deref()
+                .or_else(|| dependency.version_id.as_deref());
             let Some(dependency_project) = dependency_project else {
                 continue;
             };
@@ -447,12 +537,16 @@ impl ContentService {
             let Some(dependency_project) = dependency.project_id.clone() else {
                 continue;
             };
-            if installed.iter().any(|item| item.project_id == dependency_project) {
+            if installed
+                .iter()
+                .any(|item| item.project_id == dependency_project)
+            {
                 continue;
             }
             Box::pin(self.install_project_inner(
                 dependency_project,
                 build.id.clone(),
+                None,
                 visiting,
             ))
             .await?;
@@ -465,6 +559,7 @@ impl ContentService {
     pub async fn install_modpack_as_build(
         &self,
         project_id: String,
+        version_id: Option<String>,
     ) -> Result<InstalledContent, LauncherError> {
         let project: ProjectDetails = self
             .json(&format!("{MODRINTH_API}/project/{project_id}"))
@@ -487,7 +582,11 @@ impl ContentService {
             .json()
             .await
             .map_err(|_| network_error())?;
-        let version = versions.into_iter().next().ok_or_else(|| {
+        let version = match version_id.as_deref() {
+            Some(id) => versions.iter().find(|version| version.id == id).cloned(),
+            None => versions.into_iter().next(),
+        }
+        .ok_or_else(|| {
             input_error(
                 "compatible_version_not_found",
                 "У этой сборки нет доступной версии для установки.",
@@ -523,6 +622,56 @@ impl ContentService {
         }
     }
 
+    pub async fn repair_build(&self, build_id: String) -> Result<BuildSummary, LauncherError> {
+        let build = self
+            .storage
+            .list_builds()
+            .await?
+            .into_iter()
+            .find(|item| item.id == build_id)
+            .ok_or_else(|| input_error("build_not_found", "Выбранная сборка не найдена."))?;
+        fs::create_dir_all(&build.game_dir).map_err(|_| LauncherError::storage_unavailable())?;
+
+        let minecraft = base_game_version(&build).to_owned();
+        match build.loader.as_str() {
+            "fabric" => {
+                self.install_fabric_profile(&minecraft, build.loader_version.as_deref())
+                    .await?;
+            }
+            "quilt" => {
+                self.install_quilt_profile(&minecraft, build.loader_version.as_deref())
+                    .await?;
+            }
+            _ => {}
+        }
+
+        let installed = self.storage.list_installed_content(&build.id).await?;
+        if let Some(modpack) = installed.iter().find(|item| item.project_type == "modpack") {
+            let project: ProjectDetails = self
+                .json(&format!("{MODRINTH_API}/project/{}", modpack.project_id))
+                .await?;
+            let version: ProjectVersion = self
+                .json(&format!("{MODRINTH_API}/version/{}", modpack.version_id))
+                .await?;
+            self.install_mrpack(project, version, build.clone()).await?;
+        } else {
+            for item in installed
+                .into_iter()
+                .filter(|item| item.version_id != "local")
+            {
+                let project: ProjectDetails = self
+                    .json(&format!("{MODRINTH_API}/project/{}", item.project_id))
+                    .await?;
+                let version: ProjectVersion = self
+                    .json(&format!("{MODRINTH_API}/version/{}", item.version_id))
+                    .await?;
+                self.install_regular(project, version, build.clone())
+                    .await?;
+            }
+        }
+        self.storage.select_build(&build.id).await
+    }
+
     async fn install_regular(
         &self,
         project: ProjectDetails,
@@ -556,7 +705,7 @@ impl ContentService {
             file.hashes.sha512.as_deref(),
             file.hashes.sha1.as_deref(),
         )
-            .await?;
+        .await?;
         let item = InstalledContent {
             id: format!("{}:{}", build.id, project.id),
             build_id: build.id,
@@ -576,7 +725,7 @@ impl ContentService {
         &self,
         project: ProjectDetails,
         version: ProjectVersion,
-        mut build: BuildSummary,
+        build: BuildSummary,
     ) -> Result<InstalledContent, LauncherError> {
         let file = version
             .files
@@ -592,6 +741,18 @@ impl ContentService {
                 file.hashes.sha1.as_deref(),
             )
             .await?;
+        self.install_mrpack_bytes(project, version.id, file.filename, bytes, build)
+            .await
+    }
+
+    async fn install_mrpack_bytes(
+        &self,
+        project: ProjectDetails,
+        pack_version_id: String,
+        pack_filename: String,
+        bytes: Vec<u8>,
+        mut build: BuildSummary,
+    ) -> Result<InstalledContent, LauncherError> {
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
             .map_err(|_| input_error("mrpack_invalid", "Файл сборки Modrinth повреждён."))?;
         let index: MrpackIndex = {
@@ -645,6 +806,7 @@ impl ContentService {
         build.loader_version = loader_version;
         build.icon_url = project.icon_url.clone();
         self.storage.upsert_build(&build).await?;
+        let mut referenced_versions = Vec::new();
         for entry in index.files {
             if entry.env.as_ref().and_then(|env| env.client.as_deref()) == Some("unsupported") {
                 continue;
@@ -660,7 +822,75 @@ impl ContentService {
                 entry.hashes.sha512.as_deref(),
                 entry.hashes.sha1.as_deref(),
             )
+            .await?;
+            if let Some((project_id, version_id)) = modrinth_ids_from_download(url) {
+                let project_type = if entry.path.starts_with("mods/") {
+                    "mod"
+                } else if entry.path.starts_with("resourcepacks/") {
+                    "resourcepack"
+                } else if entry.path.starts_with("shaderpacks/") {
+                    "shader"
+                } else {
+                    continue;
+                };
+                let filename = Path::new(&entry.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("content");
+                self.storage
+                    .upsert_installed_content(&InstalledContent {
+                        id: format!("{}:{}", build.id, project_id),
+                        build_id: build.id.clone(),
+                        project_id: project_id.clone(),
+                        version_id: version_id.clone(),
+                        project_type: project_type.to_owned(),
+                        title: filename
+                            .trim_end_matches(".jar")
+                            .trim_end_matches(".zip")
+                            .to_owned(),
+                        filename: filename.to_owned(),
+                        icon_url: None,
+                        enabled: true,
+                    })
+                    .await?;
+                if project_type == "mod" {
+                    referenced_versions.push(version_id);
+                }
+            }
+        }
+        // mrpack indexes may omit files that are declared as required dependencies
+        // by an exact project version. Resolve those edges after the indexed files
+        // are present so a partially specified pack cannot fail at Fabric startup.
+        for version_id in referenced_versions {
+            let exact: ProjectVersion = self
+                .json(&format!("{MODRINTH_API}/version/{version_id}"))
                 .await?;
+            for dependency in exact
+                .dependencies
+                .into_iter()
+                .filter(|item| item.dependency_type == "required")
+            {
+                let Some(dependency_project) = dependency.project_id else {
+                    continue;
+                };
+                if self
+                    .storage
+                    .list_installed_content(&build.id)
+                    .await?
+                    .iter()
+                    .any(|item| item.project_id == dependency_project)
+                {
+                    continue;
+                }
+                let mut visiting = HashSet::new();
+                Box::pin(self.install_project_inner(
+                    dependency_project,
+                    build.id.clone(),
+                    None,
+                    &mut visiting,
+                ))
+                .await?;
+            }
         }
         for prefix in ["overrides/", "client-overrides/"] {
             for index in 0..archive.len() {
@@ -688,16 +918,90 @@ impl ContentService {
             id: format!("{}:{}", build.id, project.id),
             build_id: build.id.clone(),
             project_id: project.id,
-            version_id: version.id,
+            version_id: pack_version_id,
             project_type: project.project_type,
             title: index.name,
-            filename: file.filename,
+            filename: pack_filename,
             icon_url: project.icon_url,
             enabled: true,
         };
         self.storage.upsert_installed_content(&item).await?;
         self.storage.select_build(&build.id).await?;
         Ok(item)
+    }
+
+    pub async fn install_local_mrpack(
+        &self,
+        source: PathBuf,
+    ) -> Result<InstalledContent, LauncherError> {
+        if source
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("mrpack"))
+            != Some(true)
+        {
+            return Err(input_error(
+                "mrpack_extension_invalid",
+                "Выберите файл сборки с расширением .mrpack.",
+            ));
+        }
+        let bytes = fs::read(&source)
+            .map_err(|_| input_error("mrpack_read_failed", "Не удалось прочитать файл сборки."))?;
+        if bytes.len() > 1_500_000_000 {
+            return Err(input_error(
+                "mrpack_too_large",
+                "Файл сборки слишком большой.",
+            ));
+        }
+        let seed = format!("{}:{}", source.to_string_lossy(), bytes.len());
+        let project_id = format!("local-mrpack-{:x}", Sha256::digest(seed.as_bytes()));
+        let id = format!(
+            "build-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let game_dir = self.paths.root.join("instances").join(&id);
+        fs::create_dir_all(&game_dir).map_err(|_| LauncherError::storage_unavailable())?;
+        let filename = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("local.mrpack")
+            .to_owned();
+        let project = ProjectDetails {
+            id: project_id,
+            title: filename.trim_end_matches(".mrpack").to_owned(),
+            project_type: "modpack".to_owned(),
+            icon_url: None,
+            description: String::new(),
+            body: String::new(),
+            downloads: 0,
+            followers: 0,
+            categories: Vec::new(),
+        };
+        let build = BuildSummary {
+            id: id.clone(),
+            name: project.title.clone(),
+            game_version: "pending".to_owned(),
+            loader: "vanilla".to_owned(),
+            loader_version: None,
+            game_dir: game_dir.to_string_lossy().into_owned(),
+            icon_url: None,
+            is_active: true,
+        };
+        self.storage.upsert_build(&build).await?;
+        match self
+            .install_mrpack_bytes(project, "local".to_owned(), filename, bytes, build)
+            .await
+        {
+            Ok(item) => Ok(item),
+            Err(error) => {
+                let _ = self.storage.delete_build(&id).await;
+                let _ = fs::remove_dir_all(game_dir);
+                Err(error)
+            }
+        }
     }
 
     async fn download_verified(
@@ -710,7 +1014,10 @@ impl ContentService {
         let bytes = self.download_bytes(url, sha512, sha1).await?;
         let temporary = target.with_extension(format!(
             "{}.part",
-            target.extension().and_then(|value| value.to_str()).unwrap_or("download")
+            target
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("download")
         ));
         fs::write(&temporary, bytes).map_err(|_| LauncherError::storage_unavailable())?;
         fs::rename(&temporary, target).map_err(|_| {
@@ -770,13 +1077,29 @@ impl ContentService {
     }
 }
 
+fn modrinth_ids_from_download(download: &str) -> Option<(String, String)> {
+    let url = url::Url::parse(download).ok()?;
+    let parts: Vec<_> = url.path_segments()?.collect();
+    let data = parts.iter().position(|part| *part == "data")?;
+    if parts.get(data + 2)? != &"versions" {
+        return None;
+    }
+    Some((
+        parts.get(data + 1)?.to_string(),
+        parts.get(data + 3)?.to_string(),
+    ))
+}
+
 fn base_game_version(build: &BuildSummary) -> &str {
     if build.loader == "fabric" || build.loader == "quilt" {
-        build
-            .game_version
-            .rsplit('-')
-            .next()
-            .unwrap_or(&build.game_version)
+        if let Some(loader_version) = build.loader_version.as_deref() {
+            let prefix = format!("{}-loader-{}-", build.loader, loader_version);
+            return build
+                .game_version
+                .strip_prefix(&prefix)
+                .unwrap_or(&build.game_version);
+        }
+        &build.game_version
     } else {
         &build.game_version
     }
@@ -814,12 +1137,55 @@ pub async fn search_modrinth(
     project_type: String,
     game_version: Option<String>,
     loader: Option<String>,
+    category: Option<String>,
+    environment: Option<String>,
+    index: Option<String>,
     offset: u32,
     service: State<'_, ContentService>,
 ) -> Result<ModrinthSearchResult, LauncherError> {
     service
-        .search(query, project_type, game_version, loader, offset)
+        .search(
+            query,
+            project_type,
+            game_version,
+            loader,
+            category,
+            environment,
+            index,
+            offset,
+        )
         .await
+}
+#[tauri::command(rename_all = "camelCase")]
+pub async fn modrinth_project(
+    project_id: String,
+    service: State<'_, ContentService>,
+) -> Result<ProjectDetails, LauncherError> {
+    service
+        .json(&format!("{MODRINTH_API}/project/{project_id}"))
+        .await
+}
+#[tauri::command(rename_all = "camelCase")]
+pub async fn modrinth_project_versions(
+    project_id: String,
+    service: State<'_, ContentService>,
+) -> Result<Vec<ModrinthVersionView>, LauncherError> {
+    let versions: Vec<ProjectVersion> = service
+        .json(&format!("{MODRINTH_API}/project/{project_id}/version"))
+        .await?;
+    Ok(versions
+        .into_iter()
+        .map(|version| ModrinthVersionView {
+            id: version.id,
+            name: version.name,
+            version_number: version.version_number,
+            version_type: version.version_type,
+            date_published: version.date_published,
+            downloads: version.downloads,
+            loaders: version.loaders,
+            game_versions: version.game_versions,
+        })
+        .collect())
 }
 #[tauri::command(rename_all = "camelCase")]
 pub async fn create_build(
@@ -833,6 +1199,14 @@ pub async fn create_build(
 #[tauri::command]
 pub async fn list_builds(storage: State<'_, Storage>) -> Result<Vec<BuildSummary>, LauncherError> {
     storage.list_builds().await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn repair_build(
+    build_id: String,
+    service: State<'_, ContentService>,
+) -> Result<BuildSummary, LauncherError> {
+    service.repair_build(build_id).await
 }
 #[tauri::command(rename_all = "camelCase")]
 pub async fn select_build(
@@ -865,12 +1239,14 @@ pub async fn delete_build(
             .as_secs()
     ));
     if source.exists() {
-        fs::rename(&source, &destination).map_err(|_| LauncherError::new(
-            "build_trash_failed",
-            "Не удалось переместить сборку в корзину.",
-            None,
-            true,
-        ))?;
+        fs::rename(&source, &destination).map_err(|_| {
+            LauncherError::new(
+                "build_trash_failed",
+                "Не удалось переместить сборку в корзину.",
+                None,
+                true,
+            )
+        })?;
     }
     if let Err(error) = service.storage.delete_build(&build.id).await {
         if destination.exists() {
@@ -884,17 +1260,42 @@ pub async fn delete_build(
 pub async fn install_modrinth_project(
     project_id: String,
     build_id: String,
+    version_id: Option<String>,
     service: State<'_, ContentService>,
 ) -> Result<InstalledContent, LauncherError> {
-    service.install_project(project_id, build_id).await
+    service
+        .install_project(project_id, build_id, version_id)
+        .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn install_modrinth_modpack(
     project_id: String,
+    version_id: Option<String>,
     service: State<'_, ContentService>,
 ) -> Result<InstalledContent, LauncherError> {
-    service.install_modpack_as_build(project_id).await
+    service
+        .install_modpack_as_build(project_id, version_id)
+        .await
+}
+#[tauri::command(rename_all = "camelCase")]
+pub async fn import_mrpack(
+    source_path: Option<String>,
+    service: State<'_, ContentService>,
+) -> Result<Option<InstalledContent>, LauncherError> {
+    let source = match source_path {
+        Some(path) => Some(PathBuf::from(path)),
+        None => choose_mrpack_file()?,
+    };
+    match source {
+        Some(path) => service.install_local_mrpack(path).await.map(Some),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub fn pending_mrpack_path(pending: State<'_, PendingMrpackPath>) -> Option<String> {
+    pending.0.lock().ok()?.take()
 }
 #[tauri::command(rename_all = "camelCase")]
 pub async fn list_installed_content(
@@ -959,21 +1360,400 @@ pub async fn set_installed_content_enabled(
         "mod" => "mods",
         "resourcepack" => "resourcepacks",
         "shader" => "shaderpacks",
-        _ => return Err(input_error("content_toggle_unsupported", "Этот элемент нельзя отключить отдельно.")),
+        _ => {
+            return Err(input_error(
+                "content_toggle_unsupported",
+                "Этот элемент нельзя отключить отдельно.",
+            ))
+        }
     };
     let root = PathBuf::from(build.game_dir).join(folder);
     let normal = safe_child(&root, &item.filename)?;
     let disabled = safe_child(&root, &format!("{}.disabled", item.filename))?;
-    let (source, destination) = if enabled { (&disabled, &normal) } else { (&normal, &disabled) };
-    fs::rename(source, destination).map_err(|_| LauncherError::new(
-        "content_toggle_failed",
-        "Не удалось изменить состояние файла. Возможно, он был перемещён вручную.",
-        None,
-        true,
-    ))?;
+    let (source, destination) = if enabled {
+        (&disabled, &normal)
+    } else {
+        (&normal, &disabled)
+    };
+    fs::rename(source, destination).map_err(|_| {
+        LauncherError::new(
+            "content_toggle_failed",
+            "Не удалось изменить состояние файла. Возможно, он был перемещён вручную.",
+            None,
+            true,
+        )
+    })?;
     item.enabled = enabled;
     service_upsert_installed(&storage, &item).await?;
     Ok(item)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn import_local_content(
+    build_id: String,
+    project_type: String,
+    storage: State<'_, Storage>,
+) -> Result<Vec<InstalledContent>, LauncherError> {
+    let build = storage
+        .list_builds()
+        .await?
+        .into_iter()
+        .find(|item| item.id == build_id)
+        .ok_or_else(|| input_error("build_not_found", "Сборка не найдена."))?;
+    let (folder, extension) = match project_type.as_str() {
+        "mod" => ("mods", "jar"),
+        "resourcepack" => ("resourcepacks", "zip"),
+        "shader" => ("shaderpacks", "zip"),
+        _ => {
+            return Err(input_error(
+                "local_content_unsupported",
+                "Этот тип локального контента не поддерживается.",
+            ))
+        }
+    };
+    let sources = choose_content_files(extension)?;
+    let target_dir = PathBuf::from(&build.game_dir).join(folder);
+    fs::create_dir_all(&target_dir).map_err(|_| LauncherError::storage_unavailable())?;
+    let mut imported = Vec::new();
+    for source in sources {
+        let filename = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                input_error(
+                    "local_content_invalid",
+                    "Имя выбранного файла не поддерживается.",
+                )
+            })?;
+        if source
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+            != Some(extension)
+        {
+            return Err(input_error(
+                "local_content_invalid",
+                "Выбран файл неподдерживаемого формата.",
+            ));
+        }
+        let target = safe_child(&target_dir, filename)?;
+        fs::copy(&source, &target).map_err(|_| LauncherError::storage_unavailable())?;
+        let project_id = format!(
+            "local-{:x}",
+            Sha256::digest(format!("{}:{}", build.id, filename).as_bytes())
+        );
+        let item = InstalledContent {
+            id: format!("{}:{}", build.id, project_id),
+            build_id: build.id.clone(),
+            project_id,
+            version_id: "local".to_owned(),
+            project_type: project_type.clone(),
+            title: source
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or(filename)
+                .to_owned(),
+            filename: filename.to_owned(),
+            icon_url: None,
+            enabled: true,
+        };
+        storage.upsert_installed_content(&item).await?;
+        imported.push(item);
+    }
+    Ok(imported)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn open_build_folder(
+    build_id: String,
+    storage: State<'_, Storage>,
+) -> Result<(), LauncherError> {
+    let build = storage
+        .list_builds()
+        .await?
+        .into_iter()
+        .find(|item| item.id == build_id)
+        .ok_or_else(|| input_error("build_not_found", "Сборка не найдена."))?;
+    std::process::Command::new("explorer.exe")
+        .arg(&build.game_dir)
+        .spawn()
+        .map_err(|_| input_error("folder_open_failed", "Не удалось открыть папку сборки."))?;
+    Ok(())
+}
+
+fn find_build(
+    storage_builds: Vec<BuildSummary>,
+    build_id: &str,
+) -> Result<BuildSummary, LauncherError> {
+    storage_builds
+        .into_iter()
+        .find(|item| item.id == build_id)
+        .ok_or_else(|| input_error("build_not_found", "Сборка не найдена."))
+}
+
+fn metadata_time(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn directory_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let Ok(metadata) = entry.metadata() else {
+                return 0;
+            };
+            if metadata.is_dir() {
+                directory_size(&entry.path())
+            } else {
+                metadata.len()
+            }
+        })
+        .sum()
+}
+
+fn relative_target(root: &Path, relative: &str) -> Result<PathBuf, LauncherError> {
+    if relative.trim().is_empty() {
+        Ok(root.to_path_buf())
+    } else {
+        safe_relative(root, relative)
+    }
+}
+
+fn file_entry(root: &Path, path: &Path) -> Result<BuildFileEntry, LauncherError> {
+    let metadata = path
+        .metadata()
+        .map_err(|_| LauncherError::storage_unavailable())?;
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| LauncherError::invalid_path())?;
+    Ok(BuildFileEntry {
+        name: path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Файл")
+            .to_owned(),
+        relative_path: relative.to_string_lossy().replace('\\', "/"),
+        kind: if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        }
+        .to_owned(),
+        size: if metadata.is_file() {
+            metadata.len()
+        } else {
+            directory_size(path)
+        },
+        modified_at: metadata_time(&metadata),
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_build_files(
+    build_id: String,
+    relative_path: String,
+    storage: State<'_, Storage>,
+) -> Result<Vec<BuildFileEntry>, LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(build.game_dir);
+    let target = relative_target(&root, &relative_path)?;
+    if !target.is_dir() {
+        return Err(input_error("folder_not_found", "Папка сборки не найдена."));
+    }
+    let mut result = fs::read_dir(&target)
+        .map_err(|_| LauncherError::storage_unavailable())?
+        .flatten()
+        .filter_map(|entry| file_entry(&root, &entry.path()).ok())
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| {
+        a.kind
+            .cmp(&b.kind)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(result)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_build_worlds(
+    build_id: String,
+    storage: State<'_, Storage>,
+) -> Result<Vec<BuildWorldSummary>, LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let saves = PathBuf::from(build.game_dir).join("saves");
+    if !saves.exists() {
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::new();
+    for entry in fs::read_dir(&saves)
+        .map_err(|_| LauncherError::storage_unavailable())?
+        .flatten()
+    {
+        let metadata = match entry.metadata() {
+            Ok(value) if value.is_dir() => value,
+            _ => continue,
+        };
+        result.push(BuildWorldSummary {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            relative_path: format!("saves/{}", entry.file_name().to_string_lossy()),
+            size: directory_size(&entry.path()),
+            modified_at: metadata_time(&metadata),
+        });
+    }
+    result.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    Ok(result)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_build_logs(
+    build_id: String,
+    storage: State<'_, Storage>,
+) -> Result<Vec<BuildLogSummary>, LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(build.game_dir);
+    let logs = root.join("logs");
+    if !logs.exists() {
+        return Ok(Vec::new());
+    }
+    let mut result = fs::read_dir(logs)
+        .map_err(|_| LauncherError::storage_unavailable())?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.is_file() {
+                file_entry(&root, &path).ok()
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    Ok(result)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn read_build_log(
+    build_id: String,
+    relative_path: String,
+    storage: State<'_, Storage>,
+) -> Result<String, LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(build.game_dir);
+    let target = safe_relative(&root, &relative_path)?;
+    if target.parent() != Some(&root.join("logs")) || !target.is_file() {
+        return Err(LauncherError::invalid_path());
+    }
+    let bytes = fs::read(target).map_err(|_| LauncherError::storage_unavailable())?;
+    let start = bytes.len().saturating_sub(2 * 1024 * 1024);
+    Ok(String::from_utf8_lossy(&bytes[start..]).into_owned())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn open_build_path(
+    build_id: String,
+    relative_path: String,
+    storage: State<'_, Storage>,
+) -> Result<(), LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(build.game_dir);
+    let target = relative_target(&root, &relative_path)?;
+    if !target.exists() {
+        return Err(input_error("path_not_found", "Файл или папка не найдены."));
+    }
+    std::process::Command::new("explorer.exe")
+        .arg(target)
+        .spawn()
+        .map_err(|_| input_error("folder_open_failed", "Не удалось открыть файл или папку."))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn choose_content_files(extension: &str) -> Result<Vec<PathBuf>, LauncherError> {
+    use std::{mem::size_of, os::windows::ffi::OsStringExt};
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST,
+        OPENFILENAMEW,
+    };
+    let mut file = vec![0_u16; 65_536];
+    let label = if extension == "jar" {
+        "Моды Minecraft (*.jar)\0*.jar\0\0"
+    } else {
+        "Архивы Minecraft (*.zip)\0*.zip\0\0"
+    };
+    let filter: Vec<u16> = label.encode_utf16().collect();
+    let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    dialog.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+    dialog.lpstrFile = file.as_mut_ptr();
+    dialog.nMaxFile = file.len() as u32;
+    dialog.lpstrFilter = filter.as_ptr();
+    dialog.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+        return Ok(Vec::new());
+    }
+    let values: Vec<_> = file
+        .split(|unit| *unit == 0)
+        .take_while(|part| !part.is_empty())
+        .map(|part| PathBuf::from(std::ffi::OsString::from_wide(part)))
+        .collect();
+    if values.len() <= 1 {
+        return Ok(values);
+    }
+    Ok(values[1..]
+        .iter()
+        .map(|name| values[0].join(name))
+        .collect())
+}
+
+#[cfg(windows)]
+fn choose_mrpack_file() -> Result<Option<PathBuf>, LauncherError> {
+    use std::{mem::size_of, os::windows::ffi::OsStringExt};
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+    let mut file = vec![0_u16; 32_768];
+    let filter: Vec<u16> = "Сборки Modrinth (*.mrpack)\0*.mrpack\0\0"
+        .encode_utf16()
+        .collect();
+    let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    dialog.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+    dialog.lpstrFile = file.as_mut_ptr();
+    dialog.nMaxFile = file.len() as u32;
+    dialog.lpstrFilter = filter.as_ptr();
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+        return Ok(None);
+    }
+    let length = file
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(file.len());
+    Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
+        &file[..length],
+    ))))
+}
+
+#[cfg(not(windows))]
+fn choose_mrpack_file() -> Result<Option<PathBuf>, LauncherError> {
+    Err(input_error(
+        "mrpack_picker_unavailable",
+        "Выбор .mrpack доступен только в Windows.",
+    ))
+}
+
+#[cfg(not(windows))]
+fn choose_content_files(_extension: &str) -> Result<Vec<PathBuf>, LauncherError> {
+    Err(input_error(
+        "content_picker_unavailable",
+        "Локальный импорт доступен только в Windows.",
+    ))
 }
 
 async fn service_upsert_installed(
@@ -1002,12 +1782,6 @@ pub async fn add_offline_skin(
     account_id: String,
     service: State<'_, ContentService>,
 ) -> Result<Option<OfflineSkinView>, LauncherError> {
-    if !account_id.starts_with("offline:") {
-        return Err(input_error(
-            "offline_skin_only",
-            "Локальная галерея доступна для офлайн-профилей.",
-        ));
-    }
     let Some(source) = choose_png_file()? else {
         return Ok(None);
     };
@@ -1038,6 +1812,203 @@ pub async fn add_offline_skin(
     };
     service.storage.add_offline_skin(&skin).await?;
     service.skin_view(skin).map(Some)
+}
+
+const MINECRAFT_PROFILE_ENDPOINT: &str = "https://api.minecraftservices.com/minecraft/profile";
+const MINECRAFT_SKINS_ENDPOINT: &str = "https://api.minecraftservices.com/minecraft/profile/skins";
+const MINECRAFT_CAPE_ENDPOINT: &str =
+    "https://api.minecraftservices.com/minecraft/profile/capes/active";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinecraftCosmetics {
+    id: String,
+    name: String,
+    #[serde(default)]
+    skins: Vec<MinecraftSkin>,
+    #[serde(default)]
+    capes: Vec<MinecraftCape>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinecraftSkin {
+    id: String,
+    state: String,
+    url: String,
+    variant: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinecraftCape {
+    id: String,
+    state: String,
+    url: String,
+    alias: String,
+}
+
+async fn online_account_token(
+    account_id: &str,
+    auth: &crate::auth::AuthService,
+) -> Result<String, LauncherError> {
+    if account_id.starts_with("offline:") {
+        return Err(input_error(
+            "minecraft_account_required",
+            "Для изменения официального скина войдите через Microsoft.",
+        ));
+    }
+    let refreshed = auth.refresh_active_minecraft_account().await?;
+    let (account, token) = refreshed.into_parts();
+    if account.id != account_id {
+        return Err(input_error(
+            "account_not_active",
+            "Выберите этот Minecraft-аккаунт в меню профиля.",
+        ));
+    }
+    Ok(token)
+}
+
+async fn cosmetics_response(
+    response: reqwest::Response,
+) -> Result<MinecraftCosmetics, LauncherError> {
+    if !response.status().is_success() {
+        return Err(LauncherError::new(
+            "minecraft_cosmetics_failed",
+            "Minecraft Services не удалось изменить внешний вид профиля.",
+            Some(format!("HTTP {}", response.status().as_u16())),
+            true,
+        ));
+    }
+    response.json().await.map_err(|_| {
+        LauncherError::new(
+            "minecraft_cosmetics_invalid",
+            "Minecraft Services вернул некорректные данные профиля.",
+            None,
+            true,
+        )
+    })
+}
+
+fn cosmetics_network_error() -> LauncherError {
+    LauncherError::new(
+        "minecraft_cosmetics_unavailable",
+        "Minecraft Services сейчас недоступен. Попробуйте ещё раз.",
+        None,
+        true,
+    )
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn minecraft_cosmetics(
+    account_id: String,
+    auth: State<'_, std::sync::Arc<crate::auth::AuthService>>,
+) -> Result<MinecraftCosmetics, LauncherError> {
+    let token = online_account_token(&account_id, auth.inner().as_ref()).await?;
+    let response = reqwest::Client::new()
+        .get(MINECRAFT_PROFILE_ENDPOINT)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| cosmetics_network_error())?;
+    cosmetics_response(response).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn apply_minecraft_skin(
+    account_id: String,
+    skin_id: String,
+    variant: String,
+    service: State<'_, ContentService>,
+    auth: State<'_, std::sync::Arc<crate::auth::AuthService>>,
+) -> Result<MinecraftCosmetics, LauncherError> {
+    let variant = match variant.to_ascii_lowercase().as_str() {
+        "slim" => "slim",
+        "classic" => "classic",
+        _ => {
+            return Err(input_error(
+                "skin_variant_invalid",
+                "Выберите модель Классическая или Тонкая.",
+            ))
+        }
+    };
+    let skin = service
+        .storage
+        .list_offline_skins(&account_id)
+        .await?
+        .into_iter()
+        .find(|skin| skin.id == skin_id)
+        .ok_or_else(|| input_error("skin_not_found", "Скин не найден в библиотеке."))?;
+    let bytes = fs::read(&skin.file_path).map_err(|_| LauncherError::storage_unavailable())?;
+    validate_skin_png(&bytes)?;
+    let token = online_account_token(&account_id, auth.inner().as_ref()).await?;
+    let boundary = format!(
+        "----CKLauncher{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let mut body = Vec::with_capacity(bytes.len() + 512);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"variant\"\r\n\r\n{variant}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"skin.png\"\r\nContent-Type: image/png\r\n\r\n").as_bytes());
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let response = reqwest::Client::new()
+        .post(MINECRAFT_SKINS_ENDPOINT)
+        .bearer_auth(token)
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .map_err(|_| cosmetics_network_error())?;
+    let profile = cosmetics_response(response).await?;
+    service
+        .storage
+        .select_offline_skin(&account_id, &skin_id)
+        .await?;
+    Ok(profile)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn activate_minecraft_cape(
+    account_id: String,
+    cape_id: Option<String>,
+    auth: State<'_, std::sync::Arc<crate::auth::AuthService>>,
+) -> Result<MinecraftCosmetics, LauncherError> {
+    let token = online_account_token(&account_id, auth.inner().as_ref()).await?;
+    let client = reqwest::Client::new();
+    let request = if let Some(cape_id) = cape_id {
+        client
+            .put(MINECRAFT_CAPE_ENDPOINT)
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "capeId": cape_id }))
+    } else {
+        client.delete(MINECRAFT_CAPE_ENDPOINT).bearer_auth(&token)
+    };
+    let response = request
+        .send()
+        .await
+        .map_err(|_| cosmetics_network_error())?;
+    if response.status().is_success() && response.status() == reqwest::StatusCode::NO_CONTENT {
+        let refreshed = client
+            .get(MINECRAFT_PROFILE_ENDPOINT)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| cosmetics_network_error())?;
+        cosmetics_response(refreshed).await
+    } else {
+        cosmetics_response(response).await
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]

@@ -49,7 +49,6 @@ function createApi(handlers: EventHandlers) {
   return {
     listAccounts: vi.fn(async () => accounts),
     beginMicrosoftLogin: vi.fn(async () => accounts[0]),
-    createOfflineAccount: vi.fn(async () => accounts[0]),
     cancelMicrosoftLogin: vi.fn(async () => undefined),
     removeAccount: vi.fn(async () => undefined),
     setActiveAccount: vi.fn(async () => undefined),
@@ -57,6 +56,22 @@ function createApi(handlers: EventHandlers) {
       { id: "1.21.8", type: "release", releaseDate: "2026-07-17T00:00:00Z" },
       { id: "1.20.1", type: "release", releaseDate: "2023-06-12T00:00:00Z" },
     ]),
+    listBuilds: vi.fn(async () => [{
+      id: "main-build",
+      name: "Основной профиль",
+      gameVersion: "1.20.1",
+      loader: "vanilla",
+      gameDir: "C:\\safe\\game",
+      isActive: true,
+    }]),
+    selectBuild: vi.fn(async () => ({
+      id: "main-build",
+      name: "Основной профиль",
+      gameVersion: "1.20.1",
+      loader: "vanilla",
+      gameDir: "C:\\safe\\game",
+      isActive: true,
+    })),
     requiredJavaForVersion: vi.fn(async (versionId: string) => versionId === "1.20.1" ? 8 as const : 21 as const),
     getProfile: vi.fn(async () => ({
       id: "default",
@@ -89,6 +104,13 @@ function createApi(handlers: EventHandlers) {
     launchOrInstall: vi.fn(async () => "operation-current"),
     cancelOperation: vi.fn(async () => undefined),
     openLatestGameLog: vi.fn(async () => undefined),
+    listOfflineSkins: vi.fn(async () => []),
+    minecraftCosmetics: vi.fn(async () => ({
+      id: "uuid-kvander",
+      name: "Kvander",
+      skins: [],
+      capes: [],
+    })),
     onProgress: vi.fn(async (handler) => {
       handlers.progress = handler;
       return () => undefined;
@@ -119,15 +141,25 @@ afterEach(() => {
 });
 
 describe("launcher application", () => {
-  it("selects a stable version, launches the current profile, and shows current 50% progress", async () => {
+  it("warms the active Minecraft cosmetics before the skins page is opened", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
     renderApp(api);
 
-    const version = await screen.findByRole("combobox", { name: "Версия Minecraft" });
+    await screen.findByRole("button", { name: "Играть" });
+    await waitFor(() => {
+      expect(api.listOfflineSkins).toHaveBeenCalledWith("kvander");
+      expect(api.minecraftCosmetics).toHaveBeenCalledWith("kvander");
+    });
+  });
+
+  it("launches the current profile and shows current 50% progress", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    renderApp(api);
+
+    await screen.findByLabelText("Лаунчер для комфортной игры");
     expect(screen.getByText("Kvander")).toBeTruthy();
-    expect(screen.getByText("4096 МБ")).toBeTruthy();
-    fireEvent.change(version, { target: { value: "1.21.8" } });
     fireEvent.click(screen.getByRole("button", { name: "Играть" }));
 
     await waitFor(() => expect(api.launchOrInstall).toHaveBeenCalledWith("default"));
@@ -200,17 +232,15 @@ describe("launcher application", () => {
     }
   });
 
-  it("shows runtime readiness for the Java major required by the selected version", async () => {
+  it("keeps technical version, memory, and Java facts off the minimal home page", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
     renderApp(api);
 
-    const version = await screen.findByRole("combobox", { name: "Версия Minecraft" });
-    expect(await screen.findByText("Java 8 не найдена")).toBeTruthy();
-    fireEvent.change(version, { target: { value: "1.21.8" } });
-
-    expect(await screen.findByText("Java 21 готова")).toBeTruthy();
-    expect(api.requiredJavaForVersion).toHaveBeenCalledWith("1.21.8");
+    await screen.findByLabelText("Лаунчер для комфортной игры");
+    expect(screen.queryByRole("combobox", { name: "Версия Minecraft" })).toBeNull();
+    expect(screen.queryByText(/Java 8/)).toBeNull();
+    expect(screen.queryByText("4096 МБ")).toBeNull();
   });
 
   it("ignores stale events, disables play while busy, and separates recoverable from fatal errors", async () => {
@@ -427,7 +457,7 @@ describe("launcher application", () => {
     expect(api.chooseGameDirectory).toHaveBeenCalledWith();
   });
 
-  it("saves only memory without reverting a version changed while the save is in flight", async () => {
+  it("keeps a memory save in flight across page navigation", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
     renderApp(api);
@@ -450,8 +480,6 @@ describe("launcher application", () => {
 
     vi.useRealTimers();
     fireEvent.click(screen.getByRole("button", { name: "Главная" }));
-    const version = await screen.findByRole("combobox", { name: "Версия Minecraft" });
-    fireEvent.change(version, { target: { value: "1.21.8" } });
     await act(async () => {
       resolveMemory?.({
         id: "default",
@@ -464,8 +492,8 @@ describe("launcher application", () => {
       await Promise.resolve();
     });
 
-    expect((version as HTMLSelectElement).value).toBe("1.21.8");
-    expect(screen.getByText("5120 МБ")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Настройки" }));
+    expect((await screen.findByRole("slider", { name: "Оперативная память" }) as HTMLInputElement).value).toBe("5120");
   });
 
   it("persists a debounced memory change after immediate page navigation", async () => {
@@ -485,7 +513,9 @@ describe("launcher application", () => {
     });
 
     expect(api.updateMemory).toHaveBeenCalledWith(6144);
-    expect(screen.getByText("6144 МБ")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Настройки" }));
+    await act(async () => { await Promise.resolve(); });
+    expect((screen.getByRole("slider", { name: "Оперативная память" }) as HTMLInputElement).value).toBe("6144");
   });
 
   it("reverts memory and exposes a retryable status when persistence fails", async () => {
@@ -596,7 +626,9 @@ describe("launcher application", () => {
       await Promise.resolve();
     });
     expect(api.updateMemory.mock.calls.map(([memoryMb]) => memoryMb)).toEqual([5120, 7168]);
-    expect(screen.getByText("7168 МБ")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Настройки" }));
+    await act(async () => { await Promise.resolve(); });
+    expect((screen.getByRole("slider", { name: "Оперативная память" }) as HTMLInputElement).value).toBe("7168");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 

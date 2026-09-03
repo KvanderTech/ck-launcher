@@ -29,7 +29,6 @@ function mockApi(overrides: Partial<LauncherApi> = {}): LauncherApi {
   return {
     listAccounts: vi.fn(async () => accounts),
     beginMicrosoftLogin: vi.fn(async () => accounts[0]),
-    createOfflineAccount: vi.fn(async () => accounts[0]),
     cancelMicrosoftLogin: vi.fn(async () => undefined),
     removeAccount: vi.fn(async () => undefined),
     setActiveAccount: vi.fn(async () => undefined),
@@ -70,6 +69,21 @@ describe("AccountMenu", () => {
     expect(screen.getByRole("alert").textContent).toBe("Не удалось войти.");
     expect(screen.getByRole("menuitem", { name: "Повторить вход" })).toBeTruthy();
     expect(screen.getByRole("menu", { name: "Аккаунты Minecraft" })).toBeTruthy();
+  });
+
+  it("closes outside and removes the active account on logout", async () => {
+    const api = mockApi();
+    const onAccountRemoved = vi.fn();
+    render(<><AccountMenu accounts={accounts} api={api} onAccountRemoved={onAccountRemoved} /><div data-testid="outside" /></>);
+
+    fireEvent.click(screen.getByTestId("active-account-panel"));
+    fireEvent.pointerDown(screen.getByTestId("outside"));
+    expect(screen.queryByRole("menu", { name: "Аккаунты Minecraft" })).toBeNull();
+
+    fireEvent.click(screen.getByTestId("active-account-panel"));
+    await act(async () => { fireEvent.click(screen.getByRole("menuitem", { name: /Выйти из аккаунта/ })); });
+    expect(api.removeAccount).toHaveBeenCalledWith("one");
+    expect(onAccountRemoved).toHaveBeenCalledWith("one");
   });
 });
 

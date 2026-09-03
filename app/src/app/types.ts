@@ -80,6 +80,28 @@ export interface BuildSummary {
   isActive: boolean;
 }
 
+export interface BuildFileEntry {
+  name: string;
+  relativePath: string;
+  kind: "file" | "directory";
+  size: number;
+  modifiedAt: number;
+}
+
+export interface BuildWorldSummary {
+  name: string;
+  relativePath: string;
+  size: number;
+  modifiedAt: number;
+}
+
+export interface BuildLogSummary {
+  name: string;
+  relativePath: string;
+  size: number;
+  modifiedAt: number;
+}
+
 export type ModrinthProjectType = "modpack" | "mod" | "resourcepack" | "shader";
 
 export interface ModrinthProject {
@@ -103,6 +125,16 @@ export interface ModrinthSearchResult {
   total_hits: number;
 }
 
+export interface ModrinthProjectDetails {
+  id: string; title: string; project_type: ModrinthProjectType; icon_url?: string;
+  description: string; body: string; downloads: number; followers: number; categories: string[];
+}
+
+export interface ModrinthVersion {
+  id: string; name: string; version_number: string; version_type: string;
+  date_published: string; downloads: number; loaders: string[]; game_versions: string[];
+}
+
 export interface InstalledContent {
   id: string;
   buildId: string;
@@ -121,6 +153,27 @@ export interface OfflineSkin {
   name: string;
   dataUrl: string;
   isActive: boolean;
+}
+
+export interface MinecraftSkin {
+  id: string;
+  state: string;
+  url: string;
+  variant: "CLASSIC" | "SLIM" | string;
+}
+
+export interface MinecraftCape {
+  id: string;
+  state: string;
+  url: string;
+  alias: string;
+}
+
+export interface MinecraftCosmetics {
+  id: string;
+  name: string;
+  skins: MinecraftSkin[];
+  capes: MinecraftCape[];
 }
 
 export interface GameStartedEvent {

@@ -415,10 +415,18 @@ fn minecraft_26_2_and_fabric_java_25_arguments_are_accepted_exactly() {
 
     let prepared = build_launch(request).expect("official Minecraft 26.2 arguments build");
     let args = strings(&prepared.command.args);
-    assert!(args.iter().any(|value| value == "--sun-misc-unsafe-memory-access=allow"));
-    assert!(args.iter().any(|value| value == "--enable-native-access=ALL-UNNAMED"));
-    assert!(args.iter().any(|value| value == "-DFabricMcEmu= net.minecraft.client.main.Main "));
-    assert!(args.iter().any(|value| value.ends_with("/java") && value.starts_with("-Djava.library.path=")));
+    assert!(args
+        .iter()
+        .any(|value| value == "--sun-misc-unsafe-memory-access=allow"));
+    assert!(args
+        .iter()
+        .any(|value| value == "--enable-native-access=ALL-UNNAMED"));
+    assert!(args
+        .iter()
+        .any(|value| value == "-DFabricMcEmu= net.minecraft.client.main.Main "));
+    assert!(args
+        .iter()
+        .any(|value| value.ends_with("/java") && value.starts_with("-Djava.library.path=")));
 }
 
 #[test]
