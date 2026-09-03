@@ -110,7 +110,7 @@
 .is-compact .settings-grid { align-items:start; gap:14px; grid-template-columns:minmax(300px,360px) minmax(0,1fr); margin-top:8px; }
 .is-compact .settings-column { align-content:start; gap:12px; min-width:0; }
 .is-compact .settings-card,
-.is-compact .settings-page section[aria-labelledby="memory-settings-title"] { background:linear-gradient(145deg,rgba(14,35,59,.94),rgba(8,24,43,.92)); border-color:rgba(111,198,246,.17); border-radius:19px; min-height:0; padding:16px 18px; }
+.is-compact .settings-page section[aria-labelledby="memory-settings-title"] { background:linear-gradient(145deg,rgba(14,35,59,.94),rgba(8,24,43,.92)); border-color:rgba(111,198,246,.17); border-radius:19px; box-sizing:border-box; min-height:0; min-width:0; overflow:hidden; padding:16px 18px; width:100%; }
 .is-compact .settings-page section[aria-labelledby="memory-settings-title"] { display:grid; gap:10px; }
 .is-compact .settings-page section[aria-labelledby="memory-settings-title"] h2,
 .is-compact .settings-card h2 { margin:0; }
