@@ -448,7 +448,7 @@ impl ContentService {
                 "Modrinth вернул циклическую зависимость. Установка остановлена безопасно.",
             ));
         }
-        let build = self
+        let mut build = self
             .storage
             .list_builds()
             .await?
@@ -503,10 +503,12 @@ impl ContentService {
             return self.install_mrpack(project, version, build).await;
         }
         if project.project_type == "mod" && build.loader == "vanilla" {
-            return Err(input_error(
-                "mod_loader_required",
-                "Для модов создайте сборку Fabric.",
-            ));
+            let minecraft = base_game_version.to_owned();
+            let installed = self.install_fabric_profile(&minecraft, None).await?;
+            build.loader = "fabric".to_owned();
+            build.loader_version = Some(installed.clone());
+            build.game_version = format!("fabric-loader-{installed}-{minecraft}");
+            self.storage.upsert_build(&build).await?;
         }
         let installed = self.storage.list_installed_content(&build.id).await?;
         for dependency in &version.dependencies {

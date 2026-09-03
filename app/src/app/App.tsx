@@ -71,7 +71,6 @@ export default function App({ api = appApi }: AppProps) {
   const [operationError, setOperationError] = useState<LauncherErrorDto>();
   const [operationWarning, setOperationWarning] = useState<LauncherErrorDto>();
   const [operationLogPath, setOperationLogPath] = useState<string>();
-  const [cancelling, setCancelling] = useState(false);
   const [memorySaveState, setMemorySaveState] = useState<MemorySaveState>("idle");
   const [contentInstallTask, setContentInstallTask] = useState<ContentInstallTask>();
   const [libraryTarget, setLibraryTarget] = useState<{ id: string; nonce: number }>();
@@ -416,16 +415,6 @@ export default function App({ api = appApi }: AppProps) {
     }
   }
 
-  async function cancelCurrentOperation() {
-    if (!operationId.current || cancelling) return;
-    setCancelling(true);
-    try {
-      await api.cancelOperation(operationId.current);
-    } finally {
-      setCancelling(false);
-    }
-  }
-
   async function openLatestGameLog() {
     try {
       await api.openLatestGameLog();
@@ -578,7 +567,7 @@ export default function App({ api = appApi }: AppProps) {
         </div>
       </main>
       {contentInstallTask && <aside className={`content-install-toast global-install-toast${contentInstallTask.error ? " is-error" : ""}`} role={contentInstallTask.error ? "alert" : "status"}>{contentInstallTask.project.icon_url ? <img alt="" src={contentInstallTask.project.icon_url} /> : <span>{contentInstallTask.project.title[0]}</span>}<div><strong>{contentInstallTask.project.title}</strong><p>{contentInstallTask.error ?? contentInstallTask.stage}</p></div>{contentInstallTask.error ? <button aria-label="Закрыть сообщение об установке" onClick={() => setContentInstallTask(undefined)} type="button">×</button> : <><i /><small>{contentInstallTask.step}/3</small></>}</aside>}
-      {progress && (viewState === "installing" || viewState === "launching") && (() => { const activeBuild = builds.find((build) => build.isActive); const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i className="determinate" style={{ width: `${percent}%` }} /><small>{percent}%</small><button aria-label={cancelling ? "Отменяем…" : "Отменить"} disabled={cancelling} onClick={() => void cancelCurrentOperation()} type="button">×</button></aside>; })()}
+      {progress && (viewState === "installing" || viewState === "launching") && (() => { const activeBuild = builds.find((build) => build.isActive); const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i /><small>{percent}%</small></aside>; })()}
       {deleteTask && <aside className={`delete-build-toast${deleteTask.error ? " is-error" : ""}`} role={deleteTask.error ? "alert" : "dialog"}>{deleteTask.build.iconUrl ? <img alt="" src={deleteTask.build.iconUrl} /> : <span>{deleteTask.build.name[0]}</span>}<div><strong>{deleteTask.deleting ? "Удаляем сборку…" : `Удалить «${deleteTask.build.name}»?`}</strong><p>{deleteTask.error ?? "Сборка будет перемещена во внутреннюю корзину."}</p><div className="delete-toast-actions"><button disabled={deleteTask.deleting} onClick={() => setDeleteTask(undefined)} type="button">Отмена</button><button disabled={deleteTask.deleting} onClick={() => void confirmBuildDelete()} type="button">{deleteTask.deleting ? "Удаление…" : "Удалить"}</button></div></div></aside>}
     </div>
   );
