@@ -115,6 +115,7 @@ export interface ContentApi {
   openBuildPath(buildId: string, relativePath?: string): Promise<void>;
   listOfflineSkins(accountId: string): Promise<OfflineSkin[]>;
   addOfflineSkin(accountId: string): Promise<OfflineSkin | null>;
+  deleteOfflineSkin(accountId: string, skinId: string): Promise<void>;
   selectOfflineSkin(accountId: string, skinId: string): Promise<OfflineSkin>;
   minecraftCosmetics(accountId: string): Promise<MinecraftCosmetics>;
   applyMinecraftSkin(accountId: string, skinId: string, variant: "classic" | "slim"): Promise<MinecraftCosmetics>;
@@ -180,6 +181,7 @@ export const appApi: AppApi = {
   openBuildPath: (buildId, relativePath = "") => invoke<void>("open_build_path", { buildId, relativePath }),
   listOfflineSkins: (accountId) => invoke<OfflineSkin[]>("list_offline_skins", { accountId }),
   addOfflineSkin: (accountId) => invoke<OfflineSkin | null>("add_offline_skin", { accountId }),
+  deleteOfflineSkin: (accountId, skinId) => invoke<void>("delete_offline_skin", { accountId, skinId }),
   selectOfflineSkin: (accountId, skinId) => invoke<OfflineSkin>("select_offline_skin", { accountId, skinId }),
   minecraftCosmetics: (accountId) => invoke<MinecraftCosmetics>("minecraft_cosmetics", { accountId }),
   applyMinecraftSkin: (accountId, skinId, variant) => invoke<MinecraftCosmetics>("apply_minecraft_skin", { accountId, skinId, variant }),

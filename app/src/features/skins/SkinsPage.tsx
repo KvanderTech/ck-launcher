@@ -49,6 +49,16 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(undefined); }
   }
 
+  async function deleteSkin(skin: OfflineSkin) {
+    if (!window.confirm("Удалить этот скин из библиотеки?")) return;
+    setBusy(`delete:${skin.id}`); setError(undefined);
+    try {
+      await api.deleteOfflineSkin(account.id, skin.id);
+      onSkinsChange(skins.filter((item) => item.id !== skin.id));
+      if (selected?.id === skin.id) setSelectedId(null);
+    } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(undefined); }
+  }
+
   async function setCape(capeId?: string) {
     setBusy(`cape:${capeId ?? "none"}`); setError(undefined);
     try { onCosmeticsChange(await api.activateMinecraftCape(account.id, capeId)); }
@@ -62,14 +72,14 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
       <section className="skin-viewer-card cosmetics-preview">
         <div className="preview-badge">{selected ? "Предпросмотр" : "Текущий скин"}</div>
         {previewSkin ? <SkinCanvas skin={previewSkin} cape={selected ? undefined : cosmetics?.capes.find((cape) => cape.state === "ACTIVE")?.url} /> : <div className="skin-empty"><span className="skin-empty-icon">＋</span>Добавьте PNG-скин<br />64×64 или 64×32</div>}
-        <div className="preview-meta"><strong>{selected?.name ?? account.minecraftName}</strong></div>
+        <div className="preview-meta"><strong>{account.minecraftName}</strong></div>
       </section>
       <div className="cosmetics-content">
         <section className="cosmetics-panel">
           <div className="cosmetics-panel-head"><div><span className="section-kicker">Библиотека</span><h2>Мои скины</h2><p>PNG хранятся на этом компьютере и доступны для быстрой смены.</p></div><button className="add-png-button" disabled={Boolean(busy)} onClick={() => void addSkin()} type="button"><span>＋</span>{busy === "add" ? "Добавление…" : "Добавить PNG"}</button></div>
           <div className="saved-skin-grid cosmetics-skin-grid">
             {licensedSkin ? <button aria-label="Текущий скин аккаунта" className={!selected ? "saved-skin active licensed-skin" : "saved-skin licensed-skin"} data-sound="skin-select" onClick={() => setSelectedId(null)} title="Текущий скин аккаунта" type="button"><SkinCanvas skin={licensedSkin.url} compact /></button> : null}
-            {skins.map((skin) => <button aria-label={`Выбрать скин ${skin.name}`} className={selected?.id === skin.id ? "saved-skin active" : "saved-skin"} data-sound="skin-select" key={skin.id} onClick={() => setSelectedId(skin.id)} title={skin.name} type="button"><SkinCanvas skin={skin.dataUrl} compact /></button>)}
+            {skins.map((skin) => <div className="saved-skin-card" key={skin.id}><button aria-label="Выбрать сохранённый скин" className={selected?.id === skin.id ? "saved-skin active" : "saved-skin"} data-sound="skin-select" disabled={Boolean(busy)} onClick={() => setSelectedId(skin.id)} type="button"><SkinCanvas skin={skin.dataUrl} compact /></button><button aria-label="Удалить сохранённый скин" className="delete-skin-button" disabled={Boolean(busy)} onClick={() => void deleteSkin(skin)} title="Удалить скин" type="button">×</button></div>)}
             {!skins.length ? <button aria-label="Добавить скин" className="skin-library-empty" onClick={() => void addSkin()} title="Добавить скин" type="button"><span>＋</span></button> : null}
           </div>
           {selected ? <div className="skin-apply-bar"><div className="variant-switch" aria-label="Модель скина"><button className={variant === "classic" ? "active" : ""} onClick={() => setVariant("classic")} type="button">Классическая</button><button className={variant === "slim" ? "active" : ""} onClick={() => setVariant("slim")} type="button">Тонкая</button></div><button className="primary-cosmetics-action" disabled={Boolean(busy)} onClick={() => void applySkin()} type="button">{busy === "skin" ? "Устанавливаем…" : "Установить на аккаунт"}</button></div> : null}

@@ -1816,6 +1816,41 @@ pub async fn add_offline_skin(
     service.skin_view(skin).map(Some)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_offline_skin(
+    account_id: String,
+    skin_id: String,
+    service: State<'_, ContentService>,
+) -> Result<(), LauncherError> {
+    let skin = service
+        .storage
+        .list_offline_skins(&account_id)
+        .await?
+        .into_iter()
+        .find(|skin| skin.id == skin_id)
+        .ok_or_else(|| input_error("skin_not_found", "Скин не найден в библиотеке."))?;
+    let account_key = format!("{:x}", Sha256::digest(account_id.as_bytes()));
+    let expected_path = service
+        .paths
+        .root
+        .join("skins")
+        .join(account_key)
+        .join(format!("{skin_id}.png"));
+    if PathBuf::from(&skin.file_path) != expected_path {
+        return Err(LauncherError::storage_unavailable());
+    }
+    match fs::remove_file(&expected_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(LauncherError::storage_unavailable()),
+    }
+    service
+        .storage
+        .delete_offline_skin(&account_id, &skin_id)
+        .await?;
+    Ok(())
+}
+
 const MINECRAFT_PROFILE_ENDPOINT: &str = "https://api.minecraftservices.com/minecraft/profile";
 const MINECRAFT_SKINS_ENDPOINT: &str = "https://api.minecraftservices.com/minecraft/profile/skins";
 const MINECRAFT_CAPE_ENDPOINT: &str =

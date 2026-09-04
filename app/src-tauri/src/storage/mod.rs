@@ -517,6 +517,20 @@ impl Storage {
             .map_err(|_| LauncherError::storage_unavailable())
     }
 
+    pub async fn delete_offline_skin(
+        &self,
+        account_id: &str,
+        skin_id: &str,
+    ) -> Result<Option<OfflineSkin>, LauncherError> {
+        let row = sqlx::query("DELETE FROM offline_skins WHERE account_id=? AND id=? RETURNING id,account_id,name,file_path,is_active")
+            .bind(account_id)
+            .bind(skin_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        row.map(skin_from_row).transpose()
+    }
+
     pub async fn select_offline_skin(
         &self,
         account_id: &str,
@@ -726,7 +740,7 @@ fn account_from_row(row: sqlx::sqlite::SqliteRow) -> Result<AccountSummary, Laun
 
 #[cfg(test)]
 mod tests {
-    use super::{AccountSummary, LauncherProfile, Storage};
+    use super::{AccountSummary, LauncherProfile, OfflineSkin, Storage};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -858,6 +872,50 @@ mod tests {
             storage.delete_account("two").await.expect("deletes");
             let accounts = storage.list_accounts().await.expect("lists");
             assert_eq!(accounts, vec![account("one", "One", true)]);
+        });
+    }
+
+    #[test]
+    fn deleting_an_offline_skin_is_scoped_to_its_account() {
+        tauri::async_runtime::block_on(async {
+            let storage = Storage::connect("sqlite::memory:").await.expect("storage");
+            storage
+                .upsert_account(&account("account-one", "Player", true))
+                .await
+                .expect("adds account");
+            let skin = OfflineSkin {
+                id: "skin-one".to_owned(),
+                account_id: "account-one".to_owned(),
+                name: "private-file-name".to_owned(),
+                file_path: "skin-one.png".to_owned(),
+                is_active: true,
+            };
+            storage.add_offline_skin(&skin).await.expect("adds skin");
+
+            assert!(storage
+                .delete_offline_skin("account-two", "skin-one")
+                .await
+                .expect("wrong account is a valid no-op")
+                .is_none());
+            assert_eq!(
+                storage
+                    .list_offline_skins("account-one")
+                    .await
+                    .expect("skin remains"),
+                vec![skin.clone()]
+            );
+            assert_eq!(
+                storage
+                    .delete_offline_skin("account-one", "skin-one")
+                    .await
+                    .expect("deletes skin"),
+                Some(skin)
+            );
+            assert!(storage
+                .list_offline_skins("account-one")
+                .await
+                .expect("lists skins")
+                .is_empty());
         });
     }
 
