@@ -84,7 +84,7 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
 
 function SkinCanvas({ skin, cape, compact = false }: { skin: string; cape?: string; compact?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 190 : 280, height: compact ? 260 : 340, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = false; viewer.zoom = compact ? 1.45 : 0.88; viewer.playerObject.rotation.y = 0.34; if (compact) { viewer.playerWrapper.scale.setScalar(1.08); viewer.playerWrapper.position.y = -3; } viewer.controls.enableRotate = !compact; viewer.controls.enablePan = false; viewer.controls.enableZoom = false; return () => viewer.dispose(); }, [cape, compact, skin]);
+  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 190 : 280, height: compact ? 260 : 340, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = false; viewer.zoom = compact ? 1.45 : 0.88; viewer.playerObject.rotation.y = 0.34; if (compact) { viewer.playerWrapper.scale.setScalar(1.08); viewer.playerWrapper.position.y = -5.5; } viewer.controls.enableRotate = !compact; viewer.controls.enablePan = false; viewer.controls.enableZoom = false; return () => viewer.dispose(); }, [cape, compact, skin]);
   return <canvas className={compact ? "skin-canvas compact" : "skin-canvas"} ref={canvas} />;
 }
 
