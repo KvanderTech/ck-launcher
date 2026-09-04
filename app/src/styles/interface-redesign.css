@@ -166,8 +166,10 @@
 .is-compact .cosmetics-preview{min-height:0;padding:18px}
 .is-compact .cosmetics-skin-grid{grid-template-columns:repeat(auto-fill,minmax(170px,1fr));max-height:480px}
 .is-compact .cosmetics-skin-grid .saved-skin,
-.is-compact .skin-library-empty{min-height:240px}
-.is-compact .skin-canvas.compact{height:210px;width:170px}
+.is-compact .skin-library-empty{min-height:260px}
+.is-compact .cosmetics-skin-grid .saved-skin{border-radius:18px;padding:0;position:relative}
+.is-compact .cosmetics-skin-grid .saved-skin.active:after{align-items:center;background:#fff;border-radius:50%;color:#17202a;content:"✓";display:flex;font-size:13px;font-weight:900;height:24px;justify-content:center;position:absolute;right:10px;top:10px;width:24px;z-index:2}
+.is-compact .skin-canvas.compact{height:260px;width:190px}
 .game-install-toast i.determinate{animation:none;left:0;transition:width .2s ease}
 .game-install-toast>button{background:rgba(14,48,76,.96);border:1px solid rgba(114,202,248,.28);border-radius:50%;color:#d8f3ff;font-size:14px;height:22px;padding:0;position:absolute;right:5px;top:5px;width:22px}
 .game-install-toast>small{padding-right:7px}
