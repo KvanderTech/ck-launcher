@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { FunctionAnimation, SkinViewer } from "skinview3d";
+import { SkinViewer } from "skinview3d";
 
 import type { AppApi } from "../../app/tauri";
 import type { AccountSummary, MinecraftCosmetics, OfflineSkin } from "../../app/types";
+import { createEmotecraftPreviewAnimation } from "./emotecraftPreview";
 
 interface SkinsPageProps {
   api: AppApi;
@@ -84,47 +85,9 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
 
 function SkinCanvas({ skin, cape, compact = false }: { skin: string; cape?: string; compact?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 190 : 280, height: compact ? 260 : 340, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = false; viewer.zoom = compact ? 1.45 : 0.88; viewer.playerObject.rotation.y = 0.34; if (compact) { viewer.playerWrapper.scale.setScalar(1.08); viewer.playerWrapper.position.y = -7.5; } else { viewer.animation = createSkinPreviewAnimation(); } viewer.controls.enableRotate = !compact; viewer.controls.enablePan = false; viewer.controls.enableZoom = false; return () => viewer.dispose(); }, [cape, compact, skin]);
+  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 190 : 280, height: compact ? 260 : 340, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = false; viewer.zoom = compact ? 1.45 : 0.88; viewer.playerObject.rotation.y = 0.34; if (compact) { viewer.playerWrapper.scale.setScalar(1.08); viewer.playerWrapper.position.y = -7.5; } else { viewer.animation = createEmotecraftPreviewAnimation(); } viewer.controls.enableRotate = !compact; viewer.controls.enablePan = false; viewer.controls.enableZoom = false; return () => viewer.dispose(); }, [cape, compact, skin]);
   return <canvas className={compact ? "skin-canvas compact" : "skin-canvas"} ref={canvas} />;
 }
-
-interface PreviewPose { headX?: number; headY?: number; headZ?: number; bodyY?: number; leftArmX?: number; leftArmZ?: number; rightArmX?: number; rightArmZ?: number; leftLegX?: number; rightLegX?: number; }
-
-const previewPoses: PreviewPose[] = [
-  { headY: .24, headZ: .05, leftArmX: -.12, leftArmZ: .13, rightArmX: .18, rightArmZ: -.1 },
-  { headX: -.08, headY: -.18, leftArmX: .2, leftArmZ: .2, rightArmX: -.32, rightArmZ: -.22, leftLegX: -.04, rightLegX: .04 },
-  { headY: .08, bodyY: -.06, leftArmX: -.48, leftArmZ: .34, rightArmX: -.12, rightArmZ: -.54 },
-];
-
-function createSkinPreviewAnimation() {
-  let cycle = 0;
-  let poseIndex = -1;
-  return new FunctionAnimation((player, progress) => {
-    const nextCycle = Math.floor(progress / 8);
-    if (nextCycle !== cycle) {
-      cycle = nextCycle;
-      const candidates = previewPoses.map((_, index) => index).filter((index) => index !== poseIndex);
-      poseIndex = candidates[Math.floor(Math.random() * candidates.length)];
-    }
-    const local = progress % 8;
-    const transition = .2;
-    const visible = 2.2;
-    const weight = cycle === 0 ? 0 : local < transition ? smoothStep(local / transition) : local < visible ? 1 : local < visible + transition ? 1 - smoothStep((local - visible) / transition) : 0;
-    const pose = previewPoses[Math.max(0, poseIndex)];
-    const idle = Math.cos(progress * 2) * .03;
-    player.skin.head.rotation.set((pose.headX ?? 0) * weight, (pose.headY ?? 0) * weight, (pose.headZ ?? 0) * weight);
-    player.skin.body.rotation.y = (pose.bodyY ?? 0) * weight;
-    player.skin.leftArm.rotation.x = (pose.leftArmX ?? 0) * weight;
-    player.skin.leftArm.rotation.z = Math.PI * .02 + idle + (pose.leftArmZ ?? 0) * weight;
-    player.skin.rightArm.rotation.x = (pose.rightArmX ?? 0) * weight;
-    player.skin.rightArm.rotation.z = -Math.PI * .02 - idle + (pose.rightArmZ ?? 0) * weight;
-    player.skin.leftLeg.rotation.x = (pose.leftLegX ?? 0) * weight;
-    player.skin.rightLeg.rotation.x = (pose.rightLegX ?? 0) * weight;
-    player.cape.rotation.x = Math.PI * .06 + Math.sin(progress * 2) * .01;
-  });
-}
-
-function smoothStep(value: number) { return value * value * (3 - 2 * value); }
 
 function secureUrl(url: string) { return url.replace("http://", "https://"); }
 function capeName(alias: string) { return alias.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" "); }
