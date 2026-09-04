@@ -354,6 +354,16 @@ describe("launcher application", () => {
 
     expect(screen.getByText("Minecraft запущен")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Игра запущена" }) as HTMLButtonElement).disabled).toBe(true);
+
+    act(() => {
+      handlers.progress?.({
+        operationId: "operation-current",
+        stage: "launching",
+        completedBytes: 0,
+        totalBytes: 0,
+      });
+    });
+    expect(screen.queryByText("Запускаем игру")).toBeNull();
   });
 
   it("keeps running and shows no Retry for a nonterminal process warning", async () => {

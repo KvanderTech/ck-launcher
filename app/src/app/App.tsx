@@ -84,6 +84,7 @@ export default function App({ api = appApi }: AppProps) {
   const [cosmeticsLoading, setCosmeticsLoading] = useState<Record<string, boolean>>({});
   const cosmeticsRequests = useRef(new Map<string, Promise<void>>());
   const operationId = useRef<OperationId | undefined>(undefined);
+  const startedOperationId = useRef<OperationId | undefined>(undefined);
   const profileRef = useRef<LauncherProfile | undefined>(undefined);
   const awaitingOperationId = useRef(false);
   const bufferedOperationEvents = useRef<BufferedOperationEvent[]>([]);
@@ -178,6 +179,7 @@ export default function App({ api = appApi }: AppProps) {
   function applyOperationEvent(event: BufferedOperationEvent) {
     switch (event.kind) {
       case "progress":
+        if (event.value.operationId === startedOperationId.current) break;
         setProgress(event.value);
         if ([
           "authenticating",
@@ -191,12 +193,14 @@ export default function App({ api = appApi }: AppProps) {
         if (event.value.stage === "running") setViewState("running");
         break;
       case "started":
+        startedOperationId.current = event.value.operationId;
         setViewState("running");
         setOperationError(undefined);
         setProgress(undefined);
         break;
       case "exited":
         operationId.current = undefined;
+        startedOperationId.current = undefined;
         setOperationError(undefined);
         setOperationWarning(undefined);
         setOperationLogPath(undefined);
@@ -314,6 +318,7 @@ export default function App({ api = appApi }: AppProps) {
       if (!confirmedProfile?.versionId) return;
       await api.updateProfile(confirmedProfile);
       operationId.current = undefined;
+      startedOperationId.current = undefined;
       awaitingOperationId.current = true;
       bufferedOperationEvents.current = [];
       const nextOperationId = await api.launchOrInstall(confirmedProfile.id);

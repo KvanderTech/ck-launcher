@@ -16,7 +16,7 @@ pub const MAX_LOG_BYTES: usize = 1024 * 1024;
 const ROTATED_LOGS: usize = 3;
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum GameProcessEvent {
     Started {
         operation_id: String,
@@ -323,8 +323,22 @@ fn log_failed() -> LauncherError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessLog, RedactingStream};
+    use super::{GameProcessEvent, ProcessLog, RedactingStream};
     use std::{fs, sync::Arc};
+
+    #[test]
+    fn process_events_use_the_camel_case_contract_expected_by_the_ui() {
+        let event = GameProcessEvent::Started {
+            operation_id: "operation".to_owned(),
+            profile_id: "profile".to_owned(),
+            pid: 42,
+        };
+        let value = serde_json::to_value(event).expect("serialize event");
+        assert_eq!(value["operationId"], "operation");
+        assert_eq!(value["profileId"], "profile");
+        assert!(value.get("operation_id").is_none());
+        assert!(value.get("profile_id").is_none());
+    }
 
     #[test]
     fn stream_redaction_catches_a_token_split_across_reader_chunks() {

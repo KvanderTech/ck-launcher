@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ЦК Лаунчер",
-  "version": "0.1.49-beta.1",
+  "version": "0.1.50-beta.1",
   "identifier": "ru.cklauncher.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -63,7 +63,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVEMjJFQjNFNTVFRUIyODAKUldTQXN1NVZQdXNpN1kyL0V0d3Y2dVVGWkExUEoxZk9RNzJsMGdmNVpjWjdyYm5ZelVGczRFbzIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMjgxNzY0MTY5QkQ2RjgKUldUNDFwc1daQmNvL0xMenl6QkZZeGtKVXNoZjdublVzbUF4QVlKcDVpYmhWWitiQ2VoTXBORWsK",
       "endpoints": [
         "https://github.com/KvanderTech/ck-launcher/releases/latest/download/latest.json"
       ],
