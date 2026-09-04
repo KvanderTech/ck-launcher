@@ -50,7 +50,6 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
   }
 
   async function deleteSkin(skin: OfflineSkin) {
-    if (!window.confirm("Удалить этот скин из библиотеки?")) return;
     setBusy(`delete:${skin.id}`); setError(undefined);
     try {
       await api.deleteOfflineSkin(account.id, skin.id);
