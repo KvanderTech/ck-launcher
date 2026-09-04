@@ -1,6 +1,6 @@
 import { windowApi, type LauncherApi } from "../app/tauri";
 import type { AccountSummary, BuildSummary } from "../app/types";
-import logo from "../assets/logo.png";
+import logo from "../assets/logo-transparent.png";
 import { AccountMenu } from "../features/accounts/AccountMenu";
 
 export type PageId = "home" | "library" | "content" | "skins" | "settings";

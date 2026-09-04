@@ -86,9 +86,9 @@
 }
 
 .brand img {
-  border-radius: 11px;
+  border-radius: 0;
   height: 44px;
-  object-fit: cover;
+  object-fit: contain;
   width: 44px;
 }
 

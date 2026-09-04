@@ -4,7 +4,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LOGO = Image.open(ROOT / "app/src/assets/logo.png").convert("RGBA")
+LOGO = Image.open(ROOT / "app/src/assets/logo-transparent.png").convert("RGBA")
 OUT = ROOT / "app/src-tauri/installer"
 OUT.mkdir(parents=True, exist_ok=True)
 

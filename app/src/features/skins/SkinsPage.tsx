@@ -69,7 +69,7 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
           <div className="saved-skin-grid cosmetics-skin-grid">
             {licensedSkin ? <button aria-label="Текущий скин аккаунта" className={!selected ? "saved-skin active licensed-skin" : "saved-skin licensed-skin"} onClick={() => setSelectedId(null)} title="Текущий скин аккаунта" type="button"><SkinCanvas skin={licensedSkin.url} compact /></button> : null}
             {skins.map((skin) => <button aria-label={`Выбрать скин ${skin.name}`} className={selected?.id === skin.id ? "saved-skin active" : "saved-skin"} key={skin.id} onClick={() => setSelectedId(skin.id)} title={skin.name} type="button"><SkinCanvas skin={skin.dataUrl} compact /></button>)}
-            {!skins.length ? <button className="skin-library-empty" onClick={() => void addSkin()} type="button"><span>＋</span><strong>Добавить первый скин</strong><small>PNG · 64×64 или 64×32</small></button> : null}
+            {!skins.length ? <button aria-label="Добавить скин" className="skin-library-empty" onClick={() => void addSkin()} title="Добавить скин" type="button"><span>＋</span></button> : null}
           </div>
           {selected ? <div className="skin-apply-bar"><div className="variant-switch" aria-label="Модель скина"><button className={variant === "classic" ? "active" : ""} onClick={() => setVariant("classic")} type="button">Классическая</button><button className={variant === "slim" ? "active" : ""} onClick={() => setVariant("slim")} type="button">Тонкая</button></div><button className="primary-cosmetics-action" disabled={Boolean(busy)} onClick={() => void applySkin()} type="button">{busy === "skin" ? "Устанавливаем…" : "Установить на аккаунт"}</button></div> : null}
         </section>
@@ -84,7 +84,7 @@ export function SkinsPage({ api, account, skins, cosmetics, error: loadError, lo
 
 function SkinCanvas({ skin, cape, compact = false }: { skin: string; cape?: string; compact?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 190 : 280, height: compact ? 260 : 340, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = false; viewer.zoom = compact ? 1.45 : 0.88; viewer.playerObject.rotation.y = 0.34; if (compact) { viewer.playerWrapper.scale.setScalar(1.08); viewer.playerWrapper.position.y = -5.5; } viewer.controls.enableRotate = !compact; viewer.controls.enablePan = false; viewer.controls.enableZoom = false; return () => viewer.dispose(); }, [cape, compact, skin]);
+  useEffect(() => { if (!canvas.current) return; const viewer = new SkinViewer({ canvas: canvas.current, width: compact ? 190 : 280, height: compact ? 260 : 340, skin: secureUrl(skin) }); if (cape) void viewer.loadCape(secureUrl(cape)); viewer.autoRotate = false; viewer.zoom = compact ? 1.45 : 0.88; viewer.playerObject.rotation.y = 0.34; if (compact) { viewer.playerWrapper.scale.setScalar(1.08); viewer.playerWrapper.position.y = -7.5; } viewer.controls.enableRotate = !compact; viewer.controls.enablePan = false; viewer.controls.enableZoom = false; return () => viewer.dispose(); }, [cape, compact, skin]);
   return <canvas className={compact ? "skin-canvas compact" : "skin-canvas"} ref={canvas} />;
 }
 
