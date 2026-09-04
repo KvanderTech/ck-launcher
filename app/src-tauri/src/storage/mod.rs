@@ -397,6 +397,47 @@ impl Storage {
         Ok(build)
     }
 
+    pub async fn update_build_identity(
+        &self,
+        build_id: &str,
+        name: Option<&str>,
+        icon_url: Option<&str>,
+    ) -> Result<BuildSummary, LauncherError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        if let Some(name) = name {
+            sqlx::query("UPDATE builds SET name=? WHERE id=?")
+                .bind(name)
+                .bind(build_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+            sqlx::query("UPDATE profiles SET name=? WHERE id='default' AND EXISTS (SELECT 1 FROM builds WHERE id=? AND is_active=1)")
+                .bind(name).bind(build_id).execute(&mut *tx).await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        if let Some(icon_url) = icon_url {
+            sqlx::query("UPDATE builds SET icon_url=? WHERE id=?")
+                .bind(icon_url)
+                .bind(build_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        let row = sqlx::query("SELECT id,name,game_version,loader,loader_version,game_dir,icon_url,is_active FROM builds WHERE id=?")
+            .bind(build_id).fetch_optional(&mut *tx).await
+            .map_err(|_| LauncherError::storage_unavailable())?
+            .ok_or_else(|| LauncherError::new("build_not_found", "Сборка не найдена.", None, true))?;
+        let build = build_from_row(row)?;
+        tx.commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        Ok(build)
+    }
+
     pub async fn delete_build(&self, build_id: &str) -> Result<(), LauncherError> {
         let mut tx = self
             .pool
@@ -740,7 +781,7 @@ fn account_from_row(row: sqlx::sqlite::SqliteRow) -> Result<AccountSummary, Laun
 
 #[cfg(test)]
 mod tests {
-    use super::{AccountSummary, LauncherProfile, OfflineSkin, Storage};
+    use super::{AccountSummary, BuildSummary, LauncherProfile, OfflineSkin, Storage};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -808,6 +849,34 @@ mod tests {
 
             assert_eq!(active_profile.id, "default");
             assert_eq!(active_profile.memory_mb, 4096);
+        });
+    }
+
+    #[test]
+    fn build_name_and_icon_can_be_changed_without_recreating_the_build() {
+        tauri::async_runtime::block_on(async {
+            let storage = Storage::connect("sqlite::memory:").await.expect("storage");
+            let build = BuildSummary {
+                id: "custom".to_owned(),
+                name: "Старая".to_owned(),
+                game_version: "1.21.1".to_owned(),
+                loader: "fabric".to_owned(),
+                loader_version: Some("0.16.0".to_owned()),
+                game_dir: "game".to_owned(),
+                icon_url: None,
+                is_active: false,
+            };
+            storage.upsert_build(&build).await.expect("build");
+            let changed = storage
+                .update_build_identity("custom", Some("Новая"), Some("data:image/png;base64,AA=="))
+                .await
+                .expect("identity");
+            assert_eq!(changed.name, "Новая");
+            assert_eq!(
+                changed.icon_url.as_deref(),
+                Some("data:image/png;base64,AA==")
+            );
+            assert_eq!(changed.game_version, "1.21.1");
         });
     }
 

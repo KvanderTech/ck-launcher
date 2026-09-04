@@ -94,6 +94,8 @@ export interface ContentApi {
   repairBuild(buildId: string): Promise<BuildSummary>;
   createBuild(name: string, gameVersion: string, loader: string): Promise<BuildSummary>;
   selectBuild(buildId: string): Promise<BuildSummary>;
+  renameBuild(buildId: string, name: string): Promise<BuildSummary>;
+  chooseBuildIcon(buildId: string): Promise<BuildSummary | null>;
   deleteBuild(buildId: string): Promise<void>;
   searchModrinth(query: string, projectType: ModrinthProjectType, gameVersion?: string, loader?: string, offset?: number, category?: string, environment?: string, index?: string): Promise<ModrinthSearchResult>;
   modrinthProject(projectId: string): Promise<ModrinthProjectDetails>;
@@ -160,6 +162,8 @@ export const appApi: AppApi = {
   repairBuild: (buildId) => invoke<BuildSummary>("repair_build", { buildId }),
   createBuild: (name, gameVersion, loader) => invoke<BuildSummary>("create_build", { name, gameVersion, loader }),
   selectBuild: (buildId) => invoke<BuildSummary>("select_build", { buildId }),
+  renameBuild: (buildId, name) => invoke<BuildSummary>("rename_build", { buildId, name }),
+  chooseBuildIcon: (buildId) => invoke<BuildSummary | null>("choose_build_icon", { buildId }),
   deleteBuild: (buildId) => invoke<void>("delete_build", { buildId }),
   searchModrinth: (query, projectType, gameVersion, loader, offset = 0, category, environment, index) => invoke<ModrinthSearchResult>("search_modrinth", { query, projectType, gameVersion, loader, offset, category, environment, index }),
   modrinthProject: (projectId) => invoke<ModrinthProjectDetails>("modrinth_project", { projectId }),

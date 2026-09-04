@@ -23,21 +23,19 @@ const SUCCESS_HTML: &str = r##"<!doctype html>
     body{display:grid;place-items:center;overflow:hidden;padding:24px;background:radial-gradient(circle at 82% 10%,rgba(24,190,241,.32),transparent 34%),radial-gradient(circle at 9% 90%,rgba(31,72,225,.5),transparent 43%),linear-gradient(135deg,#061326 0%,#092e59 48%,#07698f 100%);color:#f4f9ff;font-family:Inter,"Segoe UI",system-ui,sans-serif}
     body:before{content:"";position:fixed;inset:0;background:linear-gradient(115deg,rgba(3,10,22,.25),transparent 50%,rgba(3,18,34,.12));pointer-events:none}
     main{position:relative;width:min(520px,100%);padding:48px 38px;text-align:center;border:1px solid rgba(126,210,255,.2);border-radius:28px;background:linear-gradient(145deg,rgba(12,34,59,.88),rgba(7,23,42,.82));box-shadow:0 28px 80px rgba(0,0,0,.32);backdrop-filter:blur(22px)}
-    .logo{display:grid;width:64px;height:64px;margin:0 auto 26px;place-items:center;border-radius:19px;background:linear-gradient(145deg,#20c0f5,#176be1);box-shadow:0 14px 38px rgba(16,126,230,.38);font-size:24px;font-weight:900;letter-spacing:-2px}
     h1{margin:0;font-size:clamp(28px,5vw,42px);line-height:1.08;letter-spacing:-.035em}
     p{margin:15px 0 0;color:#a9c0d9;font-size:15px;line-height:1.55}
     button{min-height:50px;margin-top:26px;padding:0 24px;border:0;border-radius:15px;background:linear-gradient(135deg,#25bef2,#1778e8);box-shadow:0 13px 32px rgba(18,117,224,.32);color:white;font:700 15px Inter,"Segoe UI",system-ui,sans-serif;cursor:pointer;transition:transform .16s ease,filter .16s ease}
     button:hover{filter:brightness(1.1);transform:translateY(-2px)}
     button:active{transform:translateY(0)}
-    @media(max-width:520px){main{padding:38px 24px;border-radius:23px}.logo{width:56px;height:56px}}
+    @media(max-width:520px){main{padding:38px 24px;border-radius:23px}}
   </style>
 </head>
 <body>
   <main>
-    <div class="logo" aria-label="ЦК">ЦК</div>
     <h1>Авторизация завершена</h1>
     <p>Аккаунт подключён. Теперь можно закрыть эту вкладку и вернуться в лаунчер.</p>
-    <button type="button" onclick="window.close();setTimeout(()=>{this.textContent='Закройте вкладку вручную'},250)">Вернуться в лаунчер</button>
+    <button type="button" onclick="this.disabled=true;fetch('/return').finally(()=>{this.textContent='Лаунчер открыт';setTimeout(()=>window.close(),150)})">Вернуться в лаунчер</button>
   </main>
 </body>
 </html>"##;
@@ -120,7 +118,11 @@ impl CallbackReceiver {
                             false,
                         ));
                     }
-                    return self.handle_stream(&mut stream);
+                    let result = self.handle_stream(&mut stream);
+                    if result.is_ok() {
+                        spawn_return_listener(listener);
+                    }
+                    return result;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
@@ -225,6 +227,32 @@ fn write_response(stream: &mut TcpStream, success: bool) {
     let _ = stream.flush();
 }
 
+fn spawn_return_listener(listener: TcpListener) {
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(300);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, peer)) if is_ipv4_loopback(peer.ip()) => {
+                    if read_request_target(&mut stream).ok().as_deref() == Some("/return") {
+                        let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n";
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                        if let Ok(executable) = std::env::current_exe() {
+                            let _ = std::process::Command::new(executable).spawn();
+                        }
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25))
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
 fn is_ipv4_loopback(ip: IpAddr) -> bool {
     matches!(ip, IpAddr::V4(address) if address.is_loopback())
 }
@@ -322,11 +350,9 @@ mod tests {
     #[test]
     fn callback_receiver_is_one_shot() {
         let mut receiver = CallbackReceiver::bind("state", Duration::from_secs(2)).expect("binds");
-        let address = receiver.address();
         let client = send_callback(&receiver, "/?state=state&code=first");
         assert_eq!(receiver.receive().expect("first use works"), "first");
         client.join().expect("client completes");
-        assert!(TcpStream::connect(address).is_err());
 
         let error = receiver.receive().expect_err("second use is rejected");
         assert_eq!(error.code(), "auth_callback_used");

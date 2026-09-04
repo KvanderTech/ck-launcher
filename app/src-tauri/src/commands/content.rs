@@ -5,6 +5,7 @@ use crate::{
     storage::{BuildSummary, InstalledContent, OfflineSkin, Storage},
 };
 use base64::Engine;
+use futures_util::{stream, StreamExt};
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
@@ -65,7 +66,7 @@ pub struct ModrinthProject {
     pub date_modified: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectDetails {
     id: String,
     title: String,
@@ -1218,6 +1219,65 @@ pub async fn select_build(
     storage.select_build(&build_id).await
 }
 #[tauri::command(rename_all = "camelCase")]
+pub async fn rename_build(
+    build_id: String,
+    name: String,
+    storage: State<'_, Storage>,
+) -> Result<BuildSummary, LauncherError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(input_error(
+            "build_name_invalid",
+            "Название должно содержать от 1 до 80 символов.",
+        ));
+    }
+    storage
+        .update_build_identity(&build_id, Some(name), None)
+        .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn choose_build_icon(
+    build_id: String,
+    storage: State<'_, Storage>,
+) -> Result<Option<BuildSummary>, LauncherError> {
+    let Some(source) = choose_build_icon_file()? else {
+        return Ok(None);
+    };
+    let bytes = fs::read(source).map_err(|_| {
+        input_error(
+            "build_icon_read_failed",
+            "Не удалось прочитать изображение.",
+        )
+    })?;
+    if bytes.len() > 2_000_000 {
+        return Err(input_error(
+            "build_icon_too_large",
+            "Размер изображения не должен превышать 2 МБ.",
+        ));
+    }
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        return Err(input_error(
+            "build_icon_invalid",
+            "Выберите изображение PNG, JPG или WebP.",
+        ));
+    };
+    let data_url = format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    );
+    storage
+        .update_build_identity(&build_id, None, Some(&data_url))
+        .await
+        .map(Some)
+}
+#[tauri::command(rename_all = "camelCase")]
 pub async fn delete_build(
     build_id: String,
     service: State<'_, ContentService>,
@@ -1302,9 +1362,42 @@ pub fn pending_mrpack_path(pending: State<'_, PendingMrpackPath>) -> Option<Stri
 #[tauri::command(rename_all = "camelCase")]
 pub async fn list_installed_content(
     build_id: String,
-    storage: State<'_, Storage>,
+    service: State<'_, ContentService>,
 ) -> Result<Vec<InstalledContent>, LauncherError> {
-    storage.list_installed_content(&build_id).await
+    let mut items = service.storage.list_installed_content(&build_id).await?;
+    let missing: Vec<(usize, String)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.icon_url.is_none() && item.version_id != "local")
+        .map(|(index, item)| (index, item.project_id.clone()))
+        .collect();
+    let client = service.inner().clone();
+    let details: Vec<_> = stream::iter(missing.into_iter().map(|(index, project_id)| {
+        let client = client.clone();
+        async move {
+            let result = client
+                .json::<ProjectDetails>(&format!("{MODRINTH_API}/project/{project_id}"))
+                .await
+                .ok();
+            (index, result)
+        }
+    }))
+    .buffer_unordered(8)
+    .collect()
+    .await;
+    for (index, details) in details {
+        if let Some(details) = details {
+            items[index].icon_url = details.icon_url;
+            if !details.title.trim().is_empty() {
+                items[index].title = details.title;
+            }
+            service
+                .storage
+                .upsert_installed_content(&items[index])
+                .await?;
+        }
+    }
+    Ok(items)
 }
 #[tauri::command(rename_all = "camelCase")]
 pub async fn remove_installed_content(
@@ -2114,5 +2207,41 @@ fn choose_png_file() -> Result<Option<PathBuf>, LauncherError> {
     Err(input_error(
         "skin_picker_unavailable",
         "Выбор скина доступен только в Windows.",
+    ))
+}
+
+#[cfg(windows)]
+fn choose_build_icon_file() -> Result<Option<PathBuf>, LauncherError> {
+    use std::{mem::size_of, os::windows::ffi::OsStringExt};
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+    let mut file = vec![0_u16; 32_768];
+    let filter: Vec<u16> = "Изображения (*.png;*.jpg;*.jpeg;*.webp)\0*.png;*.jpg;*.jpeg;*.webp\0\0"
+        .encode_utf16()
+        .collect();
+    let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    dialog.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+    dialog.lpstrFile = file.as_mut_ptr();
+    dialog.nMaxFile = file.len() as u32;
+    dialog.lpstrFilter = filter.as_ptr();
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+        return Ok(None);
+    }
+    let length = file
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(file.len());
+    Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
+        &file[..length],
+    ))))
+}
+
+#[cfg(not(windows))]
+fn choose_build_icon_file() -> Result<Option<PathBuf>, LauncherError> {
+    Err(input_error(
+        "build_icon_picker_unavailable",
+        "Выбор иконки доступен только в Windows.",
     ))
 }

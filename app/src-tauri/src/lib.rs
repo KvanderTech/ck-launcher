@@ -92,6 +92,8 @@ pub fn run() {
             commands::content::list_builds,
             commands::content::repair_build,
             commands::content::select_build,
+            commands::content::rename_build,
+            commands::content::choose_build_icon,
             commands::content::delete_build,
             commands::content::install_modrinth_project,
             commands::content::install_modrinth_modpack,
