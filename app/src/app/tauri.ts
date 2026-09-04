@@ -80,6 +80,8 @@ export interface OperationApi {
   openExternalUrl(url: string): Promise<void>;
   launchOrInstall(profileId: string): Promise<OperationId>;
   cancelOperation(operationId: OperationId): Promise<void>;
+  stopGame(operationId: OperationId): Promise<void>;
+  readLatestGameLog(): Promise<string>;
   openLatestGameLog(): Promise<void>;
   onProgress(handler: (event: ProgressEvent) => void): Promise<UnlistenFn>;
   onGameStarted(handler: (event: GameStartedEvent) => void): Promise<UnlistenFn>;
@@ -145,6 +147,8 @@ export const appApi: AppApi = {
   chooseGameDirectory: () => invoke<LauncherProfile | null>("choose_game_directory"),
   launchOrInstall: (profileId) => invokeLaunchOrInstall(profileId),
   cancelOperation: (operationId) => invoke<void>("cancel_operation", { operationId }),
+  stopGame: (operationId) => invoke<void>("stop_game", { operationId }),
+  readLatestGameLog: () => invoke<string>("read_latest_game_log"),
   openLatestGameLog: () => invoke<void>("open_latest_game_log"),
   openExternalUrl: (url) => invoke<void>("open_external_url", { url }),
   onProgress: (handler) => listenPayload("launcher://progress", handler),

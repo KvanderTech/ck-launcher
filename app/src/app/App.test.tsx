@@ -103,6 +103,8 @@ function createApi(handlers: EventHandlers) {
     chooseRuntimePath: vi.fn(async (requirement) => ({ requirement, state: "valid" as const })),
     launchOrInstall: vi.fn(async () => "operation-current"),
     cancelOperation: vi.fn(async () => undefined),
+    stopGame: vi.fn(async () => undefined),
+    readLatestGameLog: vi.fn(async () => ""),
     openLatestGameLog: vi.fn(async () => undefined),
     listOfflineSkins: vi.fn(async () => []),
     minecraftCosmetics: vi.fn(async () => ({

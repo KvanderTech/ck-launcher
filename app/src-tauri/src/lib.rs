@@ -129,6 +129,8 @@ pub fn run() {
             commands::install::installation_status,
             commands::launch::launch_or_install,
             commands::launch::launch_status,
+            commands::launch::stop_game,
+            commands::launch::read_latest_game_log,
             commands::launch::open_latest_game_log,
         ])
         .setup(|app| {

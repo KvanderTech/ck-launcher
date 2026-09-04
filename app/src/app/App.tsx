@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BackgroundCarousel } from "../components/BackgroundCarousel";
+import { GameActivity } from "../components/GameActivity";
 import { Sidebar, type PageId } from "../components/Sidebar";
 import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
@@ -67,6 +68,7 @@ export default function App({ api = appApi }: AppProps) {
   const [runtimes, setRuntimes] = useState<JavaRuntimeStatus[]>([]);
   const [bootState, setBootState] = useState<BootState>("loading");
   const [viewState, setViewState] = useState<LauncherViewState>("ready");
+  const [runningGame, setRunningGame] = useState<GameStartedEvent>();
   const [progress, setProgress] = useState<ProgressEvent>();
   const [operationError, setOperationError] = useState<LauncherErrorDto>();
   const [operationWarning, setOperationWarning] = useState<LauncherErrorDto>();
@@ -194,11 +196,13 @@ export default function App({ api = appApi }: AppProps) {
         break;
       case "started":
         startedOperationId.current = event.value.operationId;
+        setRunningGame(event.value);
         setViewState("running");
         setOperationError(undefined);
         setProgress(undefined);
         break;
       case "exited":
+        setRunningGame(undefined);
         operationId.current = undefined;
         startedOperationId.current = undefined;
         setOperationError(undefined);
@@ -213,6 +217,7 @@ export default function App({ api = appApi }: AppProps) {
           break;
         }
         setOperationError(event.value.error);
+        setRunningGame(undefined);
         setOperationLogPath(event.value.logPath);
         setViewState(event.value.error.recoverable ? "recoverable-error" : "fatal-error");
         setProgress(undefined);
@@ -473,6 +478,10 @@ export default function App({ api = appApi }: AppProps) {
   }
 
   const signedOut = accounts.length === 0;
+  const activeBuild = builds.find((build) => build.isActive);
+  const runningBuild = runningGame
+    ? builds.find((build) => build.id === runningGame.profileId) ?? activeBuild
+    : undefined;
 
   return (
     <div className={`launcher-shell is-compact${activePage === "home" ? " is-home" : ""}`}>
@@ -492,7 +501,7 @@ export default function App({ api = appApi }: AppProps) {
         <header
           className="topbar"
           onMouseDown={(event) => {
-            if (event.button !== 0 || (event.target as HTMLElement).closest(".window-controls")) return;
+            if (event.button !== 0 || (event.target as HTMLElement).closest(".window-controls, .game-activity")) return;
             void windowApi.startDragging();
           }}
         >
@@ -502,6 +511,14 @@ export default function App({ api = appApi }: AppProps) {
             onDoubleClick={() => void windowApi.toggleMaximize()}
           >
           </div>
+          {runningGame && viewState === "running" && (
+            <GameActivity
+              api={api}
+              game={runningGame}
+              iconUrl={runningBuild?.iconUrl}
+              name={runningBuild?.name ?? profile.name}
+            />
+          )}
           <WindowControls />
         </header>
         <div className="page-scroll">
@@ -572,7 +589,7 @@ export default function App({ api = appApi }: AppProps) {
         </div>
       </main>
       {contentInstallTask && <aside className={`content-install-toast global-install-toast${contentInstallTask.error ? " is-error" : ""}`} role={contentInstallTask.error ? "alert" : "status"}>{contentInstallTask.project.icon_url ? <img alt="" src={contentInstallTask.project.icon_url} /> : <span>{contentInstallTask.project.title[0]}</span>}<div><strong>{contentInstallTask.project.title}</strong><p>{contentInstallTask.error ?? contentInstallTask.stage}</p></div>{contentInstallTask.error ? <button aria-label="Закрыть сообщение об установке" onClick={() => setContentInstallTask(undefined)} type="button">×</button> : <><i /><small>{contentInstallTask.step}/3</small></>}</aside>}
-      {progress && (viewState === "installing" || viewState === "launching") && (() => { const activeBuild = builds.find((build) => build.isActive); const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i /><small>{percent}%</small></aside>; })()}
+      {progress && (viewState === "installing" || viewState === "launching") && (() => { const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i /><small>{percent}%</small></aside>; })()}
       {deleteTask && <aside className={`delete-build-toast${deleteTask.error ? " is-error" : ""}`} role={deleteTask.error ? "alert" : "dialog"}>{deleteTask.build.iconUrl ? <img alt="" src={deleteTask.build.iconUrl} /> : <span>{deleteTask.build.name[0]}</span>}<div><strong>{deleteTask.deleting ? "Удаляем сборку…" : `Удалить «${deleteTask.build.name}»?`}</strong><p>{deleteTask.error ?? "Сборка будет перемещена во внутреннюю корзину."}</p><div className="delete-toast-actions"><button disabled={deleteTask.deleting} onClick={() => setDeleteTask(undefined)} type="button">Отмена</button><button disabled={deleteTask.deleting} onClick={() => void confirmBuildDelete()} type="button">{deleteTask.deleting ? "Удаление…" : "Удалить"}</button></div></div></aside>}
     </div>
   );

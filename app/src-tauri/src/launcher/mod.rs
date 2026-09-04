@@ -17,7 +17,7 @@ use classpath::{build_classpath, validate_directory, validate_regular_file};
 use process::{EventSink, GameProcessEvent, ProcessLog, ProcessSpawner};
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     ffi::OsString,
     fmt,
     path::{Path, PathBuf},
@@ -73,6 +73,7 @@ pub struct Launcher {
 struct ProcessRegistry {
     operations: HashMap<String, GameProcessStatus>,
     active_profiles: HashMap<String, String>,
+    stopping: HashSet<String>,
     terminal_order: VecDeque<String>,
 }
 
@@ -256,6 +257,21 @@ impl Launcher {
         tauri::async_runtime::spawn(async move {
             match child.wait(log).await {
                 Ok(outcome) => {
+                    if stop_was_requested(&registry, &operation_id).unwrap_or(false) {
+                        let _ = finish_registry(
+                            &registry,
+                            &profile_id,
+                            &operation_id,
+                            Some(outcome.exit_code),
+                            outcome.auxiliary_error,
+                        );
+                        events.emit(GameProcessEvent::Exited {
+                            operation_id,
+                            profile_id,
+                            exit_code: outcome.exit_code,
+                        });
+                        return;
+                    }
                     if outcome.exit_code != 0 {
                         let error = game_exit_error(outcome.exit_code);
                         let _ = finish_registry(
@@ -370,6 +386,45 @@ impl Launcher {
             })
     }
 
+    pub fn stop(&self, operation_id: &str) -> Result<(), LauncherError> {
+        let pid = {
+            let mut registry = self.registry.lock().map_err(|_| process_state_error())?;
+            let status = registry.operations.get(operation_id).ok_or_else(|| {
+                LauncherError::new(
+                    "operation_not_found",
+                    "The launch operation was not found.",
+                    None,
+                    true,
+                )
+            })?;
+            let active = registry
+                .active_profiles
+                .get(&status.profile_id)
+                .is_some_and(|active| active == operation_id);
+            let pid = status
+                .pid
+                .filter(|pid| *pid > 0)
+                .filter(|_| active)
+                .ok_or_else(|| {
+                    LauncherError::new(
+                        "game_not_running",
+                        "Minecraft is no longer running.",
+                        None,
+                        true,
+                    )
+                })?;
+            registry.stopping.insert(operation_id.to_owned());
+            pid
+        };
+        if let Err(error) = terminate_process(pid) {
+            if let Ok(mut registry) = self.registry.lock() {
+                registry.stopping.remove(operation_id);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn active_count(&self) -> Result<usize, LauncherError> {
         Ok(self
@@ -403,6 +458,7 @@ fn finish_registry(
         status.error = error;
     }
     registry.active_profiles.remove(profile_id);
+    registry.stopping.remove(operation_id);
     registry.terminal_order.push_back(operation_id.to_owned());
     while registry.terminal_order.len() > MAX_TERMINAL_PROCESSES {
         if let Some(expired) = registry.terminal_order.pop_front() {
@@ -410,6 +466,43 @@ fn finish_registry(
         }
     }
     Ok(())
+}
+
+fn stop_was_requested(
+    registry: &Arc<Mutex<ProcessRegistry>>,
+    operation_id: &str,
+) -> Result<bool, LauncherError> {
+    Ok(registry
+        .lock()
+        .map_err(|_| process_state_error())?
+        .stopping
+        .contains(operation_id))
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) -> Result<(), LauncherError> {
+    let result = std::process::Command::new("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+    if result.is_ok_and(|status| status.success()) {
+        return Ok(());
+    }
+    Err(LauncherError::new(
+        "game_stop_failed",
+        "Minecraft could not be stopped.",
+        None,
+        true,
+    ))
+}
+
+#[cfg(not(windows))]
+fn terminate_process(_pid: u32) -> Result<(), LauncherError> {
+    Err(LauncherError::new(
+        "game_stop_unavailable",
+        "Stopping Minecraft is available only on Windows.",
+        None,
+        false,
+    ))
 }
 
 fn validate_profile_id(profile_id: &str) -> Result<(), LauncherError> {

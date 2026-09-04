@@ -116,10 +116,31 @@ pub async fn launch_status(
     launcher.status(&operation_id)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+pub async fn stop_game(
+    operation_id: String,
+    launcher: State<'_, Launcher>,
+) -> Result<(), LauncherError> {
+    launcher.stop(&operation_id)
+}
+
 #[tauri::command]
 pub async fn open_latest_game_log(paths: State<'_, AppPaths>) -> Result<(), LauncherError> {
     let path = latest_game_log_path(&paths)?;
     open_log_file(&path)
+}
+
+#[tauri::command]
+pub async fn read_latest_game_log(paths: State<'_, AppPaths>) -> Result<String, LauncherError> {
+    let path = latest_game_log_path(&paths)?;
+    std::fs::read_to_string(path).map_err(|_| {
+        LauncherError::new(
+            "game_log_read_failed",
+            "The sanitized Minecraft log could not be read.",
+            None,
+            true,
+        )
+    })
 }
 
 fn latest_game_log_path(paths: &AppPaths) -> Result<PathBuf, LauncherError> {
