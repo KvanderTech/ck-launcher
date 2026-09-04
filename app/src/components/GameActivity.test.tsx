@@ -31,5 +31,9 @@ describe("GameActivity", () => {
     fireEvent.click(screen.getByRole("button", { name: "Остановить игру" }));
     await act(async () => { await Promise.resolve(); });
     expect(api.stopGame).toHaveBeenCalledWith("operation-1");
+
+    fireEvent.mouseDown(screen.getByRole("button", { name: "Закрыть консоль" }));
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть консоль" }));
+    expect(screen.queryByRole("dialog", { name: "Консоль Minecraft" })).toBeNull();
   });
 });

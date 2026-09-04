@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BackgroundCarousel } from "../components/BackgroundCarousel";
 import { GameActivity } from "../components/GameActivity";
 import { Sidebar, type PageId } from "../components/Sidebar";
+import { playSound, SoundEffects } from "../components/SoundEffects";
 import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
 import { ContentPage, type ContentInstallTask } from "../features/content/ContentPage";
@@ -139,6 +140,7 @@ export default function App({ api = appApi }: AppProps) {
     try {
       const result = await api.importMrpack(sourcePath);
       if (!result) { setContentInstallTask(undefined); return; }
+      playSound("install-complete");
       setContentInstallTask({ project: { ...project, title: result.title }, stage: "Сборка установлена", step: 3 });
       await syncBuildSelection();
       setActivePage("library");
@@ -159,6 +161,7 @@ export default function App({ api = appApi }: AppProps) {
 
   async function openSidebarBuild(buildId: string) {
     await api.selectBuild(buildId);
+    playSound("build-switch");
     await syncBuildSelection();
     setLibraryTarget({ id: buildId, nonce: Date.now() });
     setActivePage("library");
@@ -196,12 +199,14 @@ export default function App({ api = appApi }: AppProps) {
         break;
       case "started":
         startedOperationId.current = event.value.operationId;
+        playSound("game-ready");
         setRunningGame(event.value);
         setViewState("running");
         setOperationError(undefined);
         setProgress(undefined);
         break;
       case "exited":
+        playSound("game-exit");
         setRunningGame(undefined);
         operationId.current = undefined;
         startedOperationId.current = undefined;
@@ -216,6 +221,7 @@ export default function App({ api = appApi }: AppProps) {
           setOperationWarning(event.value.error);
           break;
         }
+        if (startedOperationId.current === event.value.operationId) playSound("game-exit");
         setOperationError(event.value.error);
         setRunningGame(undefined);
         setOperationLogPath(event.value.logPath);
@@ -485,6 +491,7 @@ export default function App({ api = appApi }: AppProps) {
 
   return (
     <div className={`launcher-shell is-compact${activePage === "home" ? " is-home" : ""}`}>
+      <SoundEffects />
       <BackgroundCarousel />
       <Sidebar
         accountApi={api}
@@ -501,7 +508,7 @@ export default function App({ api = appApi }: AppProps) {
         <header
           className="topbar"
           onMouseDown={(event) => {
-            if (event.button !== 0 || (event.target as HTMLElement).closest(".window-controls, .game-activity")) return;
+            if (event.button !== 0 || (event.target as HTMLElement).closest(".window-controls, .game-activity, .game-console-backdrop")) return;
             void windowApi.startDragging();
           }}
         >

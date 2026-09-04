@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AppApi } from "../../app/tauri";
 import type { BuildSummary, GameVersionSummary, InstalledContent, ModrinthProject, ModrinthProjectDetails, ModrinthProjectType, ModrinthVersion } from "../../app/types";
+import { playSound } from "../../components/SoundEffects";
 
 const tabs: Array<{ id: ModrinthProjectType; label: string }> = [
   { id: "modpack", label: "Сборки" },
@@ -94,7 +95,7 @@ export function ContentPage({ api, versions, onBuildSelected, installTask, onIns
 
   async function select(build: BuildSummary) {
     setBusy(build.id); setError(undefined);
-    try { await api.selectBuild(build.id); await reloadBuilds(); await onBuildSelected(); }
+    try { await api.selectBuild(build.id); playSound("build-switch"); await reloadBuilds(); await onBuildSelected(); }
     catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(undefined); }
   }
@@ -134,7 +135,9 @@ export function ContentPage({ api, versions, onBuildSelected, installTask, onIns
         }
         await api.installModrinthProject(project.project_id, targetBuild.id, versionId);
       }
-      await reloadBuilds(); await onBuildSelected(); succeeded = true;
+      await reloadBuilds(); await onBuildSelected();
+      if (project.project_type === "modpack") playSound("install-complete");
+      succeeded = true;
     }
     catch (reason) { const message = errorMessage(reason); setError(message); onInstallTaskChange({ project, stage: "Установка не завершена", step: 0, error: message }); }
     finally { window.clearInterval(phaseTimer); setBusy(undefined); if (succeeded) onInstallTaskChange(undefined); }
@@ -148,6 +151,7 @@ export function ContentPage({ api, versions, onBuildSelected, installTask, onIns
     try {
       const result = await api.importMrpack();
       if (!result) { onInstallTaskChange(undefined); return; }
+      playSound("install-complete");
       onInstallTaskChange({ project: { ...placeholder, title: result.title }, stage: "Сборка установлена", step: 3 });
       await reloadBuilds(); await onBuildSelected();
       window.setTimeout(() => onInstallTaskChange(undefined), 1200);
@@ -183,7 +187,7 @@ export function ContentPage({ api, versions, onBuildSelected, installTask, onIns
 
       {builds.length > 0 && <div className="build-strip">
         {builds.map((build) => (
-          <button className={build.isActive ? "build-chip active" : "build-chip"} key={build.id} onClick={() => void select(build)} type="button">
+          <button className={build.isActive ? "build-chip active" : "build-chip"} data-sound="none" key={build.id} onClick={() => void select(build)} type="button">
             {build.iconUrl ? <img alt="" src={build.iconUrl} /> : <span>{build.name.slice(0, 1).toUpperCase()}</span>}
             <b>{build.name}</b><small>{build.loader} · {baseVersion(build)}</small>
           </button>

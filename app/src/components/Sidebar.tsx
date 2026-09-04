@@ -58,7 +58,7 @@ export function Sidebar({
       </nav>
       <div aria-hidden="true" className="sidebar-divider" />
       <nav aria-label="Установленные сборки" className="sidebar-builds">
-        {builds.map((build) => <button aria-label={build.name} aria-pressed={activePage === "library" && build.isActive} className={build.isActive ? "sidebar-build active" : "sidebar-build"} key={build.id} onClick={() => onOpenBuild(build.id)} title={build.name} type="button">{build.iconUrl ? <img alt="" src={build.iconUrl} /> : <span>{build.name.slice(0, 1).toUpperCase()}</span>}</button>)}
+        {builds.map((build) => <button aria-label={build.name} aria-pressed={activePage === "library" && build.isActive} className={build.isActive ? "sidebar-build active" : "sidebar-build"} data-sound="none" key={build.id} onClick={() => onOpenBuild(build.id)} title={build.name} type="button">{build.iconUrl ? <img alt="" src={build.iconUrl} /> : <span>{build.name.slice(0, 1).toUpperCase()}</span>}</button>)}
       </nav>
       <button aria-label="Добавить сборку" className="sidebar-add-build" onClick={() => onNavigate("content")} title="Добавить сборку" type="button">＋</button>
       <div className="sidebar-spacer" />

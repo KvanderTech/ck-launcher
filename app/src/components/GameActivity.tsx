@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { OperationApi } from "../app/tauri";
 import type { GameStartedEvent } from "../app/types";
@@ -84,7 +85,7 @@ export function GameActivity({ api, game, iconUrl, name }: GameActivityProps) {
         </button>
       </section>
 
-      {consoleOpen && (
+      {consoleOpen && createPortal(
         <div className="game-console-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setConsoleOpen(false); }}>
           <section aria-label="Консоль Minecraft" aria-modal="true" className="game-console" role="dialog">
             <header>
@@ -102,11 +103,12 @@ export function GameActivity({ api, game, iconUrl, name }: GameActivityProps) {
                 </button>
               </div>
             </header>
-            <div className="game-console-title"><span>Живая консоль</span><small>Данные обновляются автоматически</small></div>
+            <div className="game-console-title"><span>Консоль</span><small>Данные обновляются автоматически</small></div>
             <pre ref={outputRef} className="game-console-output">{log || logError || "Minecraft запускается…"}</pre>
             {logError && log && <p className="game-console-error">{logError}</p>}
           </section>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
