@@ -161,8 +161,12 @@ pub(crate) fn validated_profile_game_directory(
 ) -> Result<PathBuf, LauncherError> {
     let path = PathBuf::from(&profile.game_dir);
     AppPaths::new(path.clone()).validate_absolute_directory(&path)?;
-    path.canonicalize()
-        .map_err(|_| LauncherError::invalid_path())
+    // canonicalize() on Windows returns \\?\-prefixed verbatim paths which the
+    // JVM cannot read from argv (classpath, java.library.path) — strip the prefix.
+    Ok(crate::paths::strip_verbatim_prefix(
+        path.canonicalize()
+            .map_err(|_| LauncherError::invalid_path())?,
+    ))
 }
 
 fn validate_stored_game_directory(

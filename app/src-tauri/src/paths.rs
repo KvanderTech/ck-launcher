@@ -232,9 +232,25 @@ impl AppPaths {
     }
 }
 
+/// Removes the `\\?\` verbatim prefix Windows `canonicalize()` adds.
+/// Java (and most child processes) cannot resolve verbatim paths passed via argv.
+/// ponytail: non-UTF-16-representable paths are returned unchanged; game roots are always UTF-8.
+pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AppPaths, PathInspector, PathKind};
+    use super::{strip_verbatim_prefix, AppPaths, PathInspector, PathKind};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -247,6 +263,22 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ck-launcher-paths-{unique}"));
         fs::create_dir_all(&root).expect("temporary root is created");
         root
+    }
+
+    #[test]
+    fn verbatim_prefix_is_stripped_so_child_processes_can_read_the_path() {
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\game\mods\a.jar")),
+            PathBuf::from(r"C:\game\mods\a.jar")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\a.jar")),
+            PathBuf::from(r"\\server\share\a.jar")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"C:\game\mods\a.jar")),
+            PathBuf::from(r"C:\game\mods\a.jar")
+        );
     }
 
     #[test]
