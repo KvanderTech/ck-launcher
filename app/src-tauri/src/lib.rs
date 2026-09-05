@@ -112,6 +112,8 @@ pub fn run() {
             commands::content::list_offline_skins,
             commands::content::add_offline_skin,
             commands::content::delete_offline_skin,
+            commands::content::rename_offline_skin,
+            commands::content::set_offline_skin_favorite,
             commands::content::select_offline_skin,
             commands::content::minecraft_cosmetics,
             commands::content::apply_minecraft_skin,

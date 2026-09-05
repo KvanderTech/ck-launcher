@@ -69,6 +69,7 @@ pub struct OfflineSkin {
     pub name: String,
     pub file_path: String,
     pub is_active: bool,
+    pub is_favorite: bool,
 }
 
 #[async_trait]
@@ -535,7 +536,7 @@ impl Storage {
         &self,
         account_id: &str,
     ) -> Result<Vec<OfflineSkin>, LauncherError> {
-        let rows = sqlx::query("SELECT id,account_id,name,file_path,is_active FROM offline_skins WHERE account_id=? ORDER BY is_active DESC,created_at DESC")
+        let rows = sqlx::query("SELECT id,account_id,name,file_path,is_active,is_favorite FROM offline_skins WHERE account_id=? ORDER BY is_active DESC,created_at DESC")
             .bind(account_id).fetch_all(&self.pool).await.map_err(|_| LauncherError::storage_unavailable())?;
         rows.into_iter().map(skin_from_row).collect()
     }
@@ -551,8 +552,8 @@ impl Storage {
             .execute(&mut *tx)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
-        sqlx::query("INSERT INTO offline_skins (id,account_id,name,file_path,is_active,created_at) VALUES (?,?,?,?,1,?)")
-            .bind(&skin.id).bind(&skin.account_id).bind(&skin.name).bind(&skin.file_path).bind(now_timestamp()).execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("INSERT INTO offline_skins (id,account_id,name,file_path,is_active,is_favorite,created_at) VALUES (?,?,?,?,1,?,?)")
+            .bind(&skin.id).bind(&skin.account_id).bind(&skin.name).bind(&skin.file_path).bind(skin.is_favorite).bind(now_timestamp()).execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
         tx.commit()
             .await
             .map_err(|_| LauncherError::storage_unavailable())
@@ -563,13 +564,45 @@ impl Storage {
         account_id: &str,
         skin_id: &str,
     ) -> Result<Option<OfflineSkin>, LauncherError> {
-        let row = sqlx::query("DELETE FROM offline_skins WHERE account_id=? AND id=? RETURNING id,account_id,name,file_path,is_active")
+        let row = sqlx::query("DELETE FROM offline_skins WHERE account_id=? AND id=? RETURNING id,account_id,name,file_path,is_active,is_favorite")
             .bind(account_id)
             .bind(skin_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
         row.map(skin_from_row).transpose()
+    }
+
+    pub async fn update_offline_skin(
+        &self,
+        account_id: &str,
+        skin_id: &str,
+        name: Option<&str>,
+        is_favorite: Option<bool>,
+    ) -> Result<OfflineSkin, LauncherError> {
+        if let Some(name) = name {
+            sqlx::query("UPDATE offline_skins SET name=? WHERE account_id=? AND id=?")
+                .bind(name)
+                .bind(account_id)
+                .bind(skin_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        if let Some(is_favorite) = is_favorite {
+            sqlx::query("UPDATE offline_skins SET is_favorite=? WHERE account_id=? AND id=?")
+                .bind(is_favorite)
+                .bind(account_id)
+                .bind(skin_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        let row = sqlx::query("SELECT id,account_id,name,file_path,is_active,is_favorite FROM offline_skins WHERE account_id=? AND id=?")
+            .bind(account_id).bind(skin_id).fetch_optional(&self.pool).await
+            .map_err(|_| LauncherError::storage_unavailable())?
+            .ok_or_else(|| LauncherError::new("skin_not_found", "Скин не найден в библиотеке.", None, true))?;
+        skin_from_row(row)
     }
 
     pub async fn select_offline_skin(
@@ -693,6 +726,9 @@ fn skin_from_row(row: sqlx::sqlite::SqliteRow) -> Result<OfflineSkin, LauncherEr
             .map_err(|_| LauncherError::storage_unavailable())?,
         is_active: row
             .try_get("is_active")
+            .map_err(|_| LauncherError::storage_unavailable())?,
+        is_favorite: row
+            .try_get("is_favorite")
             .map_err(|_| LauncherError::storage_unavailable())?,
     })
 }
@@ -958,6 +994,7 @@ mod tests {
                 name: "private-file-name".to_owned(),
                 file_path: "skin-one.png".to_owned(),
                 is_active: true,
+                is_favorite: false,
             };
             storage.add_offline_skin(&skin).await.expect("adds skin");
 

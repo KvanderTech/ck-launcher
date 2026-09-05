@@ -153,6 +153,7 @@ export interface OfflineSkin {
   name: string;
   dataUrl: string;
   isActive: boolean;
+  isFavorite: boolean;
 }
 
 export interface MinecraftSkin {

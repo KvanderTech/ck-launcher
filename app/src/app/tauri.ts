@@ -118,6 +118,8 @@ export interface ContentApi {
   listOfflineSkins(accountId: string): Promise<OfflineSkin[]>;
   addOfflineSkin(accountId: string): Promise<OfflineSkin | null>;
   deleteOfflineSkin(accountId: string, skinId: string): Promise<void>;
+  renameOfflineSkin(accountId: string, skinId: string, name: string): Promise<OfflineSkin>;
+  setOfflineSkinFavorite(accountId: string, skinId: string, isFavorite: boolean): Promise<OfflineSkin>;
   selectOfflineSkin(accountId: string, skinId: string): Promise<OfflineSkin>;
   minecraftCosmetics(accountId: string): Promise<MinecraftCosmetics>;
   applyMinecraftSkin(accountId: string, skinId: string, variant: "classic" | "slim"): Promise<MinecraftCosmetics>;
@@ -186,6 +188,8 @@ export const appApi: AppApi = {
   listOfflineSkins: (accountId) => invoke<OfflineSkin[]>("list_offline_skins", { accountId }),
   addOfflineSkin: (accountId) => invoke<OfflineSkin | null>("add_offline_skin", { accountId }),
   deleteOfflineSkin: (accountId, skinId) => invoke<void>("delete_offline_skin", { accountId, skinId }),
+  renameOfflineSkin: (accountId, skinId, name) => invoke<OfflineSkin>("rename_offline_skin", { accountId, skinId, name }),
+  setOfflineSkinFavorite: (accountId, skinId, isFavorite) => invoke<OfflineSkin>("set_offline_skin_favorite", { accountId, skinId, isFavorite }),
   selectOfflineSkin: (accountId, skinId) => invoke<OfflineSkin>("select_offline_skin", { accountId, skinId }),
   minecraftCosmetics: (accountId) => invoke<MinecraftCosmetics>("minecraft_cosmetics", { accountId }),
   applyMinecraftSkin: (accountId, skinId, variant) => invoke<MinecraftCosmetics>("apply_minecraft_skin", { accountId, skinId, variant }),

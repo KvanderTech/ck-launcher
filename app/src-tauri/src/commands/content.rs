@@ -192,6 +192,7 @@ pub struct OfflineSkinView {
     name: String,
     data_url: String,
     is_active: bool,
+    is_favorite: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1076,6 +1077,7 @@ impl ContentService {
                 base64::engine::general_purpose::STANDARD.encode(bytes)
             ),
             is_active: skin.is_active,
+            is_favorite: skin.is_favorite,
         })
     }
 }
@@ -1904,6 +1906,7 @@ pub async fn add_offline_skin(
             .to_owned(),
         file_path: target.to_string_lossy().into_owned(),
         is_active: true,
+        is_favorite: false,
     };
     service.storage.add_offline_skin(&skin).await?;
     service.skin_view(skin).map(Some)
@@ -1942,6 +1945,41 @@ pub async fn delete_offline_skin(
         .delete_offline_skin(&account_id, &skin_id)
         .await?;
     Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn rename_offline_skin(
+    account_id: String,
+    skin_id: String,
+    name: String,
+    service: State<'_, ContentService>,
+) -> Result<OfflineSkinView, LauncherError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err(input_error(
+            "skin_name_invalid",
+            "Название должно содержать от 1 до 60 символов.",
+        ));
+    }
+    let skin = service
+        .storage
+        .update_offline_skin(&account_id, &skin_id, Some(name), None)
+        .await?;
+    service.skin_view(skin)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_offline_skin_favorite(
+    account_id: String,
+    skin_id: String,
+    is_favorite: bool,
+    service: State<'_, ContentService>,
+) -> Result<OfflineSkinView, LauncherError> {
+    let skin = service
+        .storage
+        .update_offline_skin(&account_id, &skin_id, None, Some(is_favorite))
+        .await?;
+    service.skin_view(skin)
 }
 
 const MINECRAFT_PROFILE_ENDPOINT: &str = "https://api.minecraftservices.com/minecraft/profile";

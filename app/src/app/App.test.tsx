@@ -107,6 +107,11 @@ function createApi(handlers: EventHandlers) {
     readLatestGameLog: vi.fn(async () => ""),
     openLatestGameLog: vi.fn(async () => undefined),
     listOfflineSkins: vi.fn(async () => []),
+    addOfflineSkin: vi.fn(async () => null),
+    deleteOfflineSkin: vi.fn(async () => undefined),
+    renameOfflineSkin: vi.fn(async (_accountId, _skinId, name) => ({ id: _skinId, accountId: _accountId, name, dataUrl: "data:image/png;base64,", isActive: false, isFavorite: false })),
+    setOfflineSkinFavorite: vi.fn(async (_accountId, _skinId, isFavorite) => ({ id: _skinId, accountId: _accountId, name: "Скин", dataUrl: "data:image/png;base64,", isActive: false, isFavorite })),
+    selectOfflineSkin: vi.fn(async (_accountId, skinId) => ({ id: skinId, accountId: _accountId, name: "Скин", dataUrl: "data:image/png;base64,", isActive: true, isFavorite: false })),
     minecraftCosmetics: vi.fn(async () => ({
       id: "uuid-kvander",
       name: "Kvander",
