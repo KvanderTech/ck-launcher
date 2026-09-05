@@ -148,6 +148,16 @@ afterEach(() => {
 });
 
 describe("launcher application", () => {
+  it("boots with empty versions when the metadata network call fails", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    api.listGameVersions.mockRejectedValueOnce(new Error("metadata unavailable"));
+    renderApp(api);
+
+    await screen.findByLabelText("Лаунчер для комфортной игры");
+    expect(screen.queryByText("Не удалось подготовить лаунчер")).toBeNull();
+  });
+
   it("warms the active Minecraft cosmetics before the skins page is opened", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
