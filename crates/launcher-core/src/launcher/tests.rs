@@ -617,11 +617,36 @@ impl ProcessSpawner for MockSpawner {
 }
 
 #[derive(Default)]
-struct RecordingEvents(Mutex<Vec<GameProcessEvent>>);
+struct RecordingEvents(Mutex<Vec<GameProcessEvent>>, tokio::sync::Notify);
+
+impl RecordingEvents {
+    async fn wait_terminal(&self, operation: &str) {
+        // Registry completion precedes event delivery. Wait for the event itself so
+        // assertions cannot race the supervisor on a different runtime worker.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let notified = self.1.notified();
+                let complete = self.0.lock().expect("events lock").iter().any(|event| {
+                    matches!(event,
+                        GameProcessEvent::Exited { operation_id, .. }
+                        | GameProcessEvent::Error { operation_id, terminal: true, .. }
+                        if operation_id == operation)
+                });
+                if complete {
+                    return;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("terminal event delivered");
+    }
+}
 
 impl EventSink for RecordingEvents {
     fn emit(&self, event: GameProcessEvent) {
         self.0.lock().expect("events lock").push(event);
+        self.1.notify_one();
     }
 }
 
@@ -663,16 +688,7 @@ fn nonzero_exit_records_stable_failure_and_emits_one_terminal_error() {
             assert_eq!(commands[0].executable, expected_executable);
         }
         release.add_permits(1);
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if launcher.status(&operation).expect("status").exit_code == Some(7) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("process exits");
+        events.wait_terminal(&operation).await;
         let recorded = events.0.lock().expect("events lock");
         assert_eq!(
             recorded
@@ -733,16 +749,7 @@ fn zero_exit_remains_successful_and_emits_one_exit() {
         );
 
         let operation = launcher.launch("default").await.expect("launch starts");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if launcher.status(&operation).expect("status").exit_code == Some(0) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("process exits");
+        events.wait_terminal(&operation).await;
 
         let status = launcher.status(&operation).expect("status");
         assert!(status.error.is_none());
@@ -838,16 +845,7 @@ fn auxiliary_output_failure_preserves_exit_status_and_emits_exit_exactly_once() 
         );
 
         let operation = launcher.launch("default").await.expect("launch");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if launcher.status(&operation).expect("status").error.is_some() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("auxiliary error recorded");
+        events.wait_terminal(&operation).await;
 
         let status = launcher.status(&operation).expect("status");
         assert_eq!(status.exit_code, Some(0));

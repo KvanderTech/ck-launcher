@@ -5,13 +5,15 @@ QWidget *LauncherWindow::accountsPage() {
     auto *center = new QVBoxLayout(gate);
     center->setContentsMargins(50, 94, 50, 70);
     auto *login = panel();
-    login->setMaximumWidth(760);
+    login->setFixedWidth(760);
+    login->setObjectName(s("login-card"));
     auto *copy = new QVBoxLayout(login);
     copy->setContentsMargins(34, 32, 34, 32);
     copy->setSpacing(16);
     copy->addWidget(label(tr("ЛИЦЕНЗИОННЫЙ АККАУНТ"), "eyebrow"));
     auto *title = label(tr("Войдите, чтобы продолжить"), "heading");
     title->setWordWrap(true);
+    title->setObjectName(s("login-heading"));
     copy->addWidget(title);
     auto *hint =
         label(tr("Откроется безопасная страница входа Microsoft в вашем браузере."), "muted");

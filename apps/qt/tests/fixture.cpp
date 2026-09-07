@@ -133,6 +133,10 @@ int main(int argc, char **argv) {
         };
         if (method == key("hello"))
             result = QJsonObject{{key("protocolVersion"), 1}};
+        else if (method == key("load_public_image"))
+            result = params.value(key("url")).toString().contains(key("textures.minecraft.net"))
+                         ? currentSkin.mid(22)
+                         : head.mid(22);
         else if (method == key("launch_or_install")) {
             ++launches;
             const auto id = key("launch-") + QString::number(launches);
@@ -190,7 +194,7 @@ int main(int argc, char **argv) {
                         {key("minecraftName"), i == 1 ? key("Player") : key("Alex")},
                         {key("minecraftUuid"), key("test-only")},
                         {key("isActive"), account == key("account-") + QString::number(i)},
-                        {key("headUrl"), head}});
+                        {key("headUrl"), key("https://mc-heads.net/avatar/test-fixture/64")}});
             result = accounts;
         } else if (method == key("set_active_account"))
             account = params.value(key("accountId")).toString();
@@ -199,12 +203,14 @@ int main(int argc, char **argv) {
         else if (method == key("list_offline_skins"))
             result = skins;
         else if (method == key("minecraft_cosmetics"))
-            result =
-                QJsonObject{{key("skins"), QJsonArray{QJsonObject{{key("id"), key("current")},
-                                                                  {key("state"), key("ACTIVE")},
-                                                                  {key("variant"), key("CLASSIC")},
-                                                                  {key("url"), currentSkin}}}},
-                            {key("capes"), capes}};
+            result = QJsonObject{
+                {key("skins"),
+                 QJsonArray{QJsonObject{
+                     {key("id"), key("current")},
+                     {key("state"), key("ACTIVE")},
+                     {key("variant"), key("CLASSIC")},
+                     {key("url"), key("http://textures.minecraft.net/texture/test-fixture")}}}},
+                {key("capes"), capes}};
         else if (method == key("set_offline_skin_favorite") ||
                  method == key("rename_offline_skin") || method == key("apply_minecraft_skin")) {
             for (int i = 0; i < skins.size(); ++i) {

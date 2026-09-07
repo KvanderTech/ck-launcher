@@ -23,6 +23,13 @@ class MotionButton : public QPushButton {
         });
     }
 
+    QSize minimumSizeHint() const override {
+        auto hint = QPushButton::minimumSizeHint();
+        if (property("textButton").toBool())
+            hint.setWidth(0);
+        return hint;
+    }
+
   protected:
     bool event(QEvent *event) override {
         const bool result = QPushButton::event(event);
@@ -43,7 +50,15 @@ class MotionButton : public QPushButton {
         return result;
     }
     void paintEvent(QPaintEvent *event) override {
-        QPushButton::paintEvent(event);
+        if (property("textButton").toBool()) {
+            QStylePainter textPainter(this);
+            QStyleOptionButton option;
+            initStyleOption(&option);
+            option.text = textPainter.fontMetrics().elidedText(option.text, Qt::ElideRight,
+                                                               qMax(0, width() - 4));
+            textPainter.drawControl(QStyle::CE_PushButton, option);
+        } else
+            QPushButton::paintEvent(event);
         if (!isEnabled() || (hover < .01 && press < .01))
             return;
         QPainter p(this);

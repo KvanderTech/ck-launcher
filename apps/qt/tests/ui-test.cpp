@@ -211,6 +211,15 @@ class UiTest final : public QObject {
         qApp->setProperty("reduceMotion", true);
     }
     void trustedImagesUseHttps() {
+        bool fetched = false;
+        for (const auto &request : state().value(s("requests")).toArray())
+            if (value(request.toObject(), "method") == s("load_public_image")) {
+                fetched = true;
+                QVERIFY(value(request.toObject().value(s("params")).toObject(), "url")
+                            .startsWith(s("https://")));
+            }
+        QVERIFY(fetched);
+
         QVERIFY(QImageReader::supportedImageFormats().contains("webp"));
         QVERIFY(QImageReader::supportedImageFormats().contains("jpeg"));
         QCOMPARE(ImagePool::remoteUrl(s("http://textures.minecraft.net/texture/abc")).scheme(),
@@ -257,6 +266,9 @@ class UiTest final : public QObject {
         QTRY_VERIFY(login.findChild<QPushButton *>(s("playButton"))->isEnabled());
         auto *enter = login.findChild<QPushButton *>(s("microsoft-login"));
         QVERIFY(enter->isVisible());
+        QCOMPARE(login.findChild<QFrame *>(s("login-card"))->width(), 760);
+        auto *title = login.findChild<QLabel *>(s("login-heading"));
+        QVERIFY(title->width() >= title->fontMetrics().horizontalAdvance(title->text()));
         QVERIFY(login.grab().save(output + s("/login.png")));
         QTest::mouseClick(enter, Qt::LeftButton);
         QTRY_VERIFY(login.findChild<QPushButton *>(s("skin-card-current")));

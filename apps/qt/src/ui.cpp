@@ -145,6 +145,11 @@ QLabel *label(const QString &text, const char *role) {
     w->setTextFormat(Qt::PlainText);
     if (role)
         w->setProperty(role, true);
+    if (role && (qstrcmp(role, "strong") == 0 || qstrcmp(role, "detailHeading") == 0 ||
+                 qstrcmp(role, "chipTitle") == 0)) {
+        w->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        w->setToolTip(text);
+    }
     return w;
 }
 void polish(QWidget *w) {
