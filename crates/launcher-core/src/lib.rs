@@ -5,6 +5,7 @@ pub mod context;
 pub mod downloads;
 pub mod error;
 pub mod events;
+pub mod images;
 pub mod installer;
 pub mod launcher;
 pub mod metadata;

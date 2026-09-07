@@ -2,16 +2,104 @@
 #include <QJsonObject>
 #include <QtWidgets>
 #include <functional>
+// Animations only run during interaction; geometry stays fixed inside layouts.
+class MotionButton : public QPushButton {
+  public:
+    explicit MotionButton(QWidget *parent = nullptr) : MotionButton(QString(), parent) {}
+    explicit MotionButton(const QString &text, QWidget *parent = nullptr)
+        : QPushButton(text, parent) {
+        setCursor(Qt::PointingHandCursor);
+        hoverAnimation.setDuration(170);
+        hoverAnimation.setEasingCurve(QEasingCurve::OutCubic);
+        pressAnimation.setDuration(100);
+        pressAnimation.setEasingCurve(QEasingCurve::OutCubic);
+        connect(&hoverAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+            hover = v.toReal();
+            update();
+        });
+        connect(&pressAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+            press = v.toReal();
+            update();
+        });
+    }
+
+  protected:
+    bool event(QEvent *event) override {
+        const bool result = QPushButton::event(event);
+        if (event->type() == QEvent::Enter)
+            animate(hoverAnimation, hover, 1);
+        else if (event->type() == QEvent::Leave) {
+            animate(hoverAnimation, hover, 0);
+            animate(pressAnimation, press, 0);
+        } else if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::KeyPress)
+            animate(pressAnimation, press, isDown() ? 1 : 0);
+        else if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::KeyRelease)
+            animate(pressAnimation, press, 0);
+        else if (event->type() == QEvent::EnabledChange && !isEnabled()) {
+            hoverAnimation.stop();
+            pressAnimation.stop();
+            hover = press = 0;
+        }
+        return result;
+    }
+    void paintEvent(QPaintEvent *event) override {
+        QPushButton::paintEvent(event);
+        if (!isEnabled() || (hover < .01 && press < .01))
+            return;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const QRectF box = QRectF(rect()).adjusted(1, 1, -1, -1);
+        const qreal radius = property("iconOnly").toBool()   ? 10
+                             : property("skinCard").toBool() ? 18
+                                                             : 12;
+        QLinearGradient light(0, 0, 0, height());
+        light.setColorAt(0, QColor(200, 241, 255, int(28 * hover)));
+        light.setColorAt(1, QColor(30, 152, 245, int(10 * hover)));
+        p.setBrush(light);
+        p.setPen(QPen(QColor(101, 211, 255, int(105 * hover)), 1));
+        p.drawRoundedRect(box, radius, radius);
+        if (press > .01) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0, 19, 43, int(60 * press)));
+            p.drawRoundedRect(box, radius, radius);
+        }
+    }
+
+  private:
+    QVariantAnimation hoverAnimation, pressAnimation;
+    qreal hover = 0, press = 0;
+    void animate(QVariantAnimation &animation, qreal &current, qreal target) {
+        animation.stop();
+        if (qApp->property("reduceMotion").toBool()) {
+            current = target;
+            update();
+            return;
+        }
+        animation.setStartValue(current);
+        animation.setEndValue(target);
+        animation.start();
+    }
+};
 inline QString s(const char *text) {
-    return QString::fromLatin1(text);
+    return QString::fromUtf8(text);
 }
 inline QString value(const QJsonObject &object, const char *key) {
     return object.value(s(key)).toString();
 }
+inline QString baseGameVersion(const QJsonObject &build) {
+    const auto version = value(build, "gameVersion"), loader = value(build, "loader"),
+               loaderVersion = value(build, "loaderVersion");
+    if ((loader == s("fabric") || loader == s("quilt")) && !loaderVersion.isEmpty()) {
+        const auto prefix = loader + s("-loader-") + loaderVersion + s("-");
+        if (version.startsWith(prefix))
+            return version.mid(prefix.size());
+    }
+    return version;
+}
 inline QPushButton *button(const QString &title, QBoxLayout *row,
                            const std::function<void()> &action, QObject *context,
                            bool primary = false) {
-    auto *b = new QPushButton(title);
+    auto *b = new MotionButton(title);
     if (primary)
         b->setProperty("primary", true);
     b->setCursor(Qt::PointingHandCursor);
@@ -39,7 +127,7 @@ inline void cells(QTableWidget *table, int row, const QStringList &values) {
 }
 inline QVBoxLayout *pageLayout(QWidget *page, const QString &title, const QString &subtitle) {
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(30, 24, 30, 16);
+    layout->setContentsMargins(40, 30, 44, 24);
     layout->setSpacing(14);
     auto *heading = new QLabel(title);
     heading->setProperty("heading", true);

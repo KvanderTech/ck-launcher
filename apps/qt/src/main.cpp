@@ -20,7 +20,9 @@ int main(int argc, char **argv) {
     QTemporaryDir smokeData;
     if (smoke) {
         app.setApplicationName(s("CKLauncherQtSmoke"));
-        QFontDatabase::addApplicationFont(qEnvironmentVariable("WINDIR") + s("/Fonts/segoeui.ttf"));
+        for (const auto &font :
+             {s("segoeui.ttf"), s("segoeuib.ttf"), s("seguisb.ttf"), s("seguibl.ttf")})
+            QFontDatabase::addApplicationFont(qEnvironmentVariable("WINDIR") + s("/Fonts/") + font);
     }
     QString pack;
     for (const auto &arg : args.mid(1))
@@ -54,6 +56,8 @@ int main(int argc, char **argv) {
         app.setStyleSheet(QString::fromUtf8(theme.readAll()));
     Backend core;
     LauncherWindow window(&core);
+    if (smoke)
+        QObject::disconnect(&core, &Backend::ready, &window, &LauncherWindow::initialize);
     QLocalServer server;
     server.setSocketOptions(QLocalServer::UserAccessOption);
     if (!smoke) {
@@ -101,7 +105,11 @@ int main(int argc, char **argv) {
                                  return;
                              }
                              window.initialize();
-                             QTimer::singleShot(1500, &app, [&] {
+                             const auto pageOption = args.indexOf(s("--page"));
+                             if (pageOption >= 0 && pageOption + 1 < args.size())
+                                 window.showPage(args[pageOption + 1]);
+                             window.resize(1280, 720);
+                             QTimer::singleShot(2000, &app, [&] {
                                  const auto index = args.indexOf(s("--screenshot"));
                                  if (index >= 0 && index + 1 < args.size())
                                      window.grab().save(args[index + 1]);

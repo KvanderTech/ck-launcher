@@ -1,150 +1,28 @@
-#include "widgets.h"
 #include "window.h"
 QWidget *LauncherWindow::libraryPage() {
     auto *page = new QWidget;
-    auto *layout = pageLayout(page, tr("Твой Minecraft. Твои сборки."),
-                              tr("Разные версии игры, моды и миры — в отдельных сборках. Всё "
-                                 "нужное для следующего приключения."));
-    auto *actions = new QHBoxLayout;
-    layout->addLayout(actions);
-    button(tr("+ Создать сборку"), actions, [this] { createBuild(); }, this, true);
-    button(tr("Импорт .mrpack"), actions, [this] { importPack(); }, this);
-    actions->addStretch();
-    button(tr("Обновить"), actions, [this] { refreshLibrary(); }, this);
-    libraryHint = new QLabel(tr("Загружаем библиотеку…"));
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(40, 44, 44, 24);
+    layout->setSpacing(20);
+    auto *head = new QHBoxLayout;
+    head->addWidget(label(tr("Библиотека"), "heading"), 1);
+    button(tr("+ Создать сборку"), head, [this] { createBuild(); }, this);
+    button(
+        tr("+ Найти сборку"), head,
+        [this] {
+            catalogKind = s("modpack");
+            navigate(2);
+            searchCatalog();
+        },
+        this, true);
+    layout->addLayout(head);
+    libraryCards = new CardGrid(500, 84, 2);
+    layout->addWidget(libraryCards);
+    libraryHint = label(tr("Загружаем библиотеку…"), "muted");
     libraryHint->setWordWrap(true);
     layout->addWidget(libraryHint);
-    buildsTable = table({tr("Сборка"), tr("Minecraft"), tr("Загрузчик")}, layout);
-    buildsTable->setObjectName(s("buildsTable"));
-    connect(buildsTable, &QTableWidget::itemSelectionChanged, this, [this] {
-        int row = buildsTable->currentRow();
-        if (row >= 0 && row < builds.size()) {
-            selectedBuild = value(builds[row].toObject(), "id");
-            refreshContent();
-        }
-    });
-    auto *buildActions = new QHBoxLayout;
-    layout->addLayout(buildActions);
-    play = button(tr("Играть"), buildActions, [this] { launch(); }, this, true);
-    play->setObjectName(s("playButton"));
-    play->setEnabled(false);
-    stop = button(
-        tr("Остановить"), buildActions,
-        [this] {
-            if (!operationId.isEmpty())
-                call(s("stop_game"), {{s("operationId"), operationId}});
-        },
-        this);
-    stop->setEnabled(false);
-    button(
-        tr("Переименовать"), buildActions,
-        [this] {
-            if (selectedBuild.isEmpty())
-                return;
-            bool ok;
-            auto name =
-                QInputDialog::getText(this, tr("Название сборки"), tr("Новое название"),
-                                      QLineEdit::Normal, value(currentBuild(), "name"), &ok);
-            if (ok)
-                call(
-                    s("rename_build"), {{s("buildId"), selectedBuild}, {s("name"), name}},
-                    [this](const QJsonValue &) { refreshLibrary(); }, true);
-        },
-        this);
-    button(
-        tr("Восстановить"), buildActions,
-        [this] {
-            if (!selectedBuild.isEmpty())
-                call(
-                    s("repair_build"), {{s("buildId"), selectedBuild}},
-                    [this](const QJsonValue &) { refreshLibrary(); }, true);
-        },
-        this);
-    button(tr("Файлы"), buildActions, [this] { browseFiles(); }, this);
-    button(
-        tr("Удалить"), buildActions,
-        [this] {
-            if (selectedBuild.isEmpty())
-                return;
-            if (QMessageBox::question(
-                    this, tr("Удалить сборку?"),
-                    tr("«%1» будет перемещена в папку trash лаунчера вместе с её мирами.")
-                        .arg(value(currentBuild(), "name")),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
-                call(
-                    s("delete_build"), {{s("buildId"), selectedBuild}},
-                    [this](const QJsonValue &) {
-                        selectedBuild.clear();
-                        refreshLibrary();
-                    },
-                    true);
-        },
-        this);
-    auto *title = new QLabel(tr("Состав сборки"));
-    title->setProperty("sectionTitle", true);
-    layout->addWidget(title);
-    installedTable = table({tr("Название"), tr("Версия"), tr("Состояние")}, layout);
-    auto *contentActions = new QHBoxLayout;
-    layout->addLayout(contentActions);
-    button(tr("Открыть каталог"), contentActions, [this] { navigation->setCurrentRow(1); }, this);
-    button(
-        tr("Добавить файл"), contentActions,
-        [this] {
-            if (selectedBuild.isEmpty())
-                return;
-            bool ok;
-            auto kind = QInputDialog::getItem(
-                this, tr("Тип содержимого"), tr("Что добавить?"),
-                {tr("Мод .jar"), tr("Ресурспак .zip"), tr("Шейдер .zip")}, 0, false, &ok);
-            if (!ok)
-                return;
-            const auto type = kind.startsWith(tr("Мод"))      ? s("mod")
-                              : kind.startsWith(tr("Ресурс")) ? s("resourcepack")
-                                                              : s("shader");
-            if (type == s("mod") &&
-                QMessageBox::question(
-                    this, tr("Доверие к моду"),
-                    tr("Мод может выполнять код на компьютере. Вы доверяете его автору?"),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
-                return;
-            call(
-                s("import_local_content"),
-                {{s("buildId"), selectedBuild}, {s("projectType"), type}},
-                [this](const QJsonValue &) { refreshContent(); }, true);
-        },
-        this);
-    button(
-        tr("Включить / отключить"), contentActions,
-        [this] {
-            int r = installedTable->currentRow();
-            if (r < 0 || r >= installed.size())
-                return;
-            auto i = installed[r].toObject();
-            call(
-                s("set_installed_content_enabled"),
-                {{s("buildId"), selectedBuild},
-                 {s("projectId"), value(i, "projectId")},
-                 {s("enabled"), !i.value(s("enabled")).toBool()}},
-                [this](const QJsonValue &) { refreshContent(); }, true);
-        },
-        this);
-    button(
-        tr("Удалить файл"), contentActions,
-        [this] {
-            int r = installedTable->currentRow();
-            if (r < 0 || r >= installed.size())
-                return;
-            auto i = installed[r].toObject();
-            if (QMessageBox::question(
-                    this, tr("Удаление содержимого"), tr("Удалить «%1»?").arg(value(i, "title")),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
-                call(
-                    s("remove_installed_content"),
-                    {{s("buildId"), selectedBuild}, {s("projectId"), value(i, "projectId")}},
-                    [this](const QJsonValue &) { refreshContent(); }, true);
-        },
-        this);
-    return page;
+    layout->addStretch();
+    return scrollPage(page);
 }
 QJsonObject LauncherWindow::currentBuild() const {
     for (const auto &b : builds)
@@ -155,47 +33,337 @@ QJsonObject LauncherWindow::currentBuild() const {
 void LauncherWindow::refreshLibrary() {
     call(s("list_builds"), {}, [this](const QJsonValue &v) {
         builds = v.toArray();
-        QSignalBlocker block(buildsTable);
-        buildsTable->setRowCount(builds.size());
-        int selected = 0;
-        for (int r = 0; r < builds.size(); ++r) {
-            auto b = builds[r].toObject();
-            cells(buildsTable, r, {value(b, "name"), value(b, "gameVersion"), value(b, "loader")});
-            if (value(b, "id") == selectedBuild ||
-                (selectedBuild.isEmpty() && b.value(s("isActive")).toBool()))
-                selected = r;
-        }
-        libraryHint->setText(
-            builds.isEmpty()
-                ? tr("Пока нет сборок. Создай первую или импортируй доверенный модпак.")
-                : tr("Сборок: %1 · Выбери сборку и нажми «Играть».").arg(builds.size()));
-        if (!builds.isEmpty()) {
-            buildsTable->selectRow(selected);
-            selectedBuild = value(builds[selected].toObject(), "id");
-        } else
+        bool found = false;
+        for (const auto &b : builds)
+            if (value(b.toObject(), "id") == selectedBuild)
+                found = true;
+        if (!found) {
             selectedBuild.clear();
+            for (const auto &b : builds)
+                if (b.toObject().value(s("isActive")).toBool())
+                    selectedBuild = value(b.toObject(), "id");
+            if (selectedBuild.isEmpty() && !builds.isEmpty())
+                selectedBuild = value(builds[0].toObject(), "id");
+        }
+        renderLibrary();
         refreshContent();
     });
 }
+void LauncherWindow::renderLibrary() {
+    libraryCards->clear();
+    clearLayout(sidebarBuilds);
+    clearLayout(catalogBuilds);
+    libraryHint->setText(builds.isEmpty()
+                             ? tr("Пока нет сборок. Создайте свою или найдите готовую в каталоге.")
+                             : QString());
+    libraryHint->setVisible(builds.isEmpty());
+    QSignalBlocker block(buildFilter);
+    buildFilter->clear();
+    for (const auto &item : builds) {
+        auto b = item.toObject();
+        const auto id = value(b, "id");
+        auto *card = panel();
+        card->setProperty("selected", b.value(s("isActive")).toBool());
+        card->setObjectName(s("build-card-") + id);
+        auto *row = new QHBoxLayout(card);
+        row->setContentsMargins(12, 10, 12, 10);
+        row->setSpacing(12);
+        auto *icon = new Picture(50);
+        icon->setFallback(value(b, "name"));
+        row->addWidget(icon);
+        images->load(value(b, "iconUrl"), icon,
+                     [icon](const QImage &image) { icon->setImage(image); });
+        auto *copy = new QVBoxLayout;
+        copy->setSpacing(2);
+        auto *title = new MotionButton(value(b, "name"));
+        title->setProperty("textButton", true);
+        title->setProperty("strong", true);
+        title->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        title->setToolTip(tr("Открыть сборку"));
+        connect(title, &QPushButton::clicked, this, [this, id] { openBuild(id); });
+        copy->addWidget(title);
+        QString loader = value(b, "loader");
+        if (!loader.isEmpty())
+            loader[0] = loader[0].toUpper();
+        copy->addWidget(label(loader + s(" · ") + baseGameVersion(b), "small"));
+        if (b.value(s("isActive")).toBool())
+            copy->addWidget(label(tr("Текущая сборка"), "accentSmall"));
+        row->addLayout(copy, 1);
+        auto *run = button(
+            tr("Играть"), row,
+            [this, id] {
+                selectedBuild = id;
+                launch();
+            },
+            this, true);
+        run->setProperty("playAction", true);
+        run->setFixedSize(92, 38);
+        libraryCards->append(card);
+        auto *quick = new MotionButton;
+        quick->setFixedSize(44, 44);
+        quick->setProperty("buildShortcut", true);
+        quick->setProperty("selected", b.value(s("isActive")).toBool());
+        quick->setToolTip(value(b, "name"));
+        quick->setAccessibleName(value(b, "name"));
+        quick->setIconSize(QSize(36, 36));
+        quick->setText(value(b, "name").left(1));
+        quick->setCursor(Qt::PointingHandCursor);
+        sidebarBuilds->addWidget(quick, 0, Qt::AlignHCenter);
+        images->load(value(b, "iconUrl"), quick, [quick](const QImage &image) {
+            if (!image.isNull()) {
+                quick->setIcon(QIcon(QPixmap::fromImage(image)));
+                quick->setText({});
+            }
+        });
+        connect(quick, &QPushButton::clicked, this, [this, id] { openBuild(id); });
+        auto *chip = new MotionButton;
+        chip->setProperty("buildChip", true);
+        chip->setProperty("selected", id == selectedBuild);
+        chip->setFixedSize(218, 62);
+        auto *chipLayout = new QHBoxLayout(chip);
+        chipLayout->setContentsMargins(12, 8, 12, 8);
+        chipLayout->setSpacing(10);
+        auto *chipIcon = new Picture(38);
+        chipIcon->setFallback(value(b, "name"));
+        chipIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
+        chipLayout->addWidget(chipIcon);
+        images->load(value(b, "iconUrl"), chipIcon,
+                     [chipIcon](const QImage &i) { chipIcon->setImage(i); });
+        auto *chipCopy = new QVBoxLayout;
+        chipCopy->setSpacing(2);
+        auto *chipTitle = label(value(b, "name"), "chipTitle");
+        chipTitle->setAttribute(Qt::WA_TransparentForMouseEvents);
+        chipTitle->setMaximumWidth(145);
+        chipCopy->addWidget(chipTitle);
+        auto *chipVersion = label(value(b, "loader") + s(" · ") + baseGameVersion(b), "mutedSmall");
+        chipVersion->setAttribute(Qt::WA_TransparentForMouseEvents);
+        chipCopy->addWidget(chipVersion);
+        chipLayout->addLayout(chipCopy, 1);
+        chip->setToolTip(value(b, "name"));
+        catalogBuilds->addWidget(chip);
+        connect(chip, &QPushButton::clicked, this, [this, id] {
+            buildFilter->setCurrentIndex(buildFilter->findData(id));
+            renderLibrary();
+        });
+        buildFilter->addItem(value(b, "name"), id);
+        if (id == selectedBuild)
+            buildFilter->setCurrentIndex(buildFilter->count() - 1);
+    }
+    catalogBuilds->addStretch();
+    if (auto *scroll = findChild<QScrollArea *>(s("catalog-builds-scroll")))
+        scroll->setVisible(!builds.isEmpty());
+    if (auto *scroll = findChild<QScrollArea *>(s("sidebar-builds-scroll")))
+        scroll->setFixedHeight(qMin(278, int(builds.size()) * 52));
+    auto b = currentBuild();
+    detailName->setText(value(b, "name"));
+    detailIcon->setFallback(value(b, "name"));
+    images->load(value(b, "iconUrl"), detailIcon, [this, id = selectedBuild](const QImage &image) {
+        if (id == selectedBuild)
+            detailIcon->setImage(image);
+    });
+    gameDirectory->setText(value(b, "gameDir").isEmpty() ? value(profile, "gameDir")
+                                                         : value(b, "gameDir"));
+    updatePlayState();
+}
+void LauncherWindow::openBuild(const QString &id) {
+    selectedBuild = id;
+    renderLibrary();
+    refreshContent();
+    navigate(5);
+    if (!busy && !running && operationId.isEmpty())
+        call(
+            s("select_build"), {{s("buildId"), id}},
+            [this](const QJsonValue &v) {
+                profile = v.toObject();
+                refreshLibrary();
+            },
+            true);
+}
 void LauncherWindow::refreshContent() {
-    if (selectedBuild.isEmpty()) {
+    const auto id = selectedBuild;
+    if (id.isEmpty()) {
         installed = {};
-        installedTable->setRowCount(0);
+        renderContent();
         return;
     }
-    const auto id = selectedBuild;
     call(s("list_installed_content"), {{s("buildId"), id}}, [this, id](const QJsonValue &v) {
         if (id != selectedBuild)
             return;
         installed = v.toArray();
-        installedTable->setRowCount(installed.size());
-        for (int r = 0; r < installed.size(); ++r) {
-            auto i = installed[r].toObject();
-            cells(installedTable, r,
-                  {value(i, "title"), value(i, "versionId"),
-                   i.value(s("enabled")).toBool() ? tr("Включён") : tr("Отключён")});
-        }
+        renderContent();
+        if (currentPage == 2)
+            renderCatalog();
     });
+}
+void LauncherWindow::renderContent() {
+    if (auto *tabs = findChild<QTabBar *>(s("buildTabs")))
+        tabs->setTabText(0, tr("Контент %1").arg(installed.size()));
+    clearLayout(contentRows);
+    int visible = 0;
+    for (const auto &item : installed) {
+        auto content = item.toObject();
+        auto type = value(content, "projectType");
+        if (!contentKind.isEmpty() && contentKind != type)
+            continue;
+        ++visible;
+        auto *card = panel();
+        auto *row = new QHBoxLayout(card);
+        row->setContentsMargins(16, 12, 16, 12);
+        row->setSpacing(14);
+        auto *icon = new Picture(52);
+        icon->setFallback(value(content, "title"));
+        row->addWidget(icon);
+        images->load(value(content, "iconUrl"), icon,
+                     [icon](const QImage &i) { icon->setImage(i); });
+        auto *copy = new QVBoxLayout;
+        copy->setSpacing(3);
+        copy->addWidget(label(value(content, "title"), "strong"));
+        QString kind = type == s("mod")            ? tr("Мод")
+                       : type == s("resourcepack") ? tr("Ресурспак")
+                       : type == s("shader")       ? tr("Шейдер")
+                                                   : tr("Модпак");
+        copy->addWidget(label(kind, "small"));
+        auto *filename = label(value(content, "filename"), "small");
+        filename->setWordWrap(true);
+        copy->addWidget(filename);
+        row->addLayout(copy, 1);
+        const auto build = selectedBuild, project = value(content, "projectId");
+        bool enabled = content.value(s("enabled")).toBool();
+        auto *toggle = button(
+            enabled ? tr("Включён") : tr("Выключен"), row,
+            [this, build, project, enabled] {
+                call(
+                    s("set_installed_content_enabled"),
+                    {{s("buildId"), build}, {s("projectId"), project}, {s("enabled"), !enabled}},
+                    [this](const QJsonValue &) { refreshContent(); }, true);
+            },
+            this);
+        toggle->setProperty("selected", enabled);
+        toggle->setEnabled(type != s("modpack"));
+        auto *remove = iconButton(s("close"), tr("Удалить содержимое"));
+        remove->setProperty("danger", true);
+        row->addWidget(remove);
+        connect(remove, &QPushButton::clicked, this,
+                [this, build, project, title = value(content, "title")] {
+                    if (QMessageBox::question(this, tr("Удаление содержимого"),
+                                              tr("Удалить «%1»?").arg(title),
+                                              QMessageBox::Yes | QMessageBox::No,
+                                              QMessageBox::No) == QMessageBox::Yes)
+                        call(
+                            s("remove_installed_content"),
+                            {{s("buildId"), build}, {s("projectId"), project}},
+                            [this](const QJsonValue &) { refreshContent(); }, true);
+                });
+        contentRows->addWidget(card);
+    }
+    if (!visible)
+        contentRows->addWidget(label(
+            tr("Здесь пока ничего нет. Добавьте файлы с устройства или из каталога."), "muted"));
+    contentRows->addStretch();
+}
+void LauncherWindow::launch() {
+    if (!ready)
+        return;
+    if (selectedBuild.isEmpty()) {
+        navigate(1);
+        createBuild();
+        return;
+    }
+    if (selectedAccount.isEmpty()) {
+        navigate(3);
+        message(tr("Войдите в Microsoft, чтобы запустить лицензионную игру."));
+        return;
+    }
+    call(
+        s("select_build"), {{s("buildId"), selectedBuild}},
+        [this](const QJsonValue &v) {
+            profile = v.toObject();
+            call(
+                s("launch_or_install"), {{s("profileId"), s("default")}},
+                [this](const QJsonValue &v) {
+                    const auto id = v.toString();
+                    if (completedOperations.contains(id))
+                        return;
+                    operationId = id;
+                    if (running) {
+                        updatePlayState();
+                        return;
+                    }
+                    message(tr("Подготавливаем Minecraft. Первое скачивание может занять несколько "
+                               "минут."));
+                    updatePlayState();
+                },
+                true);
+        },
+        true);
+}
+void LauncherWindow::buildSettings() {
+    if (selectedBuild.isEmpty())
+        return;
+    const auto id = selectedBuild;
+    const auto b = currentBuild();
+    QMenu menu(this);
+    auto *rename = menu.addAction(tr("Переименовать"));
+    auto *icon = menu.addAction(tr("Изменить значок"));
+    auto *repair = menu.addAction(tr("Восстановить файлы"));
+    auto *folder = menu.addAction(tr("Открыть папку"));
+    menu.addSeparator();
+    auto *remove = menu.addAction(tr("Удалить сборку"));
+    auto *chosen = menu.exec(QCursor::pos());
+    if (chosen == rename) {
+        bool ok = false;
+        auto name = QInputDialog::getText(this, tr("Название сборки"), tr("Новое название"),
+                                          QLineEdit::Normal, value(b, "name"), &ok);
+        if (ok)
+            call(
+                s("rename_build"), {{s("buildId"), id}, {s("name"), name}},
+                [this](const QJsonValue &) { refreshLibrary(); }, true);
+    } else if (chosen == icon)
+        call(
+            s("choose_build_icon"), {{s("buildId"), id}},
+            [this](const QJsonValue &) { refreshLibrary(); }, true);
+    else if (chosen == repair)
+        call(
+            s("repair_build"), {{s("buildId"), id}},
+            [this](const QJsonValue &) { refreshLibrary(); }, true);
+    else if (chosen == folder)
+        call(s("open_build_folder"), {{s("buildId"), id}});
+    else if (chosen == remove &&
+             QMessageBox::question(
+                 this, tr("Удалить сборку?"),
+                 tr("«%1» вместе с мирами будет перемещена в папку trash лаунчера.")
+                     .arg(value(b, "name")),
+                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
+        call(
+            s("delete_build"), {{s("buildId"), id}},
+            [this](const QJsonValue &) {
+                selectedBuild.clear();
+                refreshLibrary();
+                navigate(1);
+            },
+            true);
+}
+void LauncherWindow::addLocalContent() {
+    if (selectedBuild.isEmpty())
+        return;
+    bool ok = false;
+    auto kind = QInputDialog::getItem(this, tr("Добавить с устройства"), tr("Тип содержимого"),
+                                      {tr("Мод .jar"), tr("Ресурспак .zip"), tr("Шейдер .zip")}, 0,
+                                      false, &ok);
+    if (!ok)
+        return;
+    const auto type = kind.startsWith(tr("Мод"))      ? s("mod")
+                      : kind.startsWith(tr("Ресурс")) ? s("resourcepack")
+                                                      : s("shader");
+    if (type == s("mod") &&
+        QMessageBox::question(this, tr("Доверие к моду"),
+                              tr("Мод выполняет код на компьютере. Вы доверяете его автору?"),
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes)
+        return;
+    call(
+        s("import_local_content"), {{s("buildId"), selectedBuild}, {s("projectType"), type}},
+        [this](const QJsonValue &) { refreshContent(); }, true);
 }
 void LauncherWindow::createBuild() {
     QDialog dialog(this);
@@ -230,28 +398,9 @@ void LauncherWindow::createBuild() {
             [this](const QJsonValue &v) {
                 selectedBuild = value(v.toObject(), "id");
                 refreshLibrary();
+                navigate(1);
             },
             true);
-}
-void LauncherWindow::launch() {
-    if (selectedBuild.isEmpty()) {
-        message(tr("Сначала создайте или выберите сборку."), true);
-        return;
-    }
-    call(
-        s("select_build"), {{s("buildId"), selectedBuild}},
-        [this](const QJsonValue &) {
-            call(
-                s("launch_or_install"), {{s("profileId"), s("default")}},
-                [this](const QJsonValue &v) {
-                    operationId = v.toString();
-                    play->setEnabled(false);
-                    message(tr("Подготавливаем Minecraft. Первое скачивание может занять несколько "
-                               "минут."));
-                },
-                true);
-        },
-        true);
 }
 void LauncherWindow::importPack(const QString &path) {
     QJsonObject params;
@@ -284,7 +433,7 @@ void LauncherWindow::importPack(const QString &path) {
                 s("confirm_mrpack"), {{s("sha256"), value(p, "sha256")}},
                 [this](const QJsonValue &) {
                     refreshLibrary();
-                    navigation->setCurrentRow(0);
+                    navigate(1);
                 },
                 true);
     });
