@@ -87,9 +87,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test-service.py 'dist/${{ matrix.channel }}/ck-launcher-service.exe'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $args = @('--smoke', '--screenshot', "$PWD/build/qt-smoke.png", '-platform', 'offscreen')
-          $process = Start-Process -FilePath "dist/${{ matrix.channel }}/ck-launcher-qt.exe" -ArgumentList $args -PassThru -Wait -WindowStyle Hidden
-          if ($process.ExitCode -ne 0) { throw "Native startup failed: $($process.ExitCode)" }
+          python scripts/test-native.py 'dist/${{ matrix.channel }}' build/qt-smoke.png
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: ck-launcher-qt-${{ matrix.channel }}-windows-x64
