@@ -25,3 +25,7 @@ release/
 /build/
 /dist/
 /aqtinstall.log
+
+# Python build/test helpers
+__pycache__/
+*.py[cod]

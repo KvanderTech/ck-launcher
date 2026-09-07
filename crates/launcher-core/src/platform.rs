@@ -35,11 +35,27 @@ pub(crate) fn open_browser(url: &str) -> Result<(), crate::error::LauncherError>
 pub fn show_in_folder(path: &std::path::Path) -> Result<(), crate::error::LauncherError> {
     use std::{os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
-        System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED},
+        System::{
+            Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+            LibraryLoader::{GetModuleHandleA, GetProcAddress},
+        },
         UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName},
     };
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     unsafe {
+        // windows-sys 0.61 links CoTaskMemFree to combase.dll (Windows 8+).
+        // Its longstanding ole32 export also works on Windows 7. Resolve it explicitly
+        // so no raw-dylib import can select combase at load time.
+        let ole32 = GetModuleHandleA(c"ole32.dll".as_ptr().cast());
+        let free = GetProcAddress(ole32, c"CoTaskMemFree".as_ptr().cast()).ok_or_else(|| {
+            crate::error::LauncherError::new(
+                "folder_open_failed",
+                "Не удалось открыть Проводник.",
+                None,
+                true,
+            )
+        })?;
+        let free: unsafe extern "system" fn(*const core::ffi::c_void) = std::mem::transmute(free);
         let initialized = CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) >= 0;
         let mut pidl = ptr::null_mut();
         let parsed = SHParseDisplayName(
@@ -55,7 +71,7 @@ pub fn show_in_folder(path: &std::path::Path) -> Result<(), crate::error::Launch
             parsed
         };
         if !pidl.is_null() {
-            CoTaskMemFree(pidl.cast());
+            free(pidl.cast());
         }
         if initialized {
             CoUninitialize();

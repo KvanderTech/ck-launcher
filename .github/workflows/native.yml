@@ -89,6 +89,10 @@ jobs:
         run: |
           ./scripts/package-native.ps1 -QtBin 'C:/Qt/${{ matrix.qt }}/${{ matrix.qt_dir }}/bin' -BuildDir build/qt -ServicePath 'target/${{ matrix.target }}/release/ck-launcher-service.exe' -Channel '${{ matrix.channel }}'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ('${{ matrix.legacy }}' -eq 'ON') {
+            python scripts/check-legacy-imports.py dist/legacy
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           python scripts/test-service.py 'dist/${{ matrix.channel }}/ck-launcher-service.exe'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test-native.py 'dist/${{ matrix.channel }}' build/qt-smoke.png

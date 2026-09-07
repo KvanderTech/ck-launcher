@@ -6,7 +6,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
-$packageRoot = Join-Path $workspaceRoot "dist/$Channel"
+$distRoot = [IO.Path]::GetFullPath((Join-Path $workspaceRoot 'dist'))
+$packageRoot = [IO.Path]::GetFullPath((Join-Path $distRoot $Channel))
+if (!$packageRoot.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid package path' }
+foreach ($directory in @($distRoot, $packageRoot)) {
+    if ((Test-Path -LiteralPath $directory) -and ((Get-Item -LiteralPath $directory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Package path must not be a link' }
+}
+# Only the generated directory for this validated channel is replaced.
+if (Test-Path -LiteralPath $packageRoot) { Remove-Item -LiteralPath $packageRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $BuildDir 'ck-launcher-qt.exe') -Destination $packageRoot -Force
 Copy-Item -LiteralPath $ServicePath -Destination $packageRoot -Force
@@ -14,6 +21,8 @@ Copy-Item -LiteralPath $ServicePath -Destination $packageRoot -Force
 # Auto detection uses the linked Qt5Core.dll and accepts the matching MinGW plugins.
 $deployArguments = @('--compiler-runtime', '--no-translations', '--dir', $packageRoot)
 if ($Channel -eq 'modern') { $deployArguments += '--release' }
+else { $deployArguments += @('--no-angle', '--no-opengl-sw', '--no-system-d3d-compiler') }
+# Widgets uses raster rendering; do not ship the host's Windows 8+ D3D compiler in Legacy.
 $deployArguments += (Join-Path $packageRoot 'ck-launcher-qt.exe')
 & (Join-Path $QtBin 'windeployqt.exe') @deployArguments
 if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
