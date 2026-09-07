@@ -243,12 +243,13 @@ export default function App({ api = appApi }: AppProps) {
     let active = true;
     void Promise.all([
       api.listAccounts(),
-      api.listGameVersions(),
       api.getProfile(),
       api.runtimeStatuses(),
       api.listBuilds(),
+      // ponytail: версии грузим отдельно — без сети лаунчер всё равно обязан открываться
+      api.listGameVersions().catch(() => [] as GameVersionSummary[]),
     ]).then(
-      ([nextAccounts, nextVersions, nextProfile, nextRuntimes, nextBuilds]) => {
+      ([nextAccounts, nextProfile, nextRuntimes, nextBuilds, nextVersions]) => {
         if (!active) return;
         setAccounts(nextAccounts);
         setVersions(nextVersions.filter((version) => version.type === "release"));
