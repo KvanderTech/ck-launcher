@@ -32,6 +32,13 @@ New-Item -ItemType Directory -Path $platformRoot -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $QtBin) 'plugins/platforms/qoffscreen.dll') -Destination $platformRoot -Force
 @('[Paths]', 'Prefix=.', 'Plugins=.') | Set-Content -LiteralPath (Join-Path $packageRoot 'qt.conf') -Encoding ascii
 
+foreach ($document in @('LICENSE', 'TRADEMARKS.md')) {
+    Copy-Item -LiteralPath (Join-Path $workspaceRoot $document) -Destination $packageRoot -Force
+}
+$sourceRevision = & git -c "safe.directory=$workspaceRoot" -C $workspaceRoot rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch '^[a-f0-9]{40}$') { throw 'Cannot identify source revision' }
+@("Source: https://github.com/KvanderTech/ck-launcher/tree/$sourceRevision", 'Build instructions: README.md in this package and docs/NATIVE_BUILD.md in the source repository.', 'Project source license: AGPL-3.0-only; see LICENSE. Branding: see TRADEMARKS.md.') | Set-Content -LiteralPath (Join-Path $packageRoot 'SOURCE.txt') -Encoding utf8
+
 Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs/NATIVE_BUILD.md') -Destination (Join-Path $packageRoot 'README.md') -Force
 Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs/THIRD_PARTY.md') -Destination $packageRoot -Force
 Copy-Item -LiteralPath (Join-Path $workspaceRoot 'licenses') -Destination $packageRoot -Recurse -Force

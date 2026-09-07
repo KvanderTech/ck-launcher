@@ -3,6 +3,9 @@ resolver = "2"
 members = ["crates/launcher-core", "crates/launcher-service"]
 exclude = ["app/src-tauri"]
 
+[workspace.package]
+license = "AGPL-3.0-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
