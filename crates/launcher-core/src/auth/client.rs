@@ -155,6 +155,7 @@ impl HttpMicrosoftApi {
             .json(body)
     }
 
+    #[cfg(test)]
     fn minecraft_request(&self, body: &MinecraftLoginRequest) -> reqwest::RequestBuilder {
         self.minecraft_request_to(MINECRAFT_LOGIN_ENDPOINT, body)
     }
@@ -170,6 +171,7 @@ impl HttpMicrosoftApi {
             .json(body)
     }
 
+    #[cfg(test)]
     fn minecraft_legacy_request(
         &self,
         body: &MinecraftLegacyLoginRequest,

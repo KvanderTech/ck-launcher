@@ -7,7 +7,7 @@ QWidget *LauncherWindow::libraryPage() {
                                  "нужное для следующего приключения."));
     auto *actions = new QHBoxLayout;
     layout->addLayout(actions);
-    button(tr("＋ Создать сборку"), actions, [this] { createBuild(); }, this, true);
+    button(tr("+ Создать сборку"), actions, [this] { createBuild(); }, this, true);
     button(tr("Импорт .mrpack"), actions, [this] { importPack(); }, this);
     actions->addStretch();
     button(tr("Обновить"), actions, [this] { refreshLibrary(); }, this);
@@ -25,7 +25,7 @@ QWidget *LauncherWindow::libraryPage() {
     });
     auto *buildActions = new QHBoxLayout;
     layout->addLayout(buildActions);
-    play = button(tr("▶ Играть"), buildActions, [this] { launch(); }, this, true);
+    play = button(tr("Играть"), buildActions, [this] { launch(); }, this, true);
     play->setObjectName(s("playButton"));
     play->setEnabled(false);
     stop = button(

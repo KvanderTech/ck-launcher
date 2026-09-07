@@ -78,6 +78,9 @@ void LauncherWindow::loadVersions() {
         });
 }
 void LauncherWindow::searchCatalog() {
+    const auto request = ++catalogRequest;
+    catalog = {};
+    catalogTable->setRowCount(0);
     catalogStatus->setText(tr("Ищем проекты…"));
     const QJsonObject params{
         {s("query"), searchText->text()},
@@ -86,26 +89,29 @@ void LauncherWindow::searchCatalog() {
                                ? QJsonValue(versionFilter->currentData().toString())
                                : QJsonValue(QJsonValue::Null)},
         {s("offset"), catalogOffset}};
-    core->request(s("search_modrinth"), params, [this](const QJsonValue &v, const QJsonObject &e) {
-        if (!e.isEmpty()) {
-            catalogStatus->setText(
-                tr("Каталог недоступен. Проверьте подключение и нажмите «Найти» ещё раз."));
-            return;
-        }
-        auto result = v.toObject();
-        catalog = result.value(s("hits")).toArray();
-        catalogTable->setRowCount(catalog.size());
-        for (int r = 0; r < catalog.size(); ++r) {
-            auto p = catalog[r].toObject();
-            cells(catalogTable, r,
-                  {value(p, "title"), value(p, "author"), value(p, "description")});
-        }
-        catalogStatus->setText(tr("Найдено %1 проектов · страница %2")
-                                   .arg(result.value(s("total_hits")).toInt())
-                                   .arg(catalogOffset / 20 + 1));
-        if (!catalog.isEmpty())
-            catalogTable->selectRow(0);
-    });
+    core->request(
+        s("search_modrinth"), params, [this, request](const QJsonValue &v, const QJsonObject &e) {
+            if (request != catalogRequest)
+                return;
+            if (!e.isEmpty()) {
+                catalogStatus->setText(
+                    tr("Каталог недоступен. Проверьте подключение и нажмите «Найти» ещё раз."));
+                return;
+            }
+            auto result = v.toObject();
+            catalog = result.value(s("hits")).toArray();
+            catalogTable->setRowCount(catalog.size());
+            for (int r = 0; r < catalog.size(); ++r) {
+                auto p = catalog[r].toObject();
+                cells(catalogTable, r,
+                      {value(p, "title"), value(p, "author"), value(p, "description")});
+            }
+            catalogStatus->setText(tr("Найдено %1 проектов · страница %2")
+                                       .arg(result.value(s("total_hits")).toInt())
+                                       .arg(catalogOffset / 20 + 1));
+            if (!catalog.isEmpty())
+                catalogTable->selectRow(0);
+        });
 }
 void LauncherWindow::projectDetails() {
     int r = catalogTable->currentRow();
@@ -138,9 +144,15 @@ void LauncherWindow::installCatalog() {
         message(tr("Сначала создайте или выберите сборку в библиотеке."), true);
         return;
     }
+    const auto targetBuild = selectedBuild;
     call(
         s("modrinth_project_versions"), {{s("projectId"), value(project, "project_id")}},
-        [this, project, pack](const QJsonValue &v) {
+        [this, project, pack, targetBuild](const QJsonValue &v) {
+            if (!pack && selectedBuild != targetBuild) {
+                message(tr("Выбранная сборка изменилась. Повторите установку для нужной сборки."),
+                        true);
+                return;
+            }
             const auto list = v.toArray();
             if (list.isEmpty()) {
                 message(tr("Нет доступных версий проекта."), true);
@@ -149,8 +161,12 @@ void LauncherWindow::installCatalog() {
             QStringList labels;
             for (const auto &item : list) {
                 auto version = item.toObject();
-                labels << value(version, "version_number") + s(" · ") +
-                              value(version, "version_type") + s(" · ") +
+                QStringList loaders;
+                for (const auto &loader : version.value(s("loaders")).toArray())
+                    loaders << loader.toString();
+                labels << QString::number(labels.size() + 1) + s(". ") +
+                              value(version, "version_number") + s(" · ") + loaders.join(s(", ")) +
+                              s(" · ") + value(version, "version_type") + s(" · ") +
                               value(version, "date_published").left(10);
             }
             bool ok;
@@ -164,7 +180,7 @@ void LauncherWindow::installCatalog() {
             QJsonObject params{{s("projectId"), value(project, "project_id")},
                                {s("versionId"), value(list[index].toObject(), "id")}};
             if (!pack)
-                params.insert(s("buildId"), selectedBuild);
+                params.insert(s("buildId"), targetBuild);
             call(
                 pack ? s("install_modrinth_modpack") : s("install_modrinth_project"), params,
                 [this](const QJsonValue &) {

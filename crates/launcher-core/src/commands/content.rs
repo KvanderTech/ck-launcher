@@ -7,7 +7,6 @@ use crate::{
     storage::{BuildSummary, InstalledContent, OfflineSkin, Storage},
 };
 use base64::Engine;
-use futures_util::{stream, StreamExt};
 use reqwest::{header, Client};
 use security::{inspect_archive, FileTransaction, MAX_ARCHIVE};
 use serde::{Deserialize, Serialize};

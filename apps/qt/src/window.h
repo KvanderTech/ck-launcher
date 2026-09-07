@@ -53,6 +53,7 @@ class LauncherWindow final : public QMainWindow {
     bool closing = false;
     bool busy = false;
     int catalogOffset = 0;
+    quint64 catalogRequest = 0;
     void call(const QString &method, const QJsonObject &params = {},
               std::function<void(const QJsonValue &)> done = {}, bool mutation = false);
     void refreshLibrary();

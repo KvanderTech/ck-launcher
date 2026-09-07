@@ -245,7 +245,10 @@ void LauncherWindow::showLogs() {
     logFiles->addItem(tr("Последний журнал запуска"), QString());
     if (selectedBuild.isEmpty())
         return;
-    call(s("list_build_logs"), {{s("buildId"), selectedBuild}}, [this](const QJsonValue &v) {
+    const auto build = selectedBuild;
+    call(s("list_build_logs"), {{s("buildId"), build}}, [this, build](const QJsonValue &v) {
+        if (build != selectedBuild)
+            return;
         for (const auto &item : v.toArray()) {
             auto f = item.toObject();
             logFiles->addItem(value(f, "name"), value(f, "relativePath"));
