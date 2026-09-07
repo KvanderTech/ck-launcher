@@ -1,0 +1,1 @@
+<RCC><qresource prefix="/assets"><file alias="logo.png">../../app/src/assets/logo-transparent.png</file><file alias="theme.qss">src/theme.qss</file></qresource></RCC>

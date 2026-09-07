@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/launcher-core", "crates/launcher-service"]
+exclude = ["app/src-tauri"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

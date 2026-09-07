@@ -15,11 +15,9 @@
         "title": "ЦК Лаунчер",
         "width": 1280,
         "height": 720,
-        "minWidth": 1280,
-        "minHeight": 720,
-        "maxWidth": 1280,
-        "maxHeight": 720,
-        "resizable": false,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
         "center": true,
         "decorations": false
       }
@@ -31,10 +29,14 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "fileAssociations": [
       {
-        "ext": ["mrpack"],
+        "ext": [
+          "mrpack"
+        ],
         "mimeType": "application/x-modrinth-modpack+zip",
         "name": "Сборка Modrinth",
         "description": "Сборка Modrinth для установки в ЦК Лаунчер",
@@ -49,7 +51,9 @@
         "headerImage": "installer/header.bmp",
         "uninstallerHeaderImage": "installer/header.bmp",
         "sidebarImage": "installer/sidebar.bmp",
-        "languages": ["Russian"],
+        "languages": [
+          "Russian"
+        ],
         "installMode": "currentUser"
       }
     },

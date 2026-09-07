@@ -15,3 +15,13 @@ app/*-current.png
 release/
 .signing/
 *.part
+
+# Local audit output; never publish PoC payloads or dependency caches.
+/audit/
+/app/.audit-npm-cache/
+
+# Native build tools and generated packages
+/target/
+/build/
+/dist/
+/aqtinstall.log

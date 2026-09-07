@@ -1,1 +1,11 @@
-app/src-tauri/migrations/*.sql text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+crates/launcher-core/migrations/*.sql text eol=lf
+crates/launcher-core/src/tests/fixtures/*.json text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.lock text eol=lf
+licenses/** text eol=lf

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -172,7 +172,7 @@ export const appApi: AppApi = {
   modrinthProjectVersions: (projectId) => invoke<ModrinthVersion[]>("modrinth_project_versions", { projectId }),
   installModrinthProject: (projectId, buildId, versionId) => invoke<InstalledContent>("install_modrinth_project", { projectId, buildId, versionId }),
   installModrinthModpack: (projectId, versionId) => invoke<InstalledContent>("install_modrinth_modpack", { projectId, versionId }),
-  importMrpack: (sourcePath) => invoke<InstalledContent | null>("import_mrpack", { sourcePath }),
+  importMrpack: (sourcePath) => reviewedMrpack(sourcePath),
   pendingMrpackPath: () => invoke<string | null>("pending_mrpack_path"),
   onOpenMrpack: (handler) => listenPayload("launcher://open-mrpack", handler),
   listInstalledContent: (buildId) => invoke<InstalledContent[]>("list_installed_content", { buildId }),
@@ -209,3 +209,13 @@ export const windowApi: WindowApi = {
   toggleMaximize: () => getCurrentWindow().toggleMaximize(),
   close: () => getCurrentWindow().close(),
 };
+
+function invoke<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  return tauriInvoke<T>("core_request", { method, params });
+}
+
+async function reviewedMrpack(sourcePath?: string): Promise<InstalledContent | null> {
+  const preview = await invoke<{ sha256: string; name: string; warning: string; downloadFiles: number } | null>("preview_mrpack", { sourcePath });
+  if (!preview || !window.confirm(`${preview.name}\nФайлов: ${preview.downloadFiles}\n\n${preview.warning}`)) return null;
+  return invoke<InstalledContent>("confirm_mrpack", { sha256: preview.sha256 });
+}
