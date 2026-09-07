@@ -65,9 +65,13 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install aqtinstall==3.3.0 cmake==3.31.6 ninja==1.11.1.4
-          python -m aqt install-qt windows desktop ${{ matrix.qt }} ${{ matrix.arch }} -O C:/Qt --archives qtbase qttools
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m aqt install-tool windows desktop ${{ matrix.tool }} ${{ matrix.tool_variant }} -O C:/Qt
+          # Qt 5 archives contain Unix mkspec links that py7zr can reject on Windows.
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          if (!(Test-Path -LiteralPath $sevenZip)) { $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source }
+          python -m aqt install-qt windows desktop ${{ matrix.qt }} ${{ matrix.arch }} -O C:/Qt --archives qtbase qttools --external $sevenZip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m aqt install-tool windows desktop ${{ matrix.tool }} ${{ matrix.tool_variant }} -O C:/Qt --external $sevenZip
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           'C:/Qt/Tools/${{ matrix.compiler }}/bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           'C:/Qt/${{ matrix.qt }}/${{ matrix.qt_dir }}/bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
