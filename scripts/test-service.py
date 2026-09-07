@@ -62,6 +62,8 @@ def main():
             with sqlite3.connect(Path(directory)/"CKLauncher/launcher.sqlite3") as db:
                 db.execute("INSERT INTO installed_content (id,build_id,project_id,version_id,project_type,title,filename,icon_url,enabled,installed_at) VALUES (?,?,?,?,?,?,?,?,?,?)", ("test-disabled",new_build["id"],"disabled","local","mod","Disabled","harmless.jar",None,0,0))
             db.close()
+            listed = call("list_installed_content", {"buildId": new_build["id"]})["result"]
+            assert any(item["projectId"] == "disabled" for item in listed)
             assert "result" in call("remove_installed_content", {"buildId":new_build["id"], "projectId":"disabled"})
             assert not disabled.exists()
             print("PASS: protocol, local startup, Unicode paths, build lifecycle, preview consent, harmless PoC rejection, traversal rejection, consent replay prevention, local pack repair, user config preservation, disabled mod deletion")

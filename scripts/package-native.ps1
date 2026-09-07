@@ -17,5 +17,10 @@ Copy-Item -LiteralPath (Join-Path $workspaceRoot 'docs/THIRD_PARTY.md') -Destina
 Copy-Item -LiteralPath (Join-Path $workspaceRoot 'licenses') -Destination $packageRoot -Recurse -Force
 python (Join-Path $PSScriptRoot 'collect-licenses.py') $packageRoot
 if ($LASTEXITCODE -ne 0) { throw 'Dependency notices collection failed' }
-Get-ChildItem -LiteralPath $packageRoot -File | ForEach-Object { $hash=Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256; "$($hash.Hash.ToLower())  $($_.Name)" } | Set-Content -LiteralPath (Join-Path $packageRoot 'SHA256SUMS.txt') -Encoding ascii
+$checksumPath = Join-Path $packageRoot 'SHA256SUMS.txt'
+Get-ChildItem -LiteralPath $packageRoot -File -Recurse | Where-Object { $_.FullName -ne $checksumPath } | Sort-Object FullName | ForEach-Object {
+    $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+    $relative = $_.FullName.Substring($packageRoot.Length + 1).Replace('\', '/')
+    "$($hash.Hash.ToLower())  $relative"
+} | Set-Content -LiteralPath $checksumPath -Encoding utf8
 Write-Output "Native package: $packageRoot"

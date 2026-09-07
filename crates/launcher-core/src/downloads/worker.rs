@@ -1,5 +1,5 @@
 use super::{
-    plan::{build_plan, DownloadSpec, PlannedDownload},
+    plan::{build_plan_with_alias, DownloadSpec, PlannedDownload},
     verify::{storage_error, validated_path, verify_file},
 };
 use crate::error::LauncherError;
@@ -280,6 +280,7 @@ impl Default for DownloadHttpClient {
 
 pub struct DownloadService {
     root: PathBuf,
+    original_root: PathBuf,
     http: Arc<DownloadHttpClient>,
     sleeper: Arc<dyn Sleeper>,
     jitter: Arc<dyn Jitter>,
@@ -309,9 +310,13 @@ impl DownloadService {
         sleeper: Arc<dyn Sleeper>,
         jitter: Arc<dyn Jitter>,
     ) -> Result<Self, LauncherError> {
-        let root = crate::paths::AppPaths::new(root.clone()).safe_join(&root, Path::new(""))?;
+        let original_root = root.clone();
+        let safety = crate::paths::AppPaths::new(root.clone());
+        safety.validate_absolute_directory(&root)?;
+        let root = safety.safe_join(&root, Path::new(""))?;
         Ok(Self {
             root,
+            original_root,
             http: Arc::new(DownloadHttpClient::new(timeouts)?),
             sleeper,
             jitter,
@@ -328,7 +333,9 @@ impl DownloadService {
         if cancel.is_cancelled() {
             return Err(download_cancelled_error());
         }
-        let plan = build_plan(&self.root, specs)?;
+        // Windows TEMP/APPDATA may use an 8.3 spelling that canonicalize expands.
+        // Keep that validated spelling only for deriving relative paths; all I/O uses root.
+        let plan = build_plan_with_alias(&self.root, &self.original_root, specs)?;
         let progress = Arc::new(ProgressState {
             operation_id: operation_id.into(),
             total_bytes: plan.total_bytes,

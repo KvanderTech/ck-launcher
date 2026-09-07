@@ -1162,3 +1162,27 @@ fn exclusive_part_ownership_rejects_a_concurrent_writer() {
         fs::remove_dir_all(root).unwrap();
     });
 }
+
+#[test]
+#[cfg(windows)]
+fn plan_accepts_a_validated_windows_root_alias_but_rejects_outside_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let alias = PathBuf::from(directory.path().to_string_lossy().to_uppercase());
+    let candidate = spec(
+        "https://example.test/file".to_owned(),
+        alias.join("mods/file.jar"),
+        b"safe",
+    );
+    let plan = super::plan::build_plan_with_alias(&root, &alias, vec![candidate]).unwrap();
+    assert_eq!(
+        plan.pending[0].relative_destination,
+        Path::new("mods/file.jar")
+    );
+    let outside = spec(
+        "https://example.test/file".to_owned(),
+        alias.parent().unwrap().join("outside.jar"),
+        b"safe",
+    );
+    assert!(super::plan::build_plan_with_alias(&root, &alias, vec![outside]).is_err());
+}

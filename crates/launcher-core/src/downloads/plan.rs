@@ -37,8 +37,17 @@ pub(crate) struct DownloadPlan {
     pub pending: Vec<PlannedDownload>,
 }
 
+#[cfg(test)]
 pub(crate) fn build_plan(
     root: &Path,
+    specs: Vec<DownloadSpec>,
+) -> Result<DownloadPlan, LauncherError> {
+    build_plan_with_alias(root, root, specs)
+}
+
+pub(crate) fn build_plan_with_alias(
+    root: &Path,
+    original_root: &Path,
     specs: Vec<DownloadSpec>,
 ) -> Result<DownloadPlan, LauncherError> {
     let safety = AppPaths::new(root.to_path_buf());
@@ -52,7 +61,8 @@ pub(crate) fn build_plan(
         total_bytes = total_bytes
             .checked_add(spec.expected_size)
             .ok_or_else(invalid_spec)?;
-        let relative_destination = destination_relative_to(root, &spec.destination)?;
+        let relative_destination = destination_relative_to(root, &spec.destination)
+            .or_else(|_| destination_relative_to(original_root, &spec.destination))?;
         // These suffixes are exclusively queue-owned. Reserving them in every component of every
         // plan means no final subtree can contain another execution's part or ownership marker.
         if has_internal_component(&relative_destination) {
@@ -193,9 +203,7 @@ fn destination_relative_to(root: &Path, destination: &Path) -> Result<PathBuf, L
         destination
             .strip_prefix(root)
             .or_else(|_| {
-                let root = root.to_string_lossy();
-                let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
-                destination.strip_prefix(Path::new(root))
+                destination.strip_prefix(crate::paths::strip_verbatim_prefix(root.to_path_buf()))
             })
             .map_err(|_| LauncherError::invalid_path())?
             .to_path_buf()

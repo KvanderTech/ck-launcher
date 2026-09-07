@@ -262,16 +262,35 @@ impl ContentService {
     }
 
     async fn json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, LauncherError> {
-        self.client
-            .get(url)
-            .send()
-            .await
-            .map_err(|_| network_error())?
-            .error_for_status()
-            .map_err(|_| network_error())?
-            .json()
-            .await
-            .map_err(|_| network_error())
+        Self::response_json(
+            self.client
+                .get(url)
+                .send()
+                .await
+                .map_err(|_| network_error())?,
+        )
+        .await
+    }
+
+    async fn response_json<T: serde::de::DeserializeOwned>(
+        response: reqwest::Response,
+    ) -> Result<T, LauncherError> {
+        const MAX_JSON: usize = 4 * 1024 * 1024;
+        let mut response = response.error_for_status().map_err(|_| network_error())?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_JSON as u64)
+        {
+            return Err(security::limit_error());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| network_error())? {
+            if bytes.len().saturating_add(chunk.len()) > MAX_JSON {
+                return Err(security::limit_error());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| network_error())
     }
 
     pub async fn search(
@@ -306,7 +325,8 @@ impl ContentService {
                 ["relevance", "downloads", "follows", "newest", "updated"].contains(&value.as_str())
             })
             .unwrap_or_else(|| "relevance".to_owned());
-        self.client
+        let response = self
+            .client
             .get(format!("{MODRINTH_API}/search"))
             .query(&[
                 ("query", query),
@@ -317,12 +337,8 @@ impl ContentService {
             ])
             .send()
             .await
-            .map_err(|_| network_error())?
-            .error_for_status()
-            .map_err(|_| network_error())?
-            .json()
-            .await
-            .map_err(|_| network_error())
+            .map_err(|_| network_error())?;
+        Self::response_json(response).await
     }
 
     pub async fn create_build(
@@ -530,7 +546,9 @@ impl ContentService {
             return self.install_mrpack(project, version, build).await;
         }
         if project.project_type == "mod" {
-            if build.loader == "vanilla" || !version.loaders.iter().any(|loader| loader == &build.loader) {
+            if build.loader == "vanilla"
+                || !version.loaders.iter().any(|loader| loader == &build.loader)
+            {
                 return Err(input_error("loader_not_supported", "Этот мод не совместим с загрузчиком сборки. Выберите сборку Fabric или Quilt и подходящую версию мода."));
             }
         }
@@ -827,7 +845,7 @@ impl ContentService {
         let mut tx = FileTransaction::new(root)?;
         tx.replace(&destination, staged.path())?;
         if let Some(old) = old {
-            if old.filename != item.filename {
+            if !old.filename.eq_ignore_ascii_case(&item.filename) {
                 tx.remove(&PathBuf::from(folder).join(if old.enabled {
                     old.filename.clone()
                 } else {
@@ -1533,41 +1551,10 @@ pub async fn list_installed_content(
     build_id: String,
     service: &ContentService,
 ) -> Result<Vec<InstalledContent>, LauncherError> {
-    let mut items = service.storage.list_installed_content(&build_id).await?;
-    let missing: Vec<(usize, String)> = items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| item.icon_url.is_none() && item.version_id != "local")
-        .map(|(index, item)| (index, item.project_id.clone()))
-        .collect();
-    let client = service.clone();
-    let details: Vec<_> = stream::iter(missing.into_iter().map(|(index, project_id)| {
-        let client = client.clone();
-        async move {
-            let result = client
-                .json::<ProjectDetails>(&format!("{MODRINTH_API}/project/{project_id}"))
-                .await
-                .ok();
-            (index, result)
-        }
-    }))
-    .buffer_unordered(8)
-    .collect()
-    .await;
-    for (index, details) in details {
-        if let Some(details) = details {
-            items[index].icon_url = details.icon_url;
-            if !details.title.trim().is_empty() {
-                items[index].title = details.title;
-            }
-            service
-                .storage
-                .upsert_installed_content(&items[index])
-                .await?;
-        }
-    }
-    Ok(items)
+    // Reading the installed library must never wait for Modrinth or mutate its records.
+    service.storage.list_installed_content(&build_id).await
 }
+
 pub async fn remove_installed_content(
     build_id: String,
     project_id: String,
@@ -1912,7 +1899,7 @@ pub async fn list_build_worlds(
     storage: &Storage,
 ) -> Result<Vec<BuildWorldSummary>, LauncherError> {
     let build = find_build(storage.list_builds().await?, &build_id)?;
-    let saves = PathBuf::from(build.game_dir).join("saves");
+    let saves = safe_child(Path::new(&build.game_dir), "saves")?;
     if !saves.exists() {
         return Ok(Vec::new());
     }
@@ -1943,7 +1930,7 @@ pub async fn list_build_logs(
 ) -> Result<Vec<BuildLogSummary>, LauncherError> {
     let build = find_build(storage.list_builds().await?, &build_id)?;
     let root = PathBuf::from(build.game_dir);
-    let logs = root.join("logs");
+    let logs = safe_child(&root, "logs")?;
     if !logs.exists() {
         return Ok(Vec::new());
     }

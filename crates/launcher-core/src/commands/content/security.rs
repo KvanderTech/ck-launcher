@@ -350,6 +350,9 @@ impl FileTransaction {
     pub fn replace(&mut self, relative: &Path, staged: &Path) -> Result<(), LauncherError> {
         let target = prepare_parent(&self.root, relative)?;
         let old = if target.exists() {
+            if !target.is_file() {
+                return Err(LauncherError::invalid_path());
+            }
             let backup = self.backup.path().join(self.changes.len().to_string());
             fs::rename(&target, &backup).map_err(|_| LauncherError::storage_unavailable())?;
             Some(backup)
@@ -362,6 +365,9 @@ impl FileTransaction {
     pub fn remove(&mut self, relative: &Path) -> Result<(), LauncherError> {
         let target = safe_destination(&self.root, relative)?;
         if target.exists() {
+            if !target.is_file() {
+                return Err(LauncherError::invalid_path());
+            }
             let backup = self.backup.path().join(self.changes.len().to_string());
             fs::rename(&target, &backup).map_err(|_| LauncherError::storage_unavailable())?;
             self.changes.push((target, Some(backup)));
@@ -477,6 +483,22 @@ mod tests {
             assert_eq!(fs::read(root.path().join("a.jar")).unwrap(), b"new");
         }
         assert_eq!(fs::read(root.path().join("a.jar")).unwrap(), b"old");
+    }
+    #[test]
+    fn a_file_transaction_cannot_replace_or_remove_a_directory() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("world")).unwrap();
+        fs::write(root.path().join("world/level.dat"), b"keep").unwrap();
+        let staged = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        let mut transaction = FileTransaction::new(root.path()).unwrap();
+        assert!(transaction
+            .replace(Path::new("world"), staged.path())
+            .is_err());
+        assert!(transaction.remove(Path::new("world")).is_err());
+        assert_eq!(
+            fs::read(root.path().join("world/level.dat")).unwrap(),
+            b"keep"
+        );
     }
     #[test]
     fn rejects_missing_and_malformed_hashes() {
