@@ -1,0 +1,20 @@
+pub mod api;
+pub mod auth;
+pub mod commands;
+pub mod context;
+pub mod downloads;
+pub mod error;
+pub mod events;
+pub mod installer;
+pub mod launcher;
+pub mod metadata;
+pub mod orchestration;
+pub mod paths;
+pub mod platform;
+pub mod profiles;
+pub mod runtime;
+pub mod storage;
+pub mod tasks;
+
+pub mod logs;
+pub mod updates;

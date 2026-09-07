@@ -35,7 +35,7 @@ export interface AccountSummary {
   isActive: boolean;
 }
 
-export type JavaMajor = 8 | 17 | 21 | 25;
+export type JavaMajor = 8 | 16 | 17 | 21 | 25;
 export type JavaRuntimeState = "valid" | "missing" | "installing" | "invalid";
 export type JavaRuntimeSource = "managed" | "manual" | "system";
 

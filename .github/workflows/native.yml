@@ -1,0 +1,126 @@
+name: Native launcher
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    name: Windows ${{ matrix.channel }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - channel: modern
+            qt: '6.8.3'
+            arch: win64_mingw
+            qt_dir: mingw_64
+            compiler: mingw1310_64
+            tool: tools_mingw1310
+            tool_variant: qt.tools.win64_mingw1310
+            rust: '1.90.0'
+            target: x86_64-pc-windows-msvc
+            legacy: 'OFF'
+          - channel: legacy
+            qt: '5.15.2'
+            arch: win64_mingw81
+            qt_dir: mingw81_64
+            compiler: mingw810_64
+            tool: tools_mingw
+            tool_variant: qt.tools.win64_mingw810
+            rust: nightly-2025-09-18
+            target: x86_64-win7-windows-msvc
+            legacy: 'ON'
+    env:
+      RUSTFLAGS: '-C target-feature=+crt-static'
+      CARGO_TERM_COLOR: always
+      CK_RUST_TOOLCHAIN: ${{ matrix.rust }}
+      CK_RUST_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --profile minimal --component rustfmt
+          if ('${{ matrix.legacy }}' -eq 'ON') {
+            rustup component add rust-src --toolchain ${{ matrix.rust }}
+          }
+      - name: Test and build game core
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ('${{ matrix.legacy }}' -eq 'ON') { $extra = @('-Z', 'build-std') }
+          cargo +${{ matrix.rust }} test --workspace --locked --target ${{ matrix.target }} @extra
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo +${{ matrix.rust }} build --release --locked -p ck-launcher-service --target ${{ matrix.target }} @extra
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install Qt and its matching compiler
+        shell: pwsh
+        run: |
+          python -m pip install aqtinstall==3.3.0 cmake==3.31.6 ninja==1.11.1.4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Qt 5 archives contain Unix mkspec links that py7zr can reject on Windows.
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          if (!(Test-Path -LiteralPath $sevenZip)) { $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source }
+          $env:AQT_CONFIG = (Resolve-Path '.github/aqt.ini').Path
+          python -m aqt install-qt windows desktop ${{ matrix.qt }} ${{ matrix.arch }} -O C:/Qt --archives qtbase qttools --external $sevenZip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m aqt install-tool windows desktop ${{ matrix.tool }} ${{ matrix.tool_variant }} -O C:/Qt --external $sevenZip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'C:/Qt/Tools/${{ matrix.compiler }}/bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'C:/Qt/${{ matrix.qt }}/${{ matrix.qt_dir }}/bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build and test Qt
+        shell: pwsh
+        run: |
+          cmake -S apps/qt -B build/qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/${{ matrix.qt }}/${{ matrix.qt_dir }} -DCK_LEGACY_WINDOWS=${{ matrix.legacy }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/qt --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/qt --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package and verify isolated startup
+        shell: pwsh
+        run: |
+          ./scripts/package-native.ps1 -QtBin 'C:/Qt/${{ matrix.qt }}/${{ matrix.qt_dir }}/bin' -BuildDir build/qt -ServicePath 'target/${{ matrix.target }}/release/ck-launcher-service.exe' -Channel '${{ matrix.channel }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ('${{ matrix.legacy }}' -eq 'ON') {
+            python scripts/check-legacy-imports.py dist/legacy
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python scripts/test-service.py 'dist/${{ matrix.channel }}/ck-launcher-service.exe'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-native.py 'dist/${{ matrix.channel }}' build/qt-smoke.png
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ck-launcher-qt-${{ matrix.channel }}-windows-x64
+          path: |
+            dist/${{ matrix.channel }}/
+            build/qt-smoke.png
+          if-no-files-found: error
+  transition-web:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: app
+      - run: npm run build
+        working-directory: app
+      - run: npm test -- --run
+        working-directory: app
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: app
+      - name: Check transition Rust adapter
+        run: cargo check --manifest-path app/src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc

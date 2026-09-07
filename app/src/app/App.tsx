@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { BackgroundCarousel } from "../components/BackgroundCarousel";
 import { GameActivity } from "../components/GameActivity";
@@ -8,7 +8,7 @@ import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
 import { ContentPage, type ContentInstallTask } from "../features/content/ContentPage";
 import { LibraryPage } from "../features/library/LibraryPage";
-import { SkinsPage } from "../features/skins/SkinsPage";
+const SkinsPage = lazy(() => import("../features/skins/SkinsPage").then(module => ({ default: module.SkinsPage })));
 import { HomePage, type LauncherViewState } from "../features/home/HomePage";
 import { JavaSettings } from "../features/settings/JavaSettings";
 import { MemorySettings } from "../features/settings/MemorySettings";
@@ -64,10 +64,12 @@ export default function App({ api = appApi }: AppProps) {
   const [activePage, setActivePage] = useState<PageId>("home");
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [versions, setVersions] = useState<GameVersionSummary[]>([]);
+  const [versionError, setVersionError] = useState(false);
   const [builds, setBuilds] = useState<BuildSummary[]>([]);
   const [profile, setProfile] = useState<LauncherProfile>();
   const [runtimes, setRuntimes] = useState<JavaRuntimeStatus[]>([]);
   const [bootState, setBootState] = useState<BootState>("loading");
+  const [cancelling, setCancelling] = useState(false);
   const [viewState, setViewState] = useState<LauncherViewState>("ready");
   const [runningGame, setRunningGame] = useState<GameStartedEvent>();
   const [progress, setProgress] = useState<ProgressEvent>();
@@ -241,18 +243,19 @@ export default function App({ api = appApi }: AppProps) {
 
   useEffect(() => {
     let active = true;
+    void api.listGameVersions().then(
+      (items) => { if (active) { setVersions(items.filter(v => v.type === "release")); setVersionError(false); } },
+      () => { if (active) setVersionError(true); },
+    );
     void Promise.all([
       api.listAccounts(),
       api.getProfile(),
       api.runtimeStatuses(),
       api.listBuilds(),
-      // ponytail: версии грузим отдельно — без сети лаунчер всё равно обязан открываться
-      api.listGameVersions().catch(() => [] as GameVersionSummary[]),
     ]).then(
-      ([nextAccounts, nextProfile, nextRuntimes, nextBuilds, nextVersions]) => {
+      ([nextAccounts, nextProfile, nextRuntimes, nextBuilds]) => {
         if (!active) return;
         setAccounts(nextAccounts);
-        setVersions(nextVersions.filter((version) => version.type === "release"));
         setProfile(nextProfile);
         profileRef.current = nextProfile;
         savedMemory.current = nextProfile.memoryMb;
@@ -527,7 +530,8 @@ export default function App({ api = appApi }: AppProps) {
               name={runningBuild?.name ?? profile.name}
             />
           )}
-          <WindowControls />
+          {versionError && <div role="status" className="catalog-offline">Список версий недоступен. Установленные сборки доступны. <button type="button" onClick={() => { void api.listGameVersions().then(items => { setVersions(items.filter(v => v.type === "release")); setVersionError(false); }).catch(() => setVersionError(true)); }}>Повторить</button></div>}
+        <WindowControls />
         </header>
         <div className="page-scroll">
           {signedOut ? (
@@ -542,7 +546,7 @@ export default function App({ api = appApi }: AppProps) {
               error={operationError}
               logPath={operationLogPath}
               warning={operationWarning}
-              onPlay={() => setActivePage("library")}
+              onPlay={() => builds.length ? void startPlay() : setActivePage("library")}
               onOpenLog={() => void openLatestGameLog()}
               onOpenExternal={(url) => void api.openExternalUrl(url)}
               onRetry={() => void startPlay()}
@@ -582,7 +586,7 @@ export default function App({ api = appApi }: AppProps) {
               onRequestDelete={(build) => setDeleteTask({ build })}
             />
           ) : activePage === "skins" ? (
-            <SkinsPage
+            <Suspense fallback={<p>Загружаем библиотеку скинов…</p>}><SkinsPage
               api={api}
               account={accounts.find((account) => account.isActive) ?? accounts[0]}
               cosmetics={cosmeticsByAccount[activeAccountId!]}
@@ -592,12 +596,16 @@ export default function App({ api = appApi }: AppProps) {
               onRefresh={() => void warmCosmetics(activeAccountId!)}
               onSkinsChange={(next) => setSkinLibraries((current) => ({ ...current, [activeAccountId!]: next }))}
               skins={skinLibraries[activeAccountId!] ?? []}
-            />
+            /></Suspense>
           ) : null}
         </div>
       </main>
       {contentInstallTask && <aside className={`content-install-toast global-install-toast${contentInstallTask.error ? " is-error" : ""}`} role={contentInstallTask.error ? "alert" : "status"}>{contentInstallTask.project.icon_url ? <img alt="" src={contentInstallTask.project.icon_url} /> : <span>{contentInstallTask.project.title[0]}</span>}<div><strong>{contentInstallTask.project.title}</strong><p>{contentInstallTask.error ?? contentInstallTask.stage}</p></div>{contentInstallTask.error ? <button aria-label="Закрыть сообщение об установке" onClick={() => setContentInstallTask(undefined)} type="button">×</button> : <><i /><small>{contentInstallTask.step}/3</small></>}</aside>}
       {progress && (viewState === "installing" || viewState === "launching") && (() => { const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i /><small>{percent}%</small></aside>; })()}
+      {(viewState === "installing" || viewState === "launching") && progress && <button className="cancel-workflow" type="button" disabled={cancelling} onClick={() => {
+        const id = operationId.current; if (!id) return; setCancelling(true);
+        void api.cancelOperation(id).catch((reason: LauncherErrorDto) => setOperationError(reason)).finally(() => setCancelling(false));
+      }}>{cancelling ? "Отменяем…" : "Отменить"}</button>}
       {deleteTask && <aside className={`delete-build-toast${deleteTask.error ? " is-error" : ""}`} role={deleteTask.error ? "alert" : "dialog"}>{deleteTask.build.iconUrl ? <img alt="" src={deleteTask.build.iconUrl} /> : <span>{deleteTask.build.name[0]}</span>}<div><strong>{deleteTask.deleting ? "Удаляем сборку…" : `Удалить «${deleteTask.build.name}»?`}</strong><p>{deleteTask.error ?? "Сборка будет перемещена во внутреннюю корзину."}</p><div className="delete-toast-actions"><button disabled={deleteTask.deleting} onClick={() => setDeleteTask(undefined)} type="button">Отмена</button><button disabled={deleteTask.deleting} onClick={() => void confirmBuildDelete()} type="button">{deleteTask.deleting ? "Удаление…" : "Удалить"}</button></div></div></aside>}
     </div>
   );

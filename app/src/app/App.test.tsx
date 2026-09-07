@@ -148,6 +148,16 @@ afterEach(() => {
 });
 
 describe("launcher application", () => {
+  it("opens the local library while metadata is still pending", async () => {
+    const handlers: EventHandlers = {};
+    const api = createApi(handlers);
+    api.listGameVersions.mockImplementationOnce(() => new Promise(() => undefined));
+    renderApp(api);
+    await screen.findByLabelText("Лаунчер для комфортной игры");
+    expect(api.listBuilds).toHaveBeenCalled();
+    expect(screen.queryByText("Не удалось подготовить лаунчер")).toBeNull();
+  });
+
   it("boots with empty versions when the metadata network call fails", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);
