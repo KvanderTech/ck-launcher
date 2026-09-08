@@ -7,6 +7,7 @@
 QIcon glyph(const QString &name, const QColor &color = QColor(174, 199, 217), int size = 24);
 QPushButton *iconButton(const QString &name, const QString &label, QWidget *parent = nullptr);
 QFrame *panel(const QString &kind = QString());
+QFrame *clickPanel(std::function<void()> action);
 QLabel *label(const QString &text, const char *role = nullptr);
 void clearLayout(QLayout *layout);
 QWidget *scrollPage(QWidget *content);
@@ -16,6 +17,9 @@ class AudioFeedback final : public QObject {
   public:
     explicit AudioFeedback(QObject *parent = nullptr);
     static void play(const QString &name);
+    static bool isEnabled();
+    static void setEnabled(bool enabled);
+
   protected:
     bool eventFilter(QObject *, QEvent *) override;
 };
@@ -41,6 +45,10 @@ class CardGrid final : public QWidget {
                       QWidget *parent = nullptr);
     void append(QWidget *widget);
     void clear();
+    void setCardWidth(int width);
+    QSize minimumSizeHint() const override {
+        return QSize(minimumWidth, 0);
+    }
     int count() const {
         return items.size();
     }
@@ -51,7 +59,7 @@ class CardGrid final : public QWidget {
   private:
     QGridLayout *grid;
     QVector<QWidget *> items;
-    int minimumWidth, rowHeight, maxColumns, columns = 0;
+    int minimumWidth, rowHeight, maxColumns, columns = 0, cardWidth = 0;
     void arrange();
 };
 

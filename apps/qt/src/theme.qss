@@ -66,6 +66,8 @@ QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical { background: transparent; }
 QTableWidget, QPlainTextEdit { background: #0b2035; alternate-background-color: #10283e; border: 1px solid #27415a; border-radius: 12px; selection-background-color: #185473; selection-color: #f4fbff; }
 QPlainTextEdit { padding: 12px; font-family: "Consolas"; font-size: 12px; }
+QTextBrowser { background: rgba(8,26,44,240); border: 1px solid #27415a; border-radius: 16px; color: #d8e8f4; font-size: 14px; }
+QTabBar#skin-tabs::tab { padding: 7px 10px; font-size: 12px; }
 QTableWidget::item { padding: 10px 8px; }
 QHeaderView::section { background: #132f46; border: 0; color: #9ebcd2; padding: 10px; }
 QDialog, QMessageBox, QMenu, QInputDialog { background: #0d2237; }

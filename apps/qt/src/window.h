@@ -1,5 +1,6 @@
 #pragma once
 #include "backend.h"
+#include "projectview.h"
 #include "skinview.h"
 #include "ui.h"
 class LauncherWindow final : public QMainWindow {
@@ -9,6 +10,7 @@ class LauncherWindow final : public QMainWindow {
     void importPack(const QString &path = {});
     void initialize();
     void showPage(const QString &name);
+    void bringToFront();
 
   protected:
     void closeEvent(QCloseEvent *) override;
@@ -23,6 +25,8 @@ class LauncherWindow final : public QMainWindow {
   private:
     Backend *core;
     ImagePool *images;
+    ProjectView *projectView;
+    int projectReturnPage = 2;
     Backdrop *background;
     QStackedWidget *pages, *skinPages, *detailSections;
     QVector<QPushButton *> navigation;
@@ -37,7 +41,8 @@ class LauncherWindow final : public QMainWindow {
     QLineEdit *searchText, *skinSearch, *filePath;
     QComboBox *versionFilter, *loaderFilter, *categoryFilter, *sortFilter, *buildFilter,
         *skinVariant, *logFiles;
-    QCheckBox *hideInstalled, *favoriteSkins;
+    QCheckBox *hideInstalled;
+    QTabBar *skinTabs;
     QSpinBox *memory;
     QSlider *memorySlider;
     QPlainTextEdit *logText;

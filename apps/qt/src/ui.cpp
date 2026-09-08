@@ -1,18 +1,69 @@
 #include "ui.h"
 #ifdef Q_OS_WIN
+// clang-format off
 #include <windows.h>
 #include <mmsystem.h>
+// clang-format on
 #endif
 
 AudioFeedback::AudioFeedback(QObject *parent) : QObject(parent) {}
+namespace {
+class ClickPanel final : public QFrame {
+  public:
+    explicit ClickPanel(std::function<void()> action) : action(std::move(action)) {
+        setProperty("panel", true);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::StrongFocus);
+    }
+
+  protected:
+    void mousePressEvent(QMouseEvent *e) override {
+        pressed = e->button() == Qt::LeftButton;
+        if (!pressed)
+            QFrame::mousePressEvent(e);
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override {
+        const bool activate = pressed && e->button() == Qt::LeftButton && rect().contains(e->pos());
+        pressed = false;
+        if (activate)
+            action();
+    }
+    void keyPressEvent(QKeyEvent *e) override {
+        if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Space)
+            action();
+        else
+            QFrame::keyPressEvent(e);
+    }
+
+  private:
+    std::function<void()> action;
+    bool pressed = false;
+};
+} // namespace
+QFrame *clickPanel(std::function<void()> action) {
+    return new ClickPanel(std::move(action));
+}
+bool AudioFeedback::isEnabled() {
+    return QSettings().value(s("sounds"), true).toBool();
+}
+void AudioFeedback::setEnabled(bool enabled) {
+    QSettings().setValue(s("sounds"), enabled);
+#ifdef Q_OS_WIN
+    if (!enabled)
+        PlaySoundW(nullptr, nullptr, 0);
+#endif
+}
 void AudioFeedback::play(const QString &name) {
+    if (!isEnabled())
+        return;
 #ifdef Q_OS_WIN
     static QMap<QString, QByteArray> sounds;
     if (sounds.isEmpty()) {
         for (const auto &id : {s("click"), s("build-switch"), s("skin-select"), s("launch"),
                                s("install-complete"), s("game-ready"), s("game-exit")}) {
             QFile file(s(":/assets/sounds/") + id + s(".wav"));
-            if (file.open(QIODevice::ReadOnly)) sounds.insert(id, file.readAll());
+            if (file.open(QIODevice::ReadOnly))
+                sounds.insert(id, file.readAll());
         }
     }
     const auto found = sounds.constFind(name);
@@ -25,7 +76,9 @@ void AudioFeedback::play(const QString &name) {
 }
 bool AudioFeedback::eventFilter(QObject *object, QEvent *event) {
     if (event->type() == QEvent::MouseButtonRelease && qobject_cast<QAbstractButton *>(object))
-        play(object->property("soundName").toString().isEmpty() ? s("click") : object->property("soundName").toString());
+        play(object->property("soundName").toString().isEmpty()
+                 ? s("click")
+                 : object->property("soundName").toString());
     return QObject::eventFilter(object, event);
 }
 #include <QBuffer>
@@ -272,13 +325,25 @@ CardGrid::CardGrid(int w, int h, int max, QWidget *parent)
     : QWidget(parent), grid(new QGridLayout(this)), minimumWidth(w), rowHeight(h), maxColumns(max) {
     grid->setContentsMargins(0, 0, 0, 0);
     grid->setSpacing(12);
+    grid->setSizeConstraint(QLayout::SetNoConstraint);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 }
 void CardGrid::append(QWidget *w) {
     w->setParent(this);
     w->setFixedHeight(rowHeight);
     w->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    if (cardWidth)
+        w->setFixedWidth(cardWidth);
     items.append(w);
+    columns = 0;
+    arrange();
+}
+void CardGrid::setCardWidth(int width) {
+    cardWidth = qMax(1, width);
+    minimumWidth = cardWidth;
+    grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    for (auto *w : items)
+        w->setFixedWidth(cardWidth);
     columns = 0;
     arrange();
 }

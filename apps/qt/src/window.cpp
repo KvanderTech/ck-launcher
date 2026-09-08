@@ -40,10 +40,10 @@ class HomeArtwork final : public QWidget {
         p.setRenderHint(QPainter::Antialiasing);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
         const qreal x = width() * .055;
-        QFont small(s("Segoe UI"));
-        small.setPixelSize(30);
-        small.setWeight(QFont::Bold);
-        p.setFont(small);
+        QFont captionFont(s("Segoe UI"));
+        captionFont.setPixelSize(30);
+        captionFont.setWeight(QFont::Bold);
+        p.setFont(captionFont);
         p.setPen(QColor(195, 215, 231));
         p.drawText(QRectF(x, 24, width() * .46, 45), Qt::AlignLeft | Qt::AlignTop,
                    tr("Лаунчер для"));
@@ -70,6 +70,16 @@ class HomeArtwork final : public QWidget {
     QPixmap image;
 };
 } // namespace
+void LauncherWindow::bringToFront() {
+    if (isMinimized())
+        setWindowState(windowState() & ~Qt::WindowMinimized);
+    show();
+    raise();
+    activateWindow();
+#ifdef Q_OS_WIN
+    SetForegroundWindow(reinterpret_cast<HWND>(winId()));
+#endif
+}
 LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
     : QMainWindow(parent), core(backend), images(new ImagePool(backend, this)) {
     setWindowTitle(tr("ЦК Лаунчер"));
@@ -193,6 +203,23 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
     pages->addWidget(accountsPage());
     pages->addWidget(settingsPage());
     pages->addWidget(detailPage());
+    projectView = new ProjectView(core, images);
+    pages->addWidget(projectView);
+    connect(projectView, &ProjectView::back, this, [this] { navigate(projectReturnPage); });
+    connect(
+        projectView, &ProjectView::installRequested, this,
+        [this](const QString &project, const QString &version, const QString &build, bool pack) {
+            QJsonObject params{{s("projectId"), project}, {s("versionId"), version}};
+            if (!pack)
+                params.insert(s("buildId"), build);
+            call(
+                pack ? s("install_modrinth_modpack") : s("install_modrinth_project"), params,
+                [this](const QJsonValue &) {
+                    refreshLibrary();
+                    navigate(1);
+                },
+                true);
+        });
     activity = panel(s("activity"));
     activity->setParent(background);
     activity->setFixedWidth(345);
@@ -321,14 +348,15 @@ QWidget *LauncherWindow::homePage() {
 }
 void LauncherWindow::navigate(int page) {
     currentPage = page;
-    pages->setCurrentIndex(page == 6 ? 5 : page);
+    pages->setCurrentIndex(page == 6 ? 5 : page == 7 ? 6 : page);
     if (page == 6) {
         if (auto *tabs = findChild<QTabBar *>(s("buildTabs")))
             tabs->setCurrentIndex(3);
     }
     const QStringList names{s("home"), s("library"), s("grid"), s("shirt"), s("settings")};
     for (int i = 0; i < navigation.size(); ++i) {
-        bool active = i == page || (page == 5 && i == 1) || (page == 6 && i == 1);
+        bool active =
+            i == page || (page == 5 && i == 1) || (page == 6 && i == 1) || (page == 7 && i == 2);
         navigation[i]->setChecked(active);
         navigation[i]->setIcon(
             glyph(names[i], active ? QColor(88, 204, 255) : QColor(174, 199, 217)));
@@ -370,6 +398,7 @@ void LauncherWindow::message(const QString &text, bool error) {
 void LauncherWindow::call(const QString &method, const QJsonObject &params,
                           std::function<void(const QJsonValue &)> done, bool mutation) {
     if (mutation && (busy || running || !operationId.isEmpty())) {
+        projectView->setInstalling(false);
         message(tr("Дождитесь завершения текущей операции или остановите её."), true);
         return;
     }
@@ -386,6 +415,7 @@ void LauncherWindow::call(const QString &method, const QJsonObject &params,
         [this, done, mutation, quiet](const QJsonValue &result, const QJsonObject &error) {
             if (mutation) {
                 busy = false;
+                projectView->setInstalling(false);
                 progress->setRange(0, 100);
                 progress->setValue(error.isEmpty() ? 100 : 0);
                 updatePlayState();

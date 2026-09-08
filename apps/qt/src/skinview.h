@@ -12,6 +12,7 @@ class SkinView final : public QWidget {
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
+    void mouseReleaseEvent(QMouseEvent *) override;
 
   private:
     QImage texture, cape;

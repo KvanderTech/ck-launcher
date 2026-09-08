@@ -1,3 +1,4 @@
+#include "emote.h"
 #include "window.h"
 #include <QtTest>
 class UiTest final : public QObject {
@@ -79,7 +80,8 @@ class UiTest final : public QObject {
             }
             if (page == s("skins")) {
                 QTRY_VERIFY(window->findChild<QPushButton *>(s("skin-card-current")));
-                QCOMPARE(window->findChild<QPushButton *>(s("skin-card-current"))->height(), 280);
+                QCOMPARE(window->findChild<QPushButton *>(s("skin-card-current"))->height(), 296);
+                QCOMPARE(window->findChild<QPushButton *>(s("skin-card-current"))->width(), 174);
             }
         }
         window->showPage(s("library"));
@@ -105,9 +107,11 @@ class UiTest final : public QObject {
     }
     void selectsBuildAndTogglesContent() {
         window->showPage(s("library"));
-        auto *title = namedButton(s("2.4.3"));
-        QVERIFY(title);
-        QTest::mouseClick(title, Qt::LeftButton);
+        auto *card = window->findChild<QFrame *>(s("build-card-sodium"));
+        QVERIFY(card);
+        // The lower empty part of the panel, not its name or Play button.
+        QTest::mouseClick(card, Qt::LeftButton, Qt::NoModifier,
+                          QPoint(card->width() / 2, card->height() - 8));
         QTRY_COMPARE(state().value(s("activeBuild")).toString(), s("sodium"));
         auto *tabs = window->findChild<QTabBar *>(s("buildTabs"));
         tabs->setCurrentIndex(0);
@@ -126,6 +130,24 @@ class UiTest final : public QObject {
                     return true;
             return false;
         }());
+        QVERIFY(!window->findChild<QWidget *>(s("project-page"))->isVisible());
+        QTRY_VERIFY(window->findChild<QFrame *>(s("content-card-SodiumTranslations")));
+        auto *content = window->findChild<QFrame *>(s("content-card-SodiumTranslations"));
+        QTest::mouseClick(content, Qt::LeftButton, Qt::NoModifier,
+                          QPoint(content->width() / 2, content->height() - 6));
+        QTRY_VERIFY(window->findChild<QWidget *>(s("project-page"))->isVisible());
+        QTRY_VERIFY([&] {
+            for (const auto &entry : state().value(s("requests")).toArray()) {
+                const auto request = entry.toObject();
+                if (value(request, "method") == s("modrinth_project") &&
+                    value(request.value(s("params")).toObject(), "projectId") ==
+                        s("SodiumTranslations"))
+                    return true;
+            }
+            return false;
+        }());
+        QTest::mouseClick(window->findChild<QPushButton *>(s("project-back")), Qt::LeftButton);
+        QTRY_VERIFY(!window->findChild<QWidget *>(s("project-page"))->isVisible());
     }
     void filtersCatalogAndPersistsMemory() {
         window->showPage(s("catalog"));
@@ -157,20 +179,60 @@ class UiTest final : public QObject {
         QTest::qWait(100);
         auto *install = namedButton(QString::fromUtf8("+ Установить"));
         QVERIFY(install);
-        bool reviewed = false;
-        QTimer::singleShot(250, this, [&] {
-            auto *dialog = window->findChild<QInputDialog *>();
-            if (dialog) {
-                auto *choices = dialog->findChild<QComboBox *>();
-                reviewed =
-                    choices && choices->count() == 1 && choices->itemText(0).contains(s("1.21.1"));
-                dialog->reject();
-            }
-        });
         QTest::mouseClick(install, Qt::LeftButton);
-        QTRY_VERIFY_WITH_TIMEOUT(reviewed, 1500);
+        auto *choices = window->findChild<QComboBox *>(s("project-version"));
+        QTRY_COMPARE_WITH_TIMEOUT(choices->count(), 1, 1500);
+        QCOMPARE(choices->currentData().toString(), s("compatible"));
+        QVERIFY(window->findChild<QTextBrowser *>(s("project-description"))->isVisible());
+        QTRY_VERIFY(window->findChild<QTextBrowser *>(s("project-description"))
+                        ->toPlainText()
+                        .contains(s("Performance")));
+        window->resize(1280, 720);
+        snapshot(s("project-details"));
+        auto *games = window->findChild<QComboBox *>(s("project-game"));
+        games->setCurrentIndex(games->findData(s("1.20.1")));
+        QCOMPARE(choices->count(), 0);
+        QVERIFY(!window->findChild<QPushButton *>(s("project-install"))->isEnabled());
+        games->setCurrentIndex(games->findData(s("1.21.1")));
+        QCOMPARE(choices->count(), 1);
+        QTest::mouseClick(window->findChild<QPushButton *>(s("project-install")), Qt::LeftButton);
+        QTRY_VERIFY([&] {
+            for (const auto &entry : state().value(s("requests")).toArray()) {
+                const auto request = entry.toObject();
+                if (value(request, "method") == s("install_modrinth_project"))
+                    return value(request.value(s("params")).toObject(), "versionId") ==
+                           s("compatible");
+            }
+            return false;
+        }());
+    }
+    void soundSettingPersists() {
+        window->showPage(s("settings"));
+        auto *sounds = window->findChild<QCheckBox *>(s("sounds-setting"));
+        QVERIFY(sounds);
+        sounds->setChecked(false);
+        QVERIFY(!AudioFeedback::isEnabled());
+        QVERIFY(!QSettings().value(s("sounds"), true).toBool());
+        sounds->setChecked(true);
+        QVERIFY(AudioFeedback::isEnabled());
+        sounds->setChecked(false);
+    }
+    void exactKeyframesAndJointBends() {
+        const auto yes = EmoteClip::load(s(":/assets/emotes/yes.json"));
+        const auto wave = EmoteClip::load(s(":/assets/emotes/wave.json"));
+        QVERIFY(yes.valid());
+        QVERIFY(wave.valid());
+        QVERIFY(std::abs(wave.sample(s("rightArm"), 20, {-5, 2, 0}).bend) > .1);
+        const QVector3D hand(0, -10, 0), shoulder(0, 2, 0);
+        const auto bent = EmoteClip::bendVertex(hand, -4, float(-3.141592653589793 / 2), 0);
+        QVERIFY(std::abs(bent.z()) > 5.9);
+        QCOMPARE(EmoteClip::bendVertex(shoulder, -4, 1, 0), shoulder);
+        QCOMPARE(EmoteClip::bendVertex(hand, -4, 0, 0), hand);
+        const auto rest = yes.sample(s("rightArm"), 15, {-5, 2, 0});
+        QCOMPARE(rest.position, QVector3D(-5, 2, 0));
     }
     void skinPreviewAndAccountPopup() {
+        window->resize(1280, 720);
         window->showPage(s("skins"));
         QTest::qWait(150);
         auto *preview = static_cast<SkinView *>(window->findChild<QWidget *>(s("skin-preview")));
@@ -182,6 +244,16 @@ class UiTest final : public QObject {
         const auto pose = preview->grab().toImage();
         QVERIFY(idle != pose);
         snapshot(s("skin-animation"));
+        preview->setPoseTime(11.5);
+        snapshot(s("skin-bent-elbow"));
+        const auto beforeDrag = preview->grab().toImage();
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(100, 120), Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent move(QEvent::MouseMove, QPointF(155, 120), Qt::NoButton, Qt::LeftButton,
+                         Qt::NoModifier);
+        QApplication::sendEvent(preview, &press);
+        QApplication::sendEvent(preview, &move);
+        QVERIFY(preview->grab().toImage() != beforeDrag);
         preview->setAnimated(false);
         auto *card = window->findChild<QPushButton *>(s("skin-card-skin-1"));
         QVERIFY(card);

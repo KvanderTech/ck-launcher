@@ -94,17 +94,24 @@ QWidget *LauncherWindow::accountsPage() {
     addSkinButton = button(tr("+ Добавить PNG"), head, [this] { addSkin(); }, this, true);
     l->addLayout(head);
     auto *filters = new QHBoxLayout;
-    favoriteSkins = new QCheckBox(tr("Избранное"));
-    filters->addWidget(favoriteSkins);
+    skinTabs = new QTabBar;
+    skinTabs->setDrawBase(false);
+    skinTabs->setObjectName(s("skin-tabs"));
+    skinTabs->addTab(tr("Все"));
+    skinTabs->addTab(glyph(s("star"), QColor(145, 184, 211), 14), tr("Избранное"));
+    skinTabs->setExpanding(false);
+    filters->addWidget(skinTabs);
     filters->addStretch();
     skinSearch = new QLineEdit;
     skinSearch->setMaximumWidth(230);
     skinSearch->setPlaceholderText(tr("Поиск по названию"));
     filters->addWidget(skinSearch);
     l->addLayout(filters);
-    connect(favoriteSkins, &QCheckBox::toggled, this, [this] { renderSkins(); });
+    connect(skinTabs, &QTabBar::currentChanged, this, [this] { renderSkins(); });
     connect(skinSearch, &QLineEdit::textChanged, this, [this] { renderSkins(); });
-    skinCards = new CardGrid(155, 280, 4);
+    skinCards = new CardGrid(174, 296);
+    skinCards->setObjectName(s("skin-cards"));
+    skinCards->setCardWidth(174);
     l->addWidget(skinCards);
     right->addWidget(library);
     auto *capePanel = panel();
@@ -223,6 +230,7 @@ void LauncherWindow::signIn() {
                           return;
                       }
                       refreshAccounts();
+                      bringToFront();
                       message(tr("Аккаунт подключён"));
                   });
 }
@@ -333,7 +341,7 @@ void LauncherWindow::renderSkins() {
     auto addCard = [this](const QJsonObject &skin, bool online) {
         const auto id = online ? QString() : value(skin, "id"), account = selectedAccount;
         const QString name = online ? tr("Текущий скин") : value(skin, "name");
-        if (!online && favoriteSkins->isChecked() && !skin.value(s("isFavorite")).toBool())
+        if (skinTabs->currentIndex() == 1 && (online || !skin.value(s("isFavorite")).toBool()))
             return;
         if (!skinSearch->text().isEmpty() &&
             !name.contains(skinSearch->text(), Qt::CaseInsensitive))
@@ -345,10 +353,17 @@ void LauncherWindow::renderSkins() {
         card->setCursor(Qt::PointingHandCursor);
         card->setToolTip(name);
         auto *l = new QVBoxLayout(card);
-        l->setContentsMargins(9, 8, 9, 10);
+        l->setContentsMargins(4, 4, 4, 9);
         l->setSpacing(0);
-        auto *tools = new QHBoxLayout;
-        tools->setContentsMargins(0, 0, 0, 0);
+        auto *portrait = new QWidget;
+        auto *overlay = new QGridLayout(portrait);
+        overlay->setContentsMargins(0, 0, 0, 0);
+        auto *view = new SkinView(true);
+        overlay->addWidget(view, 0, 0);
+        auto *toolWidget = new QWidget;
+        auto *tools = new QHBoxLayout(toolWidget);
+        tools->setContentsMargins(5, 5, 5, 0);
+        overlay->addWidget(toolWidget, 0, 0, Qt::AlignTop);
         if (!online) {
             auto *star = iconButton(s("star"), tr("В избранное"));
             star->setFixedSize(26, 26);
@@ -391,30 +406,29 @@ void LauncherWindow::renderSkins() {
                         skinAction(
                             s("rename_offline_skin"),
                             {{s("accountId"), account}, {s("skinId"), id}, {s("name"), newName}});
-                } else if (chosen == remove &&
-                           QMessageBox::question(this, tr("Удалить скин?"),
-                                                 tr("Удалить «%1» из библиотеки?").arg(name),
-                                                 QMessageBox::Yes | QMessageBox::No,
-                                                 QMessageBox::No) == QMessageBox::Yes)
+                } else if (chosen == remove)
                     skinAction(s("delete_offline_skin"),
                                {{s("accountId"), account}, {s("skinId"), id}});
             });
         }
-        l->addLayout(tools);
-        auto *view = new SkinView(true);
-        l->addWidget(view, 1);
+        l->addWidget(portrait, 1);
+        toolWidget->raise();
         const auto url = value(skin, online ? "url" : "dataUrl");
         const bool slim = value(skin, "variant").compare(s("SLIM"), Qt::CaseInsensitive) == 0;
         images->load(url, view, [view, slim](const QImage &i) { view->setSkin(i, slim); });
-        auto *caption = label(name, "strong");
+        auto *caption =
+            label(QFontMetrics(card->font()).elidedText(name, Qt::ElideRight, 154), "strong");
         caption->setAlignment(Qt::AlignCenter);
-        caption->setWordWrap(true);
-        caption->setMaximumHeight(38);
+        caption->setFixedHeight(23);
         caption->setAttribute(Qt::WA_TransparentForMouseEvents);
         l->addWidget(caption);
-        connect(card, &QPushButton::clicked, this, [this, id] {
+        connect(card, &QPushButton::clicked, this, [this, id, slim] {
             AudioFeedback::play(s("skin-select"));
             selectedSkin = id;
+            {
+                QSignalBlocker blocker(skinVariant);
+                skinVariant->setCurrentIndex(slim ? 1 : 0);
+            }
             renderSkins();
             updateSkinPreview();
         });
@@ -427,13 +441,19 @@ void LauncherWindow::renderSkins() {
         }
     for (const auto &skin : skins)
         addCard(skin.toObject(), false);
-    if (!favoriteSkins->isChecked() && skinSearch->text().isEmpty() && skinCards->count() < 4) {
+    if (skinTabs->currentIndex() == 0 && skinSearch->text().isEmpty() && skinCards->count() < 4) {
         auto *add = new MotionButton(QString::fromUtf8("+"));
         add->setProperty("addSkin", true);
         add->setToolTip(tr("Добавить PNG-скин"));
         add->setAccessibleName(tr("Добавить PNG-скин"));
         connect(add, &QPushButton::clicked, this, [this] { addSkin(); });
         skinCards->append(add);
+    }
+    if (!skinCards->count()) {
+        auto *empty = label(tr("Скины не найдены"), "muted");
+        empty->setAlignment(Qt::AlignCenter);
+        empty->setObjectName(s("skin-empty"));
+        skinCards->append(empty);
     }
 }
 void LauncherWindow::updateSkinPreview() {

@@ -34,9 +34,23 @@ const SUCCESS_HTML: &str = r##"<!doctype html>
 <body>
   <main>
     <h1>Авторизация завершена</h1>
-    <p>Аккаунт подключён. Теперь можно закрыть эту вкладку и вернуться в лаунчер.</p>
-    <button type="button" onclick="this.disabled=true;fetch('/return').finally(()=>{this.textContent='Лаунчер открыт';setTimeout(()=>window.close(),150)})">Вернуться в лаунчер</button>
+    <p id="status">Microsoft подтвердил вход. Лаунчер завершает подключение аккаунта.</p>
+    <button id="return" type="button">Вернуться в лаунчер</button>
+    <p><a href="ck-launcher://auth/complete" style="color:#80d9ff">Открыть установленный лаунчер</a></p>
   </main>
+  <script>
+    document.getElementById('return').onclick=async function(){
+      if (NATIVE_PROTOCOL_AVAILABLE) window.location.href='ck-launcher://auth/complete';
+      this.disabled=true;
+      try {
+        const result=await fetch('/return',{cache:'no-store'});
+        if(!result.ok) throw new Error();
+        document.getElementById('status').textContent='Окно лаунчера открыто. Эту вкладку можно закрыть.';
+      } catch {
+        document.getElementById('status').textContent='Нажмите «Открыть установленный лаунчер» ниже или выберите его на панели задач.';
+      } finally { this.disabled=false; }
+    };
+  </script>
 </body>
 </html>"##;
 const ERROR_HTML: &str = "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>ЦК Лаунчер</title><body><h1>Вход не завершён</h1><p>Закройте эту страницу и повторите попытку.</p></body></html>";
@@ -214,8 +228,18 @@ fn read_request_target(stream: &mut TcpStream) -> Result<String, LauncherError> 
 }
 
 fn write_response(stream: &mut TcpStream, success: bool) {
+    #[cfg(windows)]
+    let has_protocol = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey("Software\\Classes\\ck-launcher\\shell\\open\\command")
+        .is_ok();
+    #[cfg(not(windows))]
+    let has_protocol = false;
+    let success_body = SUCCESS_HTML.replace(
+        "NATIVE_PROTOCOL_AVAILABLE",
+        if has_protocol { "true" } else { "false" },
+    );
     let (status, body) = if success {
-        ("200 OK", SUCCESS_HTML)
+        ("200 OK", success_body.as_str())
     } else {
         ("400 Bad Request", ERROR_HTML)
     };
@@ -233,14 +257,20 @@ fn spawn_return_listener(listener: TcpListener) {
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, peer)) if is_ipv4_loopback(peer.ip()) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
                     if read_request_target(&mut stream).ok().as_deref() == Some("/return") {
-                        let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n";
+                        let opened = open_launcher_window().is_ok();
+                        let status = if opened {
+                            "204 No Content"
+                        } else {
+                            "503 Service Unavailable"
+                        };
+                        let response = format!("HTTP/1.1 {status}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n");
                         let _ = stream.write_all(response.as_bytes());
                         let _ = stream.flush();
-                        if let Ok(executable) = std::env::current_exe() {
-                            let _ = std::process::Command::new(executable).spawn();
-                        }
-                        break;
+                    } else {
+                        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     }
                 }
                 Ok(_) => {}
@@ -251,6 +281,45 @@ fn spawn_return_listener(listener: TcpListener) {
             }
         }
     });
+}
+
+fn launcher_executable(current: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    if current.file_stem().and_then(|name| name.to_str()) == Some("ck-launcher-service") {
+        let name = if cfg!(windows) {
+            "ck-launcher-qt.exe"
+        } else {
+            "ck-launcher-qt"
+        };
+        let frontend = current.with_file_name(name);
+        if frontend.is_file() {
+            Ok(frontend)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Launcher window executable is missing",
+            ))
+        }
+    } else {
+        Ok(current.to_path_buf())
+    }
+}
+
+fn open_launcher_window() -> std::io::Result<()> {
+    let executable = launcher_executable(&std::env::current_exe()?)?;
+    #[cfg(not(test))]
+    {
+        let mut command = std::process::Command::new(executable);
+        command.arg("--activate");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // No transient service console.
+        }
+        command.spawn()?;
+    }
+    #[cfg(test)]
+    let _ = executable;
+    Ok(())
 }
 
 fn is_ipv4_loopback(ip: IpAddr) -> bool {
@@ -287,6 +356,20 @@ fn auth_cancelled() -> LauncherError {
 #[cfg(test)]
 mod tests {
     use super::CallbackReceiver;
+    #[test]
+    fn native_return_targets_frontend_not_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = dir.path().join("ck-launcher-service.exe");
+        let frontend = dir.path().join(if cfg!(windows) {
+            "ck-launcher-qt.exe"
+        } else {
+            "ck-launcher-qt"
+        });
+        assert!(super::launcher_executable(&service).is_err());
+        std::fs::write(&frontend, b"fixture").unwrap();
+        assert_eq!(super::launcher_executable(&service).unwrap(), frontend);
+        assert_eq!(super::launcher_executable(&frontend).unwrap(), frontend);
+    }
     use std::{
         io::{Read, Write},
         net::{IpAddr, TcpStream},

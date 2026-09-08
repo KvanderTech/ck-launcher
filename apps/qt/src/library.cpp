@@ -62,7 +62,7 @@ void LauncherWindow::renderLibrary() {
     for (const auto &item : builds) {
         auto b = item.toObject();
         const auto id = value(b, "id");
-        auto *card = panel();
+        auto *card = clickPanel([this, id] { openBuild(id); });
         card->setProperty("selected", b.value(s("isActive")).toBool());
         card->setObjectName(s("build-card-") + id);
         auto *row = new QHBoxLayout(card);
@@ -207,7 +207,17 @@ void LauncherWindow::renderContent() {
         if (!contentKind.isEmpty() && contentKind != type)
             continue;
         ++visible;
-        auto *card = panel();
+        auto openProject = [this, content, type] {
+            const auto id = value(content, "projectId");
+            if (value(content, "source") == s("local") || id.isEmpty())
+                return;
+            projectDetails({{s("project_id"), id},
+                            {s("title"), value(content, "title")},
+                            {s("project_type"), type},
+                            {s("icon_url"), value(content, "iconUrl")}});
+        };
+        auto *card = clickPanel(openProject);
+        card->setObjectName(s("content-card-") + value(content, "projectId"));
         auto *row = new QHBoxLayout(card);
         row->setContentsMargins(16, 12, 16, 12);
         row->setSpacing(14);
@@ -218,7 +228,11 @@ void LauncherWindow::renderContent() {
                      [icon](const QImage &i) { icon->setImage(i); });
         auto *copy = new QVBoxLayout;
         copy->setSpacing(3);
-        copy->addWidget(label(value(content, "title"), "strong"));
+        auto *title = new MotionButton(value(content, "title"));
+        title->setProperty("textButton", true);
+        title->setProperty("strong", true);
+        connect(title, &QPushButton::clicked, this, openProject);
+        copy->addWidget(title);
         QString kind = type == s("mod")            ? tr("Мод")
                        : type == s("resourcepack") ? tr("Ресурспак")
                        : type == s("shader")       ? tr("Шейдер")

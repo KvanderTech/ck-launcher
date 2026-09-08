@@ -1,7 +1,9 @@
 #include "skinview.h"
+#include "emote.h"
 #include <QMatrix4x4>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 SkinView::SkinView(bool small, QWidget *parent) : QWidget(parent), compact(small) {
     setMinimumSize(small ? 100 : 180, small ? 150 : 260);
@@ -11,7 +13,7 @@ SkinView::SkinView(bool small, QWidget *parent) : QWidget(parent), compact(small
     else
         setCursor(Qt::OpenHandCursor);
     clock.start();
-    timer.setInterval(40);
+    timer.setInterval(16);
     connect(&timer, &QTimer::timeout, this, [this] {
         if (animated && isVisible() && !window()->isMinimized())
             update();
@@ -20,12 +22,12 @@ SkinView::SkinView(bool small, QWidget *parent) : QWidget(parent), compact(small
         timer.start();
 }
 void SkinView::setSkin(const QImage &image, bool narrow) {
-    texture = image;
+    texture = image.convertToFormat(QImage::Format_ARGB32);
     slim = narrow;
     update();
 }
 void SkinView::setCape(const QImage &image) {
-    cape = image;
+    cape = image.convertToFormat(QImage::Format_ARGB32);
     update();
 }
 void SkinView::setAnimated(bool enabled) {
@@ -37,8 +39,13 @@ void SkinView::setPoseTime(double seconds) {
     update();
 }
 void SkinView::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton)
+    if (event->button() == Qt::LeftButton) {
         drag = event->pos();
+        setCursor(Qt::ClosedHandCursor);
+    }
+}
+void SkinView::mouseReleaseEvent(QMouseEvent *) {
+    setCursor(Qt::OpenHandCursor);
 }
 void SkinView::mouseMoveEvent(QMouseEvent *event) {
     if (event->buttons() & Qt::LeftButton) {
@@ -48,156 +55,236 @@ void SkinView::mouseMoveEvent(QMouseEvent *event) {
     }
 }
 void SkinView::paintEvent(QPaintEvent *) {
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    QPainter painter(this);
     if (texture.isNull()) {
         if (!compact) {
-            p.setPen(QColor(139, 166, 190));
-            p.drawText(rect(), Qt::AlignCenter,
-                       QString::fromUtf8("Добавьте PNG-скин\n64×64 или 64×32"));
+            painter.setPen(QColor(139, 166, 190));
+            painter.drawText(rect(), Qt::AlignCenter,
+                             QString::fromUtf8("Добавьте PNG-скин\n64×64 или 64×32"));
         }
         return;
     }
+    constexpr double pi = 3.14159265358979323846;
+    static const QVector<EmoteClip> clips{
+        EmoteClip::load(QStringLiteral(":/assets/emotes/yes.json")),
+        EmoteClip::load(QStringLiteral(":/assets/emotes/wave.json")),
+        EmoteClip::load(QStringLiteral(":/assets/emotes/bow.json")),
+        EmoteClip::load(QStringLiteral(":/assets/emotes/extend-arms.json"))};
     const double t =
         compact || !animated ? 0 : (fixedTime >= 0 ? fixedTime : clock.elapsed() / 1000.0);
+    const double local = std::fmod(t, 8.0) - 2.5;
+    const auto &clip = clips[int(t / 8) % clips.size()];
+    const auto smooth = [](double v) {
+        v = qBound(0.0, v, 1.0);
+        return v * v * (3 - 2 * v);
+    };
+    const double weight = compact || !animated || local < 0
+                              ? 0
+                              : smooth(local / .22) * (1 - smooth((local - clip.duration()) / .4));
+    auto pose = [&](const char *part, const QVector3D &bind) {
+        auto p = clip.sample(QString::fromLatin1(part),
+                             qBound(0.0, local * 20, clip.duration() * 20), bind);
+        p.position = bind + (p.position - bind) * float(weight);
+        p.rotation *= float(weight);
+        p.scale = QVector3D(1, 1, 1) + (p.scale - QVector3D(1, 1, 1)) * float(weight);
+        p.bend *= float(weight);
+        return p;
+    };
+    auto torsoPose = pose("torso", {});
+    auto rootPose = pose("body", {});
+    QMatrix4x4 root;
+    root.translate(rootPose.position.x(), -rootPose.position.y(), -rootPose.position.z());
+    root.translate(0, 16, 0);
+    root.rotate(float(-rootPose.rotation.z() * 180 / pi), 0, 0, 1);
+    root.rotate(float(-rootPose.rotation.y() * 180 / pi), 0, 1, 0);
+    root.rotate(float(rootPose.rotation.x() * 180 / pi), 1, 0, 0);
+    root.scale(rootPose.scale);
+    root.translate(0, -16, 0);
+    auto matrix = [&](const EmotePart &p) {
+        QMatrix4x4 m;
+        m.translate(p.position.x(), 24 - p.position.y(), -p.position.z());
+        m.rotate(float(-p.rotation.z() * 180 / pi), 0, 0, 1);
+        m.rotate(float(-p.rotation.y() * 180 / pi), 0, 1, 0);
+        m.rotate(float(p.rotation.x() * 180 / pi), 1, 0, 0);
+        m.scale(p.scale);
+        return m;
+    };
+    // Supersampled, perspective-correct, depth-tested software rendering works on
+    // both Qt 5/Windows 7 and Qt 6 without depending on a particular GPU driver.
+    const double factor = qBound(2.0, devicePixelRatioF() * 1.5, 3.0);
+    const int rw = qMax(1, qRound(width() * factor)), rh = qMax(1, qRound(height() * factor));
+    QImage frame(rw, rh, QImage::Format_ARGB32_Premultiplied);
+    frame.fill(Qt::transparent);
+    QVector<float> depth(rw * rh, -std::numeric_limits<float>::infinity());
+    QMatrix4x4 view;
+    view.rotate(-6, 1, 0, 0);
+    view.rotate(float(yaw), 0, 1, 0);
+    const double scale =
+        std::min(width() / (compact ? 17.0 : 29.0), height() / (compact ? 24.5 : 39.0)) * factor;
+    const double center = compact ? 20.0 : 16;
+    struct Vertex {
+        double x, y, inv, u, v;
+    };
     struct Face {
-        QPolygonF target;
-        QRectF uv;
+        QVector<Vertex> vertices;
         const QImage *image;
         double depth, shade;
     };
     QVector<Face> faces;
-    QMatrix4x4 view;
-    view.rotate(-5, 1, 0, 0);
-    view.rotate(float(yaw), 0, 1, 0);
-    const double scale =
-        std::min(width() / (compact ? 21.0 : 27.0), height() / (compact ? 24.0 : 37.0));
-    const double center = compact ? 22.5 : 16.0;
-    auto box = [&](float w, float h, float d, int tx, int ty, const QMatrix4x4 &local,
-                   const QImage &image, float expand = 0) {
-        QMatrix4x4 matrix = view * local;
-        float x = w / 2 + expand, y = h / 2 + expand, z = d / 2 + expand;
-        const QVector<QVector<QVector3D>> vertices = {
-            {{-x, y, z}, {x, y, z}, {x, -y, z}, {-x, -y, z}},
-            {{x, y, -z}, {-x, y, -z}, {-x, -y, -z}, {x, -y, -z}},
-            {{x, y, z}, {x, y, -z}, {x, -y, -z}, {x, -y, z}},
-            {{-x, y, -z}, {-x, y, z}, {-x, -y, z}, {-x, -y, -z}},
-            {{-x, y, -z}, {x, y, -z}, {x, y, z}, {-x, y, z}},
-            {{-x, -y, z}, {x, -y, z}, {x, -y, -z}, {-x, -y, -z}}};
-        QVector<QRectF> uv = {{double(tx + d), double(ty + d), w, h},
-                              {double(tx + 2 * d + w), double(ty + d), w, h},
-                              {double(tx + d + w), double(ty + d), d, h},
-                              {double(tx), double(ty + d), d, h},
-                              {double(tx + d), double(ty), w, d},
-                              {double(tx + d + w), double(ty), w, d}};
-        for (int i = 0; i < vertices.size(); ++i) {
-            QVector<QVector3D> world;
-            QPolygonF screen;
-            double depth = 0;
-            for (auto v : vertices[i]) {
-                v = matrix.map(v);
-                world << v;
-                depth += v.z();
-                double projection = 95.0 / (95.0 - v.z());
-                screen << QPointF(width() / 2.0 + v.x() * scale * projection,
-                                  height() / 2.0 - (v.y() - center) * scale * projection);
+    auto box = [&](float w, float h, float d, int tx, int ty, QMatrix4x4 m, QVector3D offset,
+                   const QImage &image, const EmotePart &part, float pivot, bool bendUpper,
+                   bool upperBody, float expand = 0) {
+        const float x = w / 2 + expand, top = h / 2 + expand, z = d / 2 + expand;
+        const QVector<QVector<QVector3D>> planes{
+            {{-x, top, z}, {x, top, z}, {x, -top, z}, {-x, -top, z}},
+            {{x, top, -z}, {-x, top, -z}, {-x, -top, -z}, {x, -top, -z}},
+            {{x, top, z}, {x, top, -z}, {x, -top, -z}, {x, -top, z}},
+            {{-x, top, -z}, {-x, top, z}, {-x, -top, z}, {-x, -top, -z}},
+            {{-x, top, -z}, {x, top, -z}, {x, top, z}, {-x, top, z}},
+            {{-x, -top, z}, {x, -top, z}, {x, -top, -z}, {-x, -top, -z}}};
+        const QVector<QRectF> uvs{{double(tx + d), double(ty + d), w, h},
+                                  {double(tx + 2 * d + w), double(ty + d), w, h},
+                                  {double(tx + d + w), double(ty + d), d, h},
+                                  {double(tx), double(ty + d), d, h},
+                                  {double(tx + d), double(ty), w, d},
+                                  {double(tx + d + w), double(ty), w, d}};
+        for (int side = 0; side < planes.size(); ++side) {
+            const int slices = side < 4 && std::abs(part.bend) > .0001 ? int(h) : 1;
+            const auto &plane = planes[side];
+            for (int slice = 0; slice < slices; ++slice) {
+                const float a = float(slice) / slices, b = float(slice + 1) / slices;
+                QVector<QVector3D> points{
+                    plane[0] * (1 - a) + plane[3] * a, plane[1] * (1 - a) + plane[2] * a,
+                    plane[1] * (1 - b) + plane[2] * b, plane[0] * (1 - b) + plane[3] * b};
+                QVector<QVector3D> world;
+                for (auto &point : points) {
+                    point += offset;
+                    point = EmoteClip::bendVertex(point, pivot, part.bend, part.axis, bendUpper);
+                    point = m.map(point);
+                    if (upperBody)
+                        point =
+                            EmoteClip::bendVertex(point, 18, torsoPose.bend, torsoPose.axis, true);
+                    point = view.map(root.map(point));
+                    world.append(point);
+                }
+                const auto normal =
+                    QVector3D::crossProduct(world[1] - world[0], world[2] - world[0]).normalized();
+                const double shade =
+                    qBound(.64,
+                           .9 - std::abs(double(normal.x())) * .13 +
+                               std::abs(double(normal.z())) * .08 - double(normal.y()) * .07,
+                           1.0);
+                const auto uv = uvs[side];
+                const double ratio = image.width() / 64.0;
+                QVector<QPointF> coords{{uv.left(), uv.top() + uv.height() * a},
+                                        {uv.right(), uv.top() + uv.height() * a},
+                                        {uv.right(), uv.top() + uv.height() * b},
+                                        {uv.left(), uv.top() + uv.height() * b}};
+                Face face{{}, &image, 0, shade};
+                for (int i = 0; i < 4; ++i) {
+                    const auto &point = world[i];
+                    const double inv = 1.0 / (100.0 - point.z());
+                    face.vertices.append({rw / 2.0 + point.x() * scale * 100 * inv,
+                                          rh / 2.0 - (point.y() - center) * scale * 100 * inv, inv,
+                                          coords[i].x() * ratio * inv,
+                                          coords[i].y() * ratio * inv});
+                    face.depth += point.z() / 4.0;
+                }
+                faces.append(face);
             }
-            auto normal =
-                QVector3D::crossProduct(world[1] - world[0], world[2] - world[0]).normalized();
-            double shade = qBound(.64,
-                                  double(.77 + normal.y() * .09 - std::abs(normal.x()) * .1 +
-                                         std::abs(normal.z()) * .18),
-                                  1.0);
-            double ratio = image.width() / 64.0;
-            QRectF source(uv[i].x() * ratio, uv[i].y() * ratio, uv[i].width() * ratio,
-                          uv[i].height() * ratio);
-            faces.append({screen, source, &image, depth / 4, shade});
         }
     };
-    // A calm idle loop periodically blends into the three bundled SPEmotes previews:
-    // yes, extend-arms and bow. Drag rotation remains independent from the pose timeline.
-    const double phase = std::fmod(t, 24.0);
-    const auto pulse = [](double value, double begin, double end) {
-        if (value <= begin || value >= end) return 0.0;
-        return std::sin((value - begin) * 3.141592653589793 / (end - begin));
-    };
-    const double nod = pulse(phase, 6, 9);
-    const double extend = pulse(phase, 11, 15);
-    const double bow = pulse(phase, 17, 21);
-    const double wave = pulse(phase, 2, 5);
-    auto body = [&](float x, float y, float z, float rx = 0, float ry = 0, float rz = 0) {
-        QMatrix4x4 m;
-        m.translate(x, y, z);
-        m.rotate(rx, 1, 0, 0);
-        m.rotate(ry, 0, 1, 0);
-        m.rotate(rz, 0, 0, 1);
-        return m;
-    };
-    auto torso = body(0, 18 + float(std::sin(t * 1.8) * .08 - bow * 1.5), 0,
-                      float(bow * 48));
-    box(8, 12, 4, 16, 16, torso, texture);
-    auto head = body(0, 24 - float(bow * 2), float(bow * 1.5),
-                     float(std::sin(t * 1.4) * 3 + nod * std::sin(t * 15) * 18 + bow * 25),
-                     float(std::sin(t * .8) * 5));
-    head.translate(0, 4, 0);
-    box(8, 8, 8, 0, 0, head, texture);
-    box(8, 8, 8, 32, 0, head, texture, .25);
+    auto torso = matrix(torsoPose);
+    box(8, 12, 4, 16, 16, torso, {0, -6, 0}, texture, torsoPose, -6, true, false);
+    auto headPose = pose("head", {});
+    headPose.rotation.setY(headPose.rotation.y() + float(std::sin(t * .7) * .04 * (1 - weight)));
+    auto head = matrix(headPose);
+    box(8, 8, 8, 0, 0, head, {0, 4, 0}, texture, {}, 0, false, true);
+    box(8, 8, 8, 32, 0, head, {0, 4, 0}, texture, {}, 0, false, true, .25);
+    const bool modern = texture.height() >= texture.width();
     const float arm = slim ? 3 : 4;
-    auto right = body(-(4 + arm / 2), 22, 0, float(-wave * 145 - bow * 20), 0,
-                      float(-3 - std::sin(t * 1.5) * 2 - wave * std::sin(t * 6) * 10 - extend * 88));
-    right.translate(0, -4, 0);
-    box(arm, 12, 4, 40, 16, right, texture);
-    auto left =
-        body(4 + arm / 2, 22, 0, float(std::sin(t * 1.6) * 2 - bow * 20), 0,
-             float(3 + std::sin(t * 1.5) * 2 + extend * 88));
-    left.translate(0, -4, 0);
-    if (texture.height() < texture.width())
+    auto rightPose = pose("rightArm", {-5, 2, 0}), leftPose = pose("leftArm", {5, 2, 0});
+    rightPose.rotation.setZ(rightPose.rotation.z() +
+                            float((.035 + std::sin(t * 1.5) * .015) * (1 - weight)));
+    leftPose.rotation.setZ(leftPose.rotation.z() -
+                           float((.035 + std::sin(t * 1.5) * .015) * (1 - weight)));
+    auto right = matrix(rightPose), left = matrix(leftPose);
+    if (!modern)
         left.scale(-1, 1, 1);
-    box(arm, 12, 4, texture.height() >= texture.width() ? 32 : 40,
-        texture.height() >= texture.width() ? 48 : 16, left, texture);
-    auto rleg = body(-2, 12, 0, float(std::sin(t * 1.6) * 1.4));
-    rleg.translate(0, -6, 0);
-    box(4, 12, 4, 0, 16, rleg, texture);
-    auto lleg = body(2, 12, 0, float(-std::sin(t * 1.6) * 1.4));
-    lleg.translate(0, -6, 0);
-    if (texture.height() < texture.width())
+    box(arm, 12, 4, 40, 16, right, {-arm / 2 + 1, -4, 0}, texture, rightPose, -4, false, true);
+    box(arm, 12, 4, modern ? 32 : 40, modern ? 48 : 16, left,
+        {modern ? arm / 2 - 1 : -arm / 2 + 1, -4, 0}, texture, leftPose, -4, false, true);
+    auto rightLeg = pose("rightLeg", {-1.9f, 12, .1f}), leftLeg = pose("leftLeg", {1.9f, 12, .1f});
+    auto rleg = matrix(rightLeg), lleg = matrix(leftLeg);
+    if (!modern)
         lleg.scale(-1, 1, 1);
-    box(4, 12, 4, texture.height() >= texture.width() ? 16 : 0,
-        texture.height() >= texture.width() ? 48 : 16, lleg, texture);
-    if (texture.height() >= texture.width()) {
-        box(8, 12, 4, 16, 32, torso, texture, .15);
-        box(arm, 12, 4, 40, 32, right, texture, .15);
-        box(arm, 12, 4, 48, 48, left, texture, .15);
-        box(4, 12, 4, 0, 32, rleg, texture, .15);
-        box(4, 12, 4, 0, 48, lleg, texture, .15);
+    box(4, 12, 4, 0, 16, rleg, {0, -6, 0}, texture, rightLeg, -6, false, false);
+    box(4, 12, 4, modern ? 16 : 0, modern ? 48 : 16, lleg, {0, -6, 0}, texture, leftLeg, -6, false,
+        false);
+    if (modern) {
+        box(8, 12, 4, 16, 32, torso, {0, -6, 0}, texture, torsoPose, -6, true, false, .15);
+        box(arm, 12, 4, 40, 32, right, {-arm / 2 + 1, -4, 0}, texture, rightPose, -4, false, true,
+            .15);
+        box(arm, 12, 4, 48, 48, left, {arm / 2 - 1, -4, 0}, texture, leftPose, -4, false, true,
+            .15);
+        box(4, 12, 4, 0, 32, rleg, {0, -6, 0}, texture, rightLeg, -6, false, false, .15);
+        box(4, 12, 4, 0, 48, lleg, {0, -6, 0}, texture, leftLeg, -6, false, false, .15);
     }
     if (!cape.isNull()) {
-        auto cloak = body(0, 23, -2.5, float(-7 - std::sin(t * 1.8) * 3));
-        cloak.translate(0, -8, 0);
-        box(10, 16, 1, 0, 0, cloak, cape, .03);
+        QMatrix4x4 cloak;
+        cloak.translate(0, 23, -2.6);
+        cloak.rotate(float(-7 - std::sin(t * 1.8) * 2), 1, 0, 0);
+        box(10, 16, 1, 0, 0, cloak, {0, -8, 0}, cape, {}, 0, false, true, .03);
     }
     std::stable_sort(faces.begin(), faces.end(),
                      [](const Face &a, const Face &b) { return a.depth < b.depth; });
-    for (const auto &face : faces) {
-        if (!face.image->rect().contains(face.uv.toRect()))
-            continue;
-        auto fragment =
-            face.image->copy(face.uv.toRect()).convertToFormat(QImage::Format_ARGB32_Premultiplied);
-        {
-            QPainter light(&fragment);
-            light.setCompositionMode(QPainter::CompositionMode_SourceAtop);
-            light.fillRect(fragment.rect(), QColor(0, 0, 0, qRound((1 - face.shade) * 255)));
+    auto triangle = [&](const Vertex &a, const Vertex &b, const Vertex &c, const Face &face) {
+        const double area = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+        if (std::abs(area) < .0001)
+            return;
+        const int x0 = qMax(0, int(std::floor(std::min({a.x, b.x, c.x}))));
+        const int x1 = qMin(rw - 1, int(std::ceil(std::max({a.x, b.x, c.x}))));
+        const int y0 = qMax(0, int(std::floor(std::min({a.y, b.y, c.y}))));
+        const int y1 = qMin(rh - 1, int(std::ceil(std::max({a.y, b.y, c.y}))));
+        for (int y = y0; y <= y1; ++y) {
+            auto *line = reinterpret_cast<QRgb *>(frame.scanLine(y));
+            for (int x = x0; x <= x1; ++x) {
+                const double wa =
+                    ((b.y - c.y) * (x + .5 - c.x) + (c.x - b.x) * (y + .5 - c.y)) / area;
+                const double wb =
+                    ((c.y - a.y) * (x + .5 - c.x) + (a.x - c.x) * (y + .5 - c.y)) / area;
+                const double wc = 1 - wa - wb;
+                if (wa < -1e-7 || wb < -1e-7 || wc < -1e-7)
+                    continue;
+                const double inv = wa * a.inv + wb * b.inv + wc * c.inv;
+                if (inv <= depth[y * rw + x])
+                    continue;
+                const int u =
+                    qBound(0, int((wa * a.u + wb * b.u + wc * c.u) / inv), face.image->width() - 1);
+                const int v = qBound(0, int((wa * a.v + wb * b.v + wc * c.v) / inv),
+                                     face.image->height() - 1);
+                const QRgb texel = face.image->pixel(u, v);
+                const int alpha = qAlpha(texel);
+                if (!alpha)
+                    continue;
+                depth[y * rw + x] = float(inv);
+                const auto dst = line[x];
+                const auto lit = [&](int color, int background) {
+                    return qBound(0,
+                                  int(color * face.shade * alpha / 255.0) +
+                                      background * (255 - alpha) / 255,
+                                  255);
+                };
+                line[x] =
+                    qRgba(lit(qRed(texel), qRed(dst)), lit(qGreen(texel), qGreen(dst)),
+                          lit(qBlue(texel), qBlue(dst)), alpha + qAlpha(dst) * (255 - alpha) / 255);
+            }
         }
-        const QRectF uv = fragment.rect();
-        QPolygonF source(
-            QVector<QPointF>{uv.topLeft(), uv.topRight(), uv.bottomRight(), uv.bottomLeft()});
-        QTransform transform;
-        if (!QTransform::quadToQuad(source, face.target, transform))
-            continue;
-        p.save();
-        p.setTransform(transform);
-        p.drawImage(uv, fragment, uv);
-        p.restore();
+    };
+    for (const auto &face : faces) {
+        triangle(face.vertices[0], face.vertices[1], face.vertices[2], face);
+        triangle(face.vertices[0], face.vertices[2], face.vertices[3], face);
     }
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.drawImage(rect(), frame);
 }

@@ -250,6 +250,21 @@ int main(int argc, char **argv) {
             result =
                 QJsonArray{QJsonObject{{key("id"), key("1.21.1")}, {key("type"), key("release")}},
                            QJsonObject{{key("id"), key("1.20.1")}, {key("type"), key("release")}}};
+        else if (method == key("install_modrinth_project") ||
+                 method == key("install_modrinth_modpack"))
+            result = QJsonObject{};
+        else if (method == key("modrinth_project"))
+            result = QJsonObject{
+                {key("id"), params.value(key("projectId"))},
+                {key("title"), key("Fabulously Optimized")},
+                {key("description"), key("A fast, beautiful Minecraft experience.")},
+                {key("icon_url"), fo},
+                {key("body"),
+                 key("# Performance\n\n**Fast and beautiful.** Keep the features you love.\n\n"
+                     "## Included\n\n- Performance improvements\n- Familiar graphics\n- Easy "
+                     "installation\n\n"
+                     "[Project website](https://modrinth.com)\n\n"
+                     "| Feature | Included |\n|---|---|\n| Optimization | Yes |")}};
         else if (method == key("modrinth_project_versions"))
             result = QJsonArray{QJsonObject{{key("id"), key("compatible")},
                                             {key("version_number"), key("1.0")},
