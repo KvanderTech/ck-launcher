@@ -19,6 +19,48 @@ fn skin_header() -> Vec<u8> {
     bytes
 }
 
+#[cfg(windows)]
+#[test]
+fn skin_library_accepts_a_windows_data_root_alias_without_weakening_path_checks() {
+    crate::tasks::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let alias = PathBuf::from(temp.path().to_string_lossy().to_ascii_uppercase());
+        let service = service(&alias).await;
+        service
+            .storage
+            .upsert_account(&skin_account(
+                "alias-player",
+                "1234567890abcdef1234567890abcdef",
+            ))
+            .await
+            .unwrap();
+        let imported = service
+            .import_skin("alias-player".into(), "Alias".into(), &skin_header())
+            .await
+            .unwrap();
+        let skins = list_offline_skins("alias-player".into(), &service)
+            .await
+            .unwrap();
+        assert_eq!(skins.len(), 1);
+        assert_eq!(skins[0].id, imported.id);
+        let mut stored = service
+            .storage
+            .list_offline_skins("alias-player")
+            .await
+            .unwrap()
+            .remove(0);
+        stored.file_path = temp
+            .path()
+            .join("outside.png")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            service.skin_view(stored).unwrap_err().code(),
+            "invalid_path"
+        );
+    });
+}
+
 #[test]
 fn skin_library_survives_signout_restart_and_renamed_login_with_same_uuid() {
     crate::tasks::block_on(async {
@@ -159,7 +201,9 @@ fn legacy_skin_files_migrate_and_recover_only_the_current_accounts_orphans() {
             2
         );
         for skin in service.storage.list_offline_skins("player").await.unwrap() {
-            assert!(Path::new(&skin.file_path).starts_with(temp.path().join("skins").join(uuid)));
+            assert!(Path::new(&skin.file_path).starts_with(
+                security::safe_destination(temp.path(), &Path::new("skins").join(uuid)).unwrap()
+            ));
         }
     });
 }

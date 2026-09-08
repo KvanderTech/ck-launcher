@@ -1365,14 +1365,16 @@ impl ContentService {
         result
     }
     fn skin_view(&self, skin: OfflineSkin) -> Result<OfflineSkinView, LauncherError> {
-        let stored = crate::paths::strip_verbatim_prefix(PathBuf::from(&skin.file_path));
+        let stored = skins::stored_path(&skin)?;
+        // APPDATA/TEMP may use an 8.3 alias or different case on Windows.
+        let skin_root = security::safe_destination(&self.paths.root, Path::new("skins"))?;
         let relative = stored
-            .strip_prefix(&self.paths.root)
+            .strip_prefix(&skin_root)
             .map_err(|_| LauncherError::invalid_path())?;
-        if relative.components().count() != 3 || !relative.starts_with("skins") {
+        if relative.components().count() != 2 {
             return Err(LauncherError::invalid_path());
         }
-        let path = security::safe_destination(&self.paths.root, relative)?;
+        let path = security::safe_destination(&skin_root, relative)?;
         let bytes = skins::read_skin(&path)?;
         Ok(OfflineSkinView {
             id: skin.id,

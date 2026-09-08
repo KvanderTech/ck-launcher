@@ -1,6 +1,18 @@
 use super::*;
 use std::io::Write;
 
+pub(super) fn stored_path(skin: &OfflineSkin) -> Result<PathBuf, LauncherError> {
+    let stored = Path::new(&skin.file_path);
+    let parent = stored.parent().ok_or_else(LauncherError::invalid_path)?;
+    let name = stored.file_name().ok_or_else(LauncherError::invalid_path)?;
+    // Normalize directory aliases, but not the file itself: safe_destination must
+    // still inspect and reject a final symlink/reparse point before any file read.
+    let parent = parent
+        .canonicalize()
+        .map_err(|_| LauncherError::invalid_path())?;
+    Ok(crate::paths::strip_verbatim_prefix(parent.join(name)))
+}
+
 pub(super) fn read_skin(path: &Path) -> Result<Vec<u8>, LauncherError> {
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -40,7 +52,7 @@ impl ContentService {
         let old = Path::new("skins")
             .join(format!("{:x}", Sha256::digest(skin.account_id.as_bytes())))
             .join(format!("{}.png", skin.id));
-        let stored = crate::paths::strip_verbatim_prefix(PathBuf::from(&skin.file_path));
+        let stored = stored_path(skin)?;
         for relative in [new, old] {
             if security::safe_destination(&self.paths.root, &relative)? == stored {
                 return Ok(relative);
