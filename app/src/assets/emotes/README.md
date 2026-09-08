@@ -5,6 +5,7 @@ This directory contains a small, curated subset of SPEmotes animations used by t
 - `yes.json`
 - `bow.json`
 - `extend-arms.json`
+- `wave.json` (native preview; elbow and torso bends)
 
 Animation author: SPEmotes / Milyan. Source: https://spemotes.com/download/
 

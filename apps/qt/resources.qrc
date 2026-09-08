@@ -1,5 +1,5 @@
 <RCC><qresource prefix="/assets">
-<file alias="logo.png">../../app/src/assets/logo-transparent.png</file>
+<file alias="logo.png">../../app/src-tauri/icons/icon.png</file>
 <file alias="bg-1.jpg">../../app/src/assets/bg-1.jpg</file>
 <file alias="bg-2.jpg">../../app/src/assets/bg-2.jpg</file>
 <file alias="bg-3.jpg">../../app/src/assets/bg-3.jpg</file>
@@ -15,4 +15,5 @@
 <file alias="emotes/yes.json">../../app/src/assets/emotes/yes.json</file>
 <file alias="emotes/bow.json">../../app/src/assets/emotes/bow.json</file>
 <file alias="emotes/extend-arms.json">../../app/src/assets/emotes/extend-arms.json</file>
+<file alias="emotes/wave.json">../../app/src/assets/emotes/wave.json</file>
 </qresource></RCC>

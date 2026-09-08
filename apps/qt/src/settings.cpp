@@ -112,15 +112,17 @@ QWidget *LauncherWindow::settingsPage() {
                 info.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
                 if (info.exec() == QMessageBox::Yes) {
                     updateStatus->setText(tr("Скачиваем и проверяем подпись…"));
-                    call(s("install_update"),
-                         {{s("assetUrl"), value(update, "assetUrl")},
-                          {s("signatureUrl"), value(update, "signatureUrl")},
-                          {s("installDir"), QCoreApplication::applicationDirPath()},
-                          {s("launcherPid"), qint64(QCoreApplication::applicationPid())}},
-                         [this](const QJsonValue &) {
-                             updateStatus->setText(tr("Обновление готово. Перезапускаем…"));
-                             QTimer::singleShot(250, qApp, &QCoreApplication::quit);
-                         }, true);
+                    call(
+                        s("install_update"),
+                        {{s("assetUrl"), value(update, "assetUrl")},
+                         {s("signatureUrl"), value(update, "signatureUrl")},
+                         {s("installDir"), QCoreApplication::applicationDirPath()},
+                         {s("launcherPid"), qint64(QCoreApplication::applicationPid())}},
+                        [this](const QJsonValue &) {
+                            updateStatus->setText(tr("Обновление готово. Перезапускаем…"));
+                            QTimer::singleShot(250, qApp, &QCoreApplication::quit);
+                        },
+                        true);
                 }
             });
         },
@@ -129,7 +131,14 @@ QWidget *LauncherWindow::settingsPage() {
     auto *appearance = panel();
     auto *a = new QVBoxLayout(appearance);
     a->setContentsMargins(18, 18, 18, 18);
-    a->addWidget(label(tr("Внешний вид"), "strong"));
+    a->addWidget(label(tr("Интерфейс и звуки"), "strong"));
+    auto *sounds = new QCheckBox(tr("Звуки лаунчера"));
+    sounds->setObjectName(s("sounds-setting"));
+    sounds->setChecked(AudioFeedback::isEnabled());
+    sounds->setToolTip(tr("Нажатия, установка, запуск и завершение игры"));
+    a->addWidget(sounds);
+    connect(sounds, &QCheckBox::toggled, this,
+            [](bool enabled) { AudioFeedback::setEnabled(enabled); });
     auto *motion = new QCheckBox(tr("Плавные анимации"));
     motion->setObjectName(s("motion-setting"));
     motion->setChecked(QSettings().value(s("motion"), true).toBool());

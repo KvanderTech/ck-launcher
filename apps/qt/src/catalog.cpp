@@ -234,7 +234,8 @@ void LauncherWindow::renderCatalog() {
         if (hideInstalled->isChecked() && isInstalled)
             continue;
         ++visible;
-        auto *card = panel();
+        auto *card = clickPanel([this, project] { projectDetails(project); });
+        card->setAccessibleName(value(project, "title"));
         auto *row = new QHBoxLayout(card);
         row->setContentsMargins(14, 12, 14, 12);
         row->setSpacing(14);
@@ -280,88 +281,10 @@ void LauncherWindow::renderCatalog() {
     catalogRows->addStretch();
 }
 void LauncherWindow::projectDetails(const QJsonObject &project) {
-    call(s("modrinth_project"), {{s("projectId"), value(project, "project_id")}},
-         [this](const QJsonValue &v) {
-             QDialog dialog(this);
-             dialog.setWindowTitle(value(v.toObject(), "title"));
-             dialog.resize(720, 600);
-             auto *layout = new QVBoxLayout(&dialog);
-             auto *text = new QPlainTextEdit;
-             text->setReadOnly(true);
-             text->setPlainText(value(v.toObject(), "body"));
-             layout->addWidget(text);
-             auto *close = new QDialogButtonBox(QDialogButtonBox::Close);
-             connect(close, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-             layout->addWidget(close);
-             dialog.exec();
-         });
+    projectReturnPage = currentPage == 7 ? 2 : currentPage;
+    projectView->open(project, builds, selectedBuild);
+    navigate(7);
 }
 void LauncherWindow::installCatalog(const QJsonObject &project) {
-    const bool pack = value(project, "project_type") == s("modpack");
-    if (!pack && selectedBuild.isEmpty()) {
-        message(tr("Сначала создайте или выберите сборку в библиотеке."), true);
-        return;
-    }
-    const auto targetBuild = selectedBuild;
-    call(
-        s("modrinth_project_versions"), {{s("projectId"), value(project, "project_id")}},
-        [this, project, pack, targetBuild](const QJsonValue &v) {
-            if (!pack && selectedBuild != targetBuild) {
-                message(tr("Выбранная сборка изменилась. Повторите установку для нужной сборки."),
-                        true);
-                return;
-            }
-            QJsonArray list;
-            const auto build = currentBuild();
-            for (const auto &item : v.toArray()) {
-                const auto version = item.toObject();
-                const auto gameVersions = version.value(s("game_versions")).toArray();
-                const auto loaders = version.value(s("loaders")).toArray();
-                const auto type = value(project, "project_type");
-                if (!pack && !gameVersions.contains(baseGameVersion(build)))
-                    continue;
-                if (!pack && type == s("mod") && !loaders.contains(value(build, "loader")))
-                    continue;
-                list.append(item);
-            }
-            if (list.isEmpty()) {
-                message(tr("Нет версий, совместимых с выбранной сборкой. Проверьте версию "
-                           "Minecraft и загрузчик."),
-                        true);
-                return;
-            }
-            QStringList labels;
-            for (const auto &item : list) {
-                auto version = item.toObject();
-                QStringList loaders, games;
-                for (const auto &game : version.value(s("game_versions")).toArray())
-                    games << game.toString();
-                for (const auto &loader : version.value(s("loaders")).toArray())
-                    loaders << loader.toString();
-                labels << QString::number(labels.size() + 1) + s(". ") +
-                              value(version, "version_number") + s(" · ") + loaders.join(s(", ")) +
-                              s(" · Minecraft ") + games.join(s(", ")) + s(" · ") +
-                              value(version, "version_type") + s(" · ") +
-                              value(version, "date_published").left(10);
-            }
-            bool ok;
-            auto chosen = QInputDialog::getItem(
-                this, tr("Выберите версию проекта"),
-                tr("Моды выполняют код на компьютере.\nУстанавливайте проекты, которым доверяете."),
-                labels, 0, false, &ok);
-            if (!ok)
-                return;
-            int index = labels.indexOf(chosen);
-            QJsonObject params{{s("projectId"), value(project, "project_id")},
-                               {s("versionId"), value(list[index].toObject(), "id")}};
-            if (!pack)
-                params.insert(s("buildId"), targetBuild);
-            call(
-                pack ? s("install_modrinth_modpack") : s("install_modrinth_project"), params,
-                [this](const QJsonValue &) {
-                    refreshLibrary();
-                    navigate(1);
-                },
-                true);
-        });
+    projectDetails(project);
 }

@@ -5,6 +5,9 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QTemporaryDir>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 int main(int argc, char **argv) {
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
@@ -15,6 +18,7 @@ int main(int argc, char **argv) {
     app.setApplicationName(s("CKLauncherQt"));
     app.setApplicationVersion(s(CK_VERSION));
     app.setStyle(s("Fusion"));
+    app.setWindowIcon(QIcon(s(":/assets/logo.png")));
     AudioFeedback audio(&app);
     app.installEventFilter(&audio);
     const auto args = app.arguments();
@@ -40,6 +44,12 @@ int main(int argc, char **argv) {
     QLockFile lock(data + s("/instance.lock"));
     lock.setStaleLockTime(0);
     if (!smoke && !lock.tryLock(0)) {
+#ifdef Q_OS_WIN
+        qint64 owner = 0;
+        QString host, name;
+        if (lock.getLockInfo(&owner, &host, &name) && owner > 0)
+            AllowSetForegroundWindow(static_cast<DWORD>(owner));
+#endif
         QLocalSocket socket;
         socket.connectToServer(serverName);
         if (socket.waitForConnected(800)) {
@@ -53,6 +63,21 @@ int main(int argc, char **argv) {
                              QObject::tr("Переключитесь на существующее окно лаунчера."));
         return 1;
     }
+#ifdef Q_OS_WIN
+    if (!smoke) {
+        // Also covers portable archives and in-app updates of older installations.
+        QSettings protocol(s("HKEY_CURRENT_USER\\Software\\Classes\\ck-launcher"),
+                           QSettings::NativeFormat);
+        protocol.setValue(s("."), s("URL:CK Launcher"));
+        protocol.setValue(s("URL Protocol"), QString());
+        protocol.setValue(s("DefaultIcon/."),
+                          QDir::toNativeSeparators(app.applicationFilePath()) + s(",0"));
+        protocol.setValue(s("shell/open/command/."),
+                          s("\"") + QDir::toNativeSeparators(app.applicationFilePath()) +
+                              s("\" --activate"));
+        protocol.sync();
+    }
+#endif
     QFile theme(s(":/assets/theme.qss"));
     if (theme.open(QIODevice::ReadOnly))
         app.setStyleSheet(QString::fromUtf8(theme.readAll()));
@@ -80,9 +105,7 @@ int main(int argc, char **argv) {
                     return;
                 auto message = QJsonDocument::fromJson(bytes->left(bytes->indexOf('\n'))).object();
                 auto path = value(message, "path");
-                window.showNormal();
-                window.raise();
-                window.activateWindow();
+                window.bringToFront();
                 if (!path.isEmpty() && QFileInfo(path).isAbsolute() &&
                     path.endsWith(s(".mrpack"), Qt::CaseInsensitive))
                     window.importPack(path);
