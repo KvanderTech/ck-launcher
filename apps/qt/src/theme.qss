@@ -24,7 +24,7 @@ QPushButton[primary="true"] { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,st
 QPushButton:disabled { color: #657689; background: rgba(22,40,58,175); border-color: rgba(78,101,125,40); }
 QPushButton:focus { border-color: #8ddfff; }
 QPushButton[iconOnly="true"] { background: transparent; border: 1px solid transparent; border-radius: 11px; padding: 0; }
-QPushButton[iconOnly="true"]:checked { background: rgba(22,121,176,18); }
+QPushButton[iconOnly="true"]:checked { background: transparent; }
 QPushButton#window-close:hover { background: #b23c51; }
 QPushButton[buildShortcut="true"] { background: #102f45; border: 1px solid transparent; border-radius: 11px; padding: 3px; }
 QPushButton[buildShortcut="true"][selected="true"] { border: 1px solid #38b8f6; background: #143d57; }

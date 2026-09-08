@@ -86,9 +86,12 @@ pub async fn check_update() -> Result<UpdateInfo, LauncherError> {
         else {
             continue;
         };
-        validate_release_url(url)?;
-        validate_asset_url(&asset_url, tag, &archive_name)?;
-        validate_asset_url(&signature_url, tag, &signature_name)?;
+        if validate_release_url(url).is_err()
+            || validate_asset_url(&asset_url, tag, &archive_name).is_err()
+            || validate_asset_url(&signature_url, tag, &signature_name).is_err()
+        {
+            continue;
+        }
         if selected
             .as_ref()
             .is_none_or(|(v, _): &(semver::Version, UpdateInfo)| version > *v)
@@ -136,6 +139,13 @@ pub async fn install_update(
     }
     let tag = segments[4];
     let name = segments[5..].join("/");
+    let channel = if cfg!(target_vendor = "win7") {
+        "legacy"
+    } else {
+        "modern"
+    };
+    let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).map_err(|_| failed())?;
+    validate_install_version(tag, &name, &current, channel)?;
     validate_asset_url(&asset_url, tag, &name)?;
     validate_asset_url(&signature_url, tag, &format!("{name}.sig"))?;
     let http = client()?;
@@ -177,7 +187,9 @@ pub async fn install_update(
     let extracted = root.join("package");
     fs::create_dir_all(&extracted).map_err(|_| failed())?;
     extract(&archive, &extracted)?;
-    let updater_source = target.join("ck-launcher-updater.exe");
+    // The updater is part of the verified release, so future updater fixes apply to
+    // this installation too; never execute a stale helper from the old installation.
+    let updater_source = extracted.join("ck-launcher-updater.exe");
     if !updater_source.is_file() {
         return Err(failed());
     }
@@ -249,6 +261,7 @@ fn extract(bytes: &[u8], destination: &Path) -> Result<(), LauncherError> {
     }
     if !destination.join("ck-launcher-qt.exe").is_file()
         || !destination.join("ck-launcher-service.exe").is_file()
+        || !destination.join("ck-launcher-updater.exe").is_file()
     {
         return Err(failed());
     }
@@ -288,9 +301,29 @@ fn validate_asset_url(text: &str, tag: &str, name: &str) -> Result<(), LauncherE
     let expected = format!("/KvanderTech/ck-launcher/releases/download/{tag}/{name}");
     if url.scheme() != "https"
         || url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
         || url.path() != expected
         || url.query().is_some()
         || url.fragment().is_some()
+    {
+        return Err(failed());
+    }
+    Ok(())
+}
+
+fn validate_install_version(
+    tag: &str,
+    name: &str,
+    current: &semver::Version,
+    channel: &str,
+) -> Result<(), LauncherError> {
+    let version =
+        semver::Version::parse(tag.strip_prefix('v').unwrap_or(tag)).map_err(|_| failed())?;
+    if name != format!("ck-launcher-qt-{channel}-windows-x64.zip")
+        || version <= *current
+        || current.pre.is_empty() && !version.pre.is_empty()
     {
         return Err(failed());
     }
@@ -313,6 +346,38 @@ mod tests {
         )
         .is_ok());
         assert!(validate_asset_url("https://evil.test/x", "v0.2.1-beta.1", "ck.zip").is_err());
+        for prefix in [
+            "https://github.com:444",
+            "https://user@github.com",
+            "https://user:pass@github.com",
+        ] {
+            assert!(validate_asset_url(
+                &format!("{prefix}/KvanderTech/ck-launcher/releases/download/v0.2.1-beta.1/ck.zip"),
+                "v0.2.1-beta.1",
+                "ck.zip"
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn install_cannot_downgrade_or_switch_the_native_runtime_channel() {
+        let current = semver::Version::parse("0.2.3-beta.1").unwrap();
+        let modern = "ck-launcher-qt-modern-windows-x64.zip";
+        let legacy = "ck-launcher-qt-legacy-windows-x64.zip";
+        assert!(validate_install_version("v0.2.4-beta.1", modern, &current, "modern").is_ok());
+        assert!(validate_install_version("v0.2.4-beta.1", legacy, &current, "legacy").is_ok());
+        assert!(validate_install_version("v0.2.4-beta.1", modern, &current, "legacy").is_err());
+        for tag in ["v0.2.2-beta.1", "v0.2.3-beta.1", "not-a-version"] {
+            assert!(validate_install_version(tag, modern, &current, "modern").is_err());
+        }
+        assert!(validate_install_version(
+            "v0.3.0-beta.1",
+            modern,
+            &semver::Version::parse("0.2.3").unwrap(),
+            "modern"
+        )
+        .is_err());
     }
 
     #[test]
@@ -321,5 +386,26 @@ mod tests {
         let content = b"CK Launcher native updater signature test\n";
         assert!(verify(content, SIGNATURE.as_bytes()).is_ok());
         assert!(verify(b"tampered", SIGNATURE.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn extracted_update_must_include_its_own_verified_updater() {
+        fn package(with_updater: bool) -> Vec<u8> {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let mut names = vec!["ck-launcher-qt.exe", "ck-launcher-service.exe"];
+            if with_updater {
+                names.push("ck-launcher-updater.exe");
+            }
+            for name in names {
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"fixture, not executable").unwrap();
+            }
+            zip.finish().unwrap().into_inner()
+        }
+        let incomplete = tempfile::tempdir().unwrap();
+        assert!(extract(&package(false), incomplete.path()).is_err());
+        let complete = tempfile::tempdir().unwrap();
+        assert!(extract(&package(true), complete.path()).is_ok());
     }
 }

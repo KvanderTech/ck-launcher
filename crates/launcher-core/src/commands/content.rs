@@ -1,5 +1,7 @@
 pub(crate) mod forge;
 mod security;
+#[cfg(test)]
+mod tests;
 use crate::downloads::DownloadCancellationToken;
 use crate::{
     error::LauncherError,
@@ -529,15 +531,8 @@ impl ContentService {
             ));
         }
         request = request.query(&query);
-        let versions: Vec<ProjectVersion> = request
-            .send()
-            .await
-            .map_err(|_| network_error())?
-            .error_for_status()
-            .map_err(|_| network_error())?
-            .json()
-            .await
-            .map_err(|_| network_error())?;
+        let versions: Vec<ProjectVersion> =
+            Self::response_json(request.send().await.map_err(|_| network_error())?).await?;
         let version = match requested_version_id.as_deref() {
             Some(id) => versions.iter().find(|version| version.id == id).cloned(),
             None => versions.into_iter().next(),
@@ -550,7 +545,7 @@ impl ContentService {
         })?;
         if project.project_type == "modpack" {
             visiting.remove(&project_id);
-            return self.install_mrpack(project, version, build).await;
+            return self.install_mrpack(project, version, build, false).await;
         }
         if project.project_type == "mod" {
             if build.loader == "vanilla"
@@ -561,17 +556,10 @@ impl ContentService {
         }
         let installed = self.storage.list_installed_content(&build.id).await?;
         for dependency in &version.dependencies {
-            let dependency_project = dependency
-                .project_id
-                .as_deref()
-                .or_else(|| dependency.version_id.as_deref());
-            let Some(dependency_project) = dependency_project else {
-                continue;
-            };
             if dependency.dependency_type == "incompatible"
-                && installed.iter().any(|item| {
-                    item.project_id == dependency_project || item.version_id == dependency_project
-                })
+                && installed
+                    .iter()
+                    .any(|item| incompatible_dependency_matches(dependency, item))
             {
                 visiting.remove(&project_id);
                 return Err(input_error(
@@ -599,23 +587,34 @@ impl ContentService {
                     ))
                 }
             };
-            if installed.iter().any(|item| {
-                item.project_id == dependency_project
-                    && item.enabled
-                    && dependency
-                        .version_id
-                        .as_ref()
-                        .is_none_or(|v| v == &item.version_id)
-            }) {
+            if enable_required_dependency(
+                &self.storage,
+                &build,
+                &dependency_project,
+                dependency.version_id.as_deref(),
+            )
+            .await?
+            {
                 continue;
             }
-            Box::pin(self.install_project_inner(
+            let installed_dependency = Box::pin(self.install_project_inner(
                 dependency_project,
                 build.id.clone(),
                 dependency.version_id.clone(),
                 visiting,
             ))
             .await?;
+            // A normal update preserves a user's disabled state. A required
+            // dependency cannot stay disabled after the parent is installed.
+            if !installed_dependency.enabled {
+                set_installed_content_enabled(
+                    build.id.clone(),
+                    installed_dependency.project_id,
+                    true,
+                    &self.storage,
+                )
+                .await?;
+            }
         }
         let result = self.install_regular(project, version, build).await;
         visiting.remove(&project_id);
@@ -636,18 +635,14 @@ impl ContentService {
                 "Этот проект не является готовой сборкой Modrinth.",
             ));
         }
-        let versions: Vec<ProjectVersion> = self
+        let response = self
             .client
             .get(format!("{MODRINTH_API}/project/{}/version", project.id))
             .query(&[("include_changelog", "false")])
             .send()
             .await
-            .map_err(|_| network_error())?
-            .error_for_status()
-            .map_err(|_| network_error())?
-            .json()
-            .await
             .map_err(|_| network_error())?;
+        let versions: Vec<ProjectVersion> = Self::response_json(response).await?;
         let version = match version_id.as_deref() {
             Some(id) => versions.iter().find(|version| version.id == id).cloned(),
             None => versions.into_iter().next(),
@@ -658,6 +653,14 @@ impl ContentService {
                 "У этой сборки нет доступной версии для установки.",
             )
         })?;
+        self.install_modpack_version(project, version).await
+    }
+
+    async fn install_modpack_version(
+        &self,
+        project: ProjectDetails,
+        version: ProjectVersion,
+    ) -> Result<InstalledContent, LauncherError> {
         let id = format!(
             "build-{:x}",
             std::time::SystemTime::now()
@@ -682,11 +685,11 @@ impl ContentService {
             icon_url: project.icon_url.clone(),
             is_active: true,
         };
-        self.storage.upsert_build(&build).await?;
-        match self.install_mrpack(project, version, build).await {
+        // The completed pack commits its build atomically. Do not activate a
+        // pending build: a failed download must leave the old selection intact.
+        match self.install_mrpack(project, version, build, false).await {
             Ok(item) => Ok(item),
             Err(error) => {
-                let _ = self.storage.delete_build(&id).await;
                 let _ = fs::remove_dir_all(game_dir);
                 Err(error)
             }
@@ -769,7 +772,8 @@ impl ContentService {
                 let version: ProjectVersion = self
                     .json(&format!("{MODRINTH_API}/version/{}", modpack.version_id))
                     .await?;
-                self.install_mrpack(project, version, build.clone()).await?;
+                self.install_mrpack(project, version, build.clone(), true)
+                    .await?;
             }
         } else {
             for item in installed
@@ -898,6 +902,7 @@ impl ContentService {
         project: ProjectDetails,
         version: ProjectVersion,
         build: BuildSummary,
+        repairing: bool,
     ) -> Result<InstalledContent, LauncherError> {
         let file = version
             .files
@@ -920,7 +925,7 @@ impl ContentService {
             file.filename.clone(),
             archive,
             build,
-            false,
+            repairing,
         )
         .await
     }
@@ -987,7 +992,9 @@ impl ContentService {
             .unwrap_or_else(|| minecraft.clone());
         build.loader = loader.to_owned();
         build.loader_version = loader_version;
-        build.icon_url = project.icon_url.clone();
+        if !repairing {
+            build.icon_url = project.icon_url.clone();
+        }
         let root = Path::new(&build.game_dir);
         let existing = self.storage.list_installed_content(&build.id).await?;
         let staging = tempfile::Builder::new()
@@ -1036,7 +1043,12 @@ impl ContentService {
             } else {
                 relative.with_file_name(format!("{filename}.disabled"))
             };
-            security::safe_destination(root, &destination)?;
+            let target = security::safe_destination(root, &destination)?;
+            // Some packs list configs/world templates as downloads instead of
+            // overrides. Repair must protect those user files in either form.
+            if repairing && project_type == "file" && target.exists() {
+                continue;
+            }
             let mut last_error = None;
             let mut downloaded = None;
             for url in &entry.downloads {
@@ -1155,6 +1167,7 @@ impl ContentService {
             }
             tx.replace(&relative, file.path())?;
         }
+        remove_replaced_content_files(&mut tx, &existing, &records)?;
         self.storage
             .commit_pack(&build, &records, &source_json)
             .await?;
@@ -1622,6 +1635,96 @@ fn content_folder(kind: &str) -> Result<&'static str, LauncherError> {
     }
 }
 
+fn installed_content_path(item: &InstalledContent) -> Result<PathBuf, LauncherError> {
+    let filename = security::relative_path(&item.filename)?;
+    if filename.components().count() != 1 {
+        return Err(LauncherError::invalid_path());
+    }
+    Ok(
+        Path::new(content_folder(&item.project_type)?).join(if item.enabled {
+            item.filename.clone()
+        } else {
+            format!("{}.disabled", item.filename)
+        }),
+    )
+}
+
+fn incompatible_dependency_matches(
+    dependency: &ProjectDependency,
+    item: &InstalledContent,
+) -> bool {
+    item.enabled
+        && match (&dependency.project_id, &dependency.version_id) {
+            (Some(project), Some(version)) => {
+                item.project_id == *project && item.version_id == *version
+            }
+            (Some(project), None) => item.project_id == *project,
+            (None, Some(version)) => item.version_id == *version,
+            (None, None) => false,
+        }
+}
+
+async fn enable_required_dependency(
+    storage: &Storage,
+    build: &BuildSummary,
+    project_id: &str,
+    version_id: Option<&str>,
+) -> Result<bool, LauncherError> {
+    let existing = storage.list_installed_content(&build.id).await?;
+    let Some(item) = existing.iter().find(|item| {
+        item.project_id == project_id && version_id.is_none_or(|version| item.version_id == version)
+    }) else {
+        return Ok(false);
+    };
+    let relative = installed_content_path(item)?;
+    if !security::safe_destination(Path::new(&build.game_dir), &relative)?.is_file() {
+        return Ok(false);
+    }
+    if !item.enabled {
+        set_installed_content_enabled(build.id.clone(), item.project_id.clone(), true, storage)
+            .await?;
+    }
+    Ok(true)
+}
+
+fn remove_replaced_content_files(
+    transaction: &mut FileTransaction,
+    previous: &[InstalledContent],
+    next: &[InstalledContent],
+) -> Result<(), LauncherError> {
+    for item in next.iter().filter(|item| item.project_type != "modpack") {
+        let Some(old) = previous
+            .iter()
+            .find(|old| old.project_id == item.project_id && old.project_type == item.project_type)
+        else {
+            continue;
+        };
+        let old_path = installed_content_path(old)?;
+        let next_path = installed_content_path(item)?;
+        if old_path
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&next_path.to_string_lossy())
+        {
+            continue;
+        }
+        // Do not remove a filename explicitly assigned to another new record.
+        if next
+            .iter()
+            .filter(|record| record.project_type != "modpack")
+            .any(|record| {
+                installed_content_path(record).is_ok_and(|path| {
+                    path.to_string_lossy()
+                        .eq_ignore_ascii_case(&old_path.to_string_lossy())
+                })
+            })
+        {
+            continue;
+        }
+        transaction.remove(&old_path)?;
+    }
+    Ok(())
+}
+
 pub async fn set_installed_content_enabled(
     build_id: String,
     project_id: String,
@@ -1700,10 +1803,9 @@ pub async fn import_local_content(
         .into_iter()
         .find(|item| item.id == build_id)
         .ok_or_else(|| input_error("build_not_found", "Сборка не найдена."))?;
-    let (folder, extension) = match project_type.as_str() {
-        "mod" => ("mods", "jar"),
-        "resourcepack" => ("resourcepacks", "zip"),
-        "shader" => ("shaderpacks", "zip"),
+    let extension = match project_type.as_str() {
+        "mod" => "jar",
+        "resourcepack" | "shader" => "zip",
         _ => {
             return Err(input_error(
                 "local_content_unsupported",
@@ -1712,75 +1814,110 @@ pub async fn import_local_content(
         }
     };
     let sources = choose_content_files(extension)?;
-    let target_dir = PathBuf::from(&build.game_dir).join(folder);
-    fs::create_dir_all(&target_dir).map_err(|_| LauncherError::storage_unavailable())?;
     let mut imported = Vec::new();
     for source in sources {
-        let filename = source
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                input_error(
-                    "local_content_invalid",
-                    "Имя выбранного файла не поддерживается.",
-                )
-            })?;
-        if source
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-            != Some(extension)
-        {
-            return Err(input_error(
-                "local_content_invalid",
-                "Выбран файл неподдерживаемого формата.",
-            ));
-        }
-        safe_child(&target_dir, filename)?;
-        let input = fs::File::open(&source).map_err(|_| LauncherError::storage_unavailable())?;
-        if input
-            .metadata()
-            .map_err(|_| LauncherError::storage_unavailable())?
-            .len()
-            > MAX_ARCHIVE
-        {
-            return Err(security::limit_error());
-        }
-        let mut staged = tempfile::NamedTempFile::new_in(&target_dir)
-            .map_err(|_| LauncherError::storage_unavailable())?;
-        if std::io::copy(&mut input.take(MAX_ARCHIVE + 1), &mut staged)
-            .map_err(|_| LauncherError::storage_unavailable())?
-            > MAX_ARCHIVE
-        {
-            return Err(security::limit_error());
-        }
-        let mut transaction = FileTransaction::new(&target_dir)?;
-        transaction.replace(Path::new(filename), staged.path())?;
-        let project_id = format!(
-            "local-{:x}",
-            Sha256::digest(format!("{}:{}", build.id, filename).as_bytes())
-        );
-        let item = InstalledContent {
-            id: format!("{}:{}", build.id, project_id),
-            build_id: build.id.clone(),
-            project_id,
-            version_id: "local".to_owned(),
-            project_type: project_type.clone(),
-            title: source
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .unwrap_or(filename)
-                .to_owned(),
-            filename: filename.to_owned(),
-            icon_url: None,
-            enabled: true,
-        };
-        storage.upsert_installed_content(&item).await?;
-        transaction.commit();
-        imported.push(item);
+        imported.push(import_local_file(&build, &project_type, &source, storage).await?);
     }
     Ok(imported)
+}
+
+async fn import_local_file(
+    build: &BuildSummary,
+    project_type: &str,
+    source: &Path,
+    storage: &Storage,
+) -> Result<InstalledContent, LauncherError> {
+    let folder = content_folder(project_type)?;
+    let extension = if project_type == "mod" { "jar" } else { "zip" };
+    let target_dir = security::safe_destination(Path::new(&build.game_dir), Path::new(folder))?;
+    fs::create_dir_all(&target_dir).map_err(|_| LauncherError::storage_unavailable())?;
+    let filename = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            input_error(
+                "local_content_invalid",
+                "Имя выбранного файла не поддерживается.",
+            )
+        })?;
+    if source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+        != Some(extension)
+    {
+        return Err(input_error(
+            "local_content_invalid",
+            "Выбран файл неподдерживаемого формата.",
+        ));
+    }
+    let installed = storage.list_installed_content(&build.id).await?;
+    let old = installed.iter().find(|item| {
+        item.project_type == project_type && item.filename.eq_ignore_ascii_case(filename)
+    });
+    if old.is_some_and(|item| item.version_id != "local" || !item.project_id.starts_with("local-"))
+    {
+        return Err(input_error(
+            "content_file_conflict",
+            "Этот файл принадлежит установленному проекту Modrinth. Сначала удалите его из сборки.",
+        ));
+    }
+    let enabled = old.is_none_or(|item| item.enabled);
+    let destination = if enabled {
+        filename.to_owned()
+    } else {
+        format!("{filename}.disabled")
+    };
+    let target = safe_child(&target_dir, &destination)?;
+    if old.is_none() && target.exists() {
+        return Err(input_error("content_file_conflict", "В сборке уже есть файл с таким именем. Переименуйте импортируемый файл или удалите существующий вручную."));
+    }
+    let input = fs::File::open(&source).map_err(|_| LauncherError::storage_unavailable())?;
+    if input
+        .metadata()
+        .map_err(|_| LauncherError::storage_unavailable())?
+        .len()
+        > MAX_ARCHIVE
+    {
+        return Err(security::limit_error());
+    }
+    let mut staged = tempfile::NamedTempFile::new_in(&target_dir)
+        .map_err(|_| LauncherError::storage_unavailable())?;
+    if std::io::copy(&mut input.take(MAX_ARCHIVE + 1), &mut staged)
+        .map_err(|_| LauncherError::storage_unavailable())?
+        > MAX_ARCHIVE
+    {
+        return Err(security::limit_error());
+    }
+    let mut transaction = FileTransaction::new(&target_dir)?;
+    transaction.replace(Path::new(&destination), staged.path())?;
+    let project_id = old.map(|item| item.project_id.clone()).unwrap_or_else(|| {
+        format!(
+            "local-{:x}",
+            Sha256::digest(
+                format!("{}:{}:{}", build.id, project_type, filename.to_lowercase()).as_bytes()
+            )
+        )
+    });
+    let item = InstalledContent {
+        id: format!("{}:{}", build.id, project_id),
+        build_id: build.id.clone(),
+        project_id,
+        version_id: "local".to_owned(),
+        project_type: project_type.to_owned(),
+        title: source
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or(filename)
+            .to_owned(),
+        filename: filename.to_owned(),
+        icon_url: None,
+        enabled,
+    };
+    storage.upsert_installed_content(&item).await?;
+    transaction.commit();
+    Ok(item)
 }
 
 pub async fn open_build_folder(build_id: String, storage: &Storage) -> Result<(), LauncherError> {
@@ -2160,24 +2297,20 @@ pub async fn delete_offline_skin(
         .find(|skin| skin.id == skin_id)
         .ok_or_else(|| input_error("skin_not_found", "Скин не найден в библиотеке."))?;
     let account_key = format!("{:x}", Sha256::digest(account_id.as_bytes()));
-    let expected_path = service
-        .paths
-        .root
-        .join("skins")
+    let relative = Path::new("skins")
         .join(account_key)
         .join(format!("{skin_id}.png"));
-    if PathBuf::from(&skin.file_path) != expected_path {
+    let expected_path = security::safe_destination(&service.paths.root, &relative)?;
+    if crate::paths::strip_verbatim_prefix(PathBuf::from(&skin.file_path)) != expected_path {
         return Err(LauncherError::storage_unavailable());
     }
-    match fs::remove_file(&expected_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(LauncherError::storage_unavailable()),
-    }
+    let mut transaction = FileTransaction::new(&service.paths.root)?;
+    transaction.remove(&relative)?;
     service
         .storage
         .delete_offline_skin(&account_id, &skin_id)
         .await?;
+    transaction.commit();
     Ok(())
 }
 

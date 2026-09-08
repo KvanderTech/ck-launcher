@@ -87,46 +87,52 @@ QWidget *LauncherWindow::settingsPage() {
     u->setSpacing(10);
     u->addWidget(label(tr("Обновление лаунчера"), "strong"));
     updateStatus = label(tr("Готово к проверке"), "mutedSmall");
+    updateStatus->setObjectName(s("update-status"));
     updateStatus->setWordWrap(true);
     u->addWidget(updateStatus);
     button(
         tr("Проверить обновления"), u,
         [this] {
+            auto *check = findChild<QPushButton *>(s("check-update"));
+            check->setEnabled(false);
             updateStatus->setText(tr("Проверяем…"));
-            core->request(s("check_update"), {}, [this](const QJsonValue &v, const QJsonObject &e) {
-                if (!e.isEmpty()) {
-                    updateStatus->setText(value(e, "message"));
-                    return;
-                }
-                const auto update = v.toObject();
-                if (!update.value(s("available")).toBool()) {
-                    updateStatus->setText(tr("Установлена актуальная версия"));
-                    return;
-                }
-                updateStatus->setText(tr("Доступна версия %1").arg(value(update, "version")));
-                QMessageBox info(this);
-                info.setWindowTitle(tr("Доступно обновление"));
-                info.setTextFormat(Qt::PlainText);
-                info.setText(tr("Версия %1\n%2\n\nСкачать и установить обновление?")
-                                 .arg(value(update, "version"), value(update, "notes")));
-                info.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-                if (info.exec() == QMessageBox::Yes) {
-                    updateStatus->setText(tr("Скачиваем и проверяем подпись…"));
-                    call(
-                        s("install_update"),
-                        {{s("assetUrl"), value(update, "assetUrl")},
-                         {s("signatureUrl"), value(update, "signatureUrl")},
-                         {s("installDir"), QCoreApplication::applicationDirPath()},
-                         {s("launcherPid"), qint64(QCoreApplication::applicationPid())}},
-                        [this](const QJsonValue &) {
-                            updateStatus->setText(tr("Обновление готово. Перезапускаем…"));
-                            QTimer::singleShot(250, qApp, &QCoreApplication::quit);
-                        },
-                        true);
-                }
-            });
+            core->request(
+                s("check_update"), {}, [this, check](const QJsonValue &v, const QJsonObject &e) {
+                    check->setEnabled(true);
+                    if (!e.isEmpty()) {
+                        updateStatus->setText(value(e, "message"));
+                        return;
+                    }
+                    const auto update = v.toObject();
+                    if (!update.value(s("available")).toBool()) {
+                        updateStatus->setText(tr("Установлена актуальная версия"));
+                        return;
+                    }
+                    updateStatus->setText(tr("Доступна версия %1").arg(value(update, "version")));
+                    QMessageBox info(this);
+                    info.setWindowTitle(tr("Доступно обновление"));
+                    info.setTextFormat(Qt::PlainText);
+                    info.setText(tr("Версия %1\n%2\n\nСкачать и установить обновление?")
+                                     .arg(value(update, "version"), value(update, "notes")));
+                    info.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+                    if (info.exec() == QMessageBox::Yes) {
+                        updateStatus->setText(tr("Скачиваем и проверяем подпись…"));
+                        call(
+                            s("install_update"),
+                            {{s("assetUrl"), value(update, "assetUrl")},
+                             {s("signatureUrl"), value(update, "signatureUrl")},
+                             {s("installDir"), QCoreApplication::applicationDirPath()},
+                             {s("launcherPid"), qint64(QCoreApplication::applicationPid())}},
+                            [this](const QJsonValue &) {
+                                updateStatus->setText(tr("Обновление готово. Перезапускаем…"));
+                                QTimer::singleShot(250, qApp, &QCoreApplication::quit);
+                            },
+                            true);
+                    }
+                });
         },
-        this);
+        this)
+        ->setObjectName(s("check-update"));
     left->addWidget(updates);
     auto *appearance = panel();
     auto *a = new QVBoxLayout(appearance);

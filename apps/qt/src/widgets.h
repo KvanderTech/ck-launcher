@@ -50,15 +50,26 @@ class MotionButton : public QPushButton {
         return result;
     }
     void paintEvent(QPaintEvent *event) override {
-        if (property("textButton").toBool()) {
+        Q_UNUSED(event)
+        {
             QStylePainter textPainter(this);
             QStyleOptionButton option;
             initStyleOption(&option);
-            option.text = textPainter.fontMetrics().elidedText(option.text, Qt::ElideRight,
-                                                               qMax(0, width() - 4));
+            // The native dotted focus rectangle clashes with rounded artwork. Keep
+            // keyboard focus visible using the rounded ring below instead.
+            option.state &= ~QStyle::State_HasFocus;
+            if (property("textButton").toBool())
+                option.text = textPainter.fontMetrics().elidedText(option.text, Qt::ElideRight,
+                                                                   qMax(0, width() - 4));
             textPainter.drawControl(QStyle::CE_PushButton, option);
-        } else
-            QPushButton::paintEvent(event);
+        }
+        if (hasFocus() && keyboardFocus) {
+            QPainter focus(this);
+            focus.setRenderHint(QPainter::Antialiasing);
+            focus.setBrush(Qt::NoBrush);
+            focus.setPen(QPen(QColor(141, 223, 255), 1.5));
+            focus.drawRoundedRect(QRectF(rect()).adjusted(2, 2, -2, -2), 9, 9);
+        }
         if (!isEnabled() || (hover < .01 && press < .01))
             return;
         QPainter p(this);
@@ -79,10 +90,18 @@ class MotionButton : public QPushButton {
             p.drawRoundedRect(box, radius, radius);
         }
     }
+    void focusInEvent(QFocusEvent *event) override {
+        keyboardFocus = event->reason() == Qt::TabFocusReason ||
+                        event->reason() == Qt::BacktabFocusReason ||
+                        event->reason() == Qt::ShortcutFocusReason;
+        QPushButton::focusInEvent(event);
+        update();
+    }
 
   private:
     QVariantAnimation hoverAnimation, pressAnimation;
     qreal hover = 0, press = 0;
+    bool keyboardFocus = false;
     void animate(QVariantAnimation &animation, qreal &current, qreal target) {
         animation.stop();
         if (qApp->property("reduceMotion").toBool()) {

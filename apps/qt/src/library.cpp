@@ -100,6 +100,7 @@ void LauncherWindow::renderLibrary() {
         run->setFixedSize(92, 38);
         libraryCards->append(card);
         auto *quick = new MotionButton;
+        quick->setObjectName(s("build-shortcut-") + id);
         quick->setFixedSize(44, 44);
         quick->setProperty("buildShortcut", true);
         quick->setProperty("selected", b.value(s("isActive")).toBool());
@@ -111,7 +112,7 @@ void LauncherWindow::renderLibrary() {
         sidebarBuilds->addWidget(quick, 0, Qt::AlignHCenter);
         images->load(value(b, "iconUrl"), quick, [quick](const QImage &image) {
             if (!image.isNull()) {
-                quick->setIcon(QIcon(QPixmap::fromImage(image)));
+                quick->setIcon(roundedIcon(image));
                 quick->setText({});
             }
         });
@@ -152,8 +153,12 @@ void LauncherWindow::renderLibrary() {
     catalogBuilds->addStretch();
     if (auto *scroll = findChild<QScrollArea *>(s("catalog-builds-scroll")))
         scroll->setVisible(!builds.isEmpty());
-    if (auto *scroll = findChild<QScrollArea *>(s("sidebar-builds-scroll")))
-        scroll->setFixedHeight(qMin(278, int(builds.size()) * 52));
+    if (auto *scroll = findChild<QScrollArea *>(s("sidebar-builds-scroll"))) {
+        // Allow the sidebar to shrink on shorter displays; its content can scroll.
+        scroll->setMaximumHeight(qMin(278, int(builds.size()) * 52));
+        scroll->setMinimumHeight(0);
+        scroll->setVisible(!builds.isEmpty());
+    }
     auto b = currentBuild();
     detailName->setText(value(b, "name"));
     detailIcon->setFallback(value(b, "name"));
@@ -168,6 +173,10 @@ void LauncherWindow::renderLibrary() {
 void LauncherWindow::openBuild(const QString &id) {
     AudioFeedback::play(s("build-switch"));
     selectedBuild = id;
+    filePath->clear();
+    filesTable->setRowCount(0);
+    if (auto *tabs = findChild<QTabBar *>(s("buildTabs")))
+        tabs->setCurrentIndex(0);
     renderLibrary();
     refreshContent();
     navigate(5);
@@ -182,6 +191,8 @@ void LauncherWindow::openBuild(const QString &id) {
 }
 void LauncherWindow::refreshContent() {
     const auto id = selectedBuild;
+    installed = {};
+    renderContent();
     if (id.isEmpty()) {
         installed = {};
         renderContent();

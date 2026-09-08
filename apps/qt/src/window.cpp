@@ -7,6 +7,15 @@
 #include <windows.h>
 #endif
 namespace {
+class ShortcutScroll final : public QScrollArea {
+  public:
+    QSize sizeHint() const override {
+        return QSize(48, qMin(278, maximumHeight()));
+    }
+    QSize minimumSizeHint() const override {
+        return QSize(0, 0);
+    }
+};
 class TitleBar final : public QWidget {
   public:
     explicit TitleBar(QWidget *parent) : QWidget(parent) {
@@ -30,6 +39,7 @@ class TitleBar final : public QWidget {
 class HomeArtwork final : public QWidget {
   public:
     HomeArtwork() : image(s(":/assets/home-render.png")) {
+        setObjectName(s("home-artwork"));
         setAccessibleName(tr("Лаунчер для комфортной игры"));
         setMinimumHeight(350);
     }
@@ -112,6 +122,12 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
         auto *b = iconButton(names[i], titles[i]);
         b->setObjectName(s("nav-") + names[i]);
         b->setCheckable(true);
+        auto *glow = new QGraphicsDropShadowEffect(b);
+        glow->setBlurRadius(15);
+        glow->setOffset(0, 0);
+        glow->setColor(QColor(36, 177, 255, 175));
+        glow->setEnabled(false);
+        b->setGraphicsEffect(glow);
         navigation.append(b);
         connect(b, &QPushButton::clicked, this, [this, i] { navigate(i); });
         if (i < 4)
@@ -127,7 +143,7 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
     sidebarBuilds = new QVBoxLayout(buildList);
     sidebarBuilds->setContentsMargins(0, 0, 0, 0);
     sidebarBuilds->setSpacing(8);
-    auto *buildScroll = new QScrollArea;
+    auto *buildScroll = new ShortcutScroll;
     buildScroll->setObjectName(s("sidebar-builds-scroll"));
     buildScroll->setWidgetResizable(true);
     buildScroll->setWidget(buildList);
@@ -358,6 +374,7 @@ void LauncherWindow::navigate(int page) {
         bool active =
             i == page || (page == 5 && i == 1) || (page == 6 && i == 1) || (page == 7 && i == 2);
         navigation[i]->setChecked(active);
+        navigation[i]->graphicsEffect()->setEnabled(active);
         navigation[i]->setIcon(
             glyph(names[i], active ? QColor(88, 204, 255) : QColor(174, 199, 217)));
     }
@@ -398,13 +415,19 @@ void LauncherWindow::message(const QString &text, bool error) {
 void LauncherWindow::call(const QString &method, const QJsonObject &params,
                           std::function<void(const QJsonValue &)> done, bool mutation) {
     if (mutation && (busy || running || !operationId.isEmpty())) {
-        projectView->setInstalling(false);
-        message(tr("Дождитесь завершения текущей операции или остановите её."), true);
+        const auto reason = tr("Дождитесь завершения текущей операции или остановите её.");
+        if (method == s("install_update"))
+            updateStatus->setText(reason);
+        projectView->setInstallationError(reason);
+        updatePlayState();
+        message(reason, true);
         return;
     }
     const bool quiet = method == s("select_build");
     if (mutation) {
         busy = true;
+        contentInstalling =
+            method == s("install_modrinth_project") || method == s("install_modrinth_modpack");
         progress->setRange(0, 0);
         if (!quiet)
             message(tr("Выполняем действие…"));
@@ -412,15 +435,21 @@ void LauncherWindow::call(const QString &method, const QJsonObject &params,
     }
     core->request(
         method, params,
-        [this, done, mutation, quiet](const QJsonValue &result, const QJsonObject &error) {
+        [this, done, method, mutation, quiet](const QJsonValue &result, const QJsonObject &error) {
             if (mutation) {
                 busy = false;
-                projectView->setInstalling(false);
+                contentInstalling = false;
+                if (error.isEmpty())
+                    projectView->setInstalling(false);
+                else
+                    projectView->setInstallationError(value(error, "message"));
                 progress->setRange(0, 100);
                 progress->setValue(error.isEmpty() ? 100 : 0);
                 updatePlayState();
             }
             if (!error.isEmpty()) {
+                if (method == s("install_update"))
+                    updateStatus->setText(value(error, "message"));
                 message(value(error, "message"), true);
                 return;
             }
@@ -459,6 +488,16 @@ void LauncherWindow::initialize() {
     updatePlayState();
 }
 void LauncherWindow::updatePlayState() {
+    if (projectView) {
+        projectView->setInstalling(contentInstalling);
+        projectView->setActionBlockedReason(
+            !ready                   ? tr("Игровое ядро недоступно. Перезапустите лаунчер.")
+            : running                ? tr("Остановите Minecraft перед установкой контента.")
+            : !operationId.isEmpty() ? tr("Дождитесь запуска Minecraft или отмените его.")
+            : busy && !contentInstalling
+                ? tr("Дождитесь завершения текущей операции или остановите её.")
+                : QString());
+    }
     for (auto *b : findChildren<QPushButton *>()) {
         if (b->property("playAction").toBool())
             b->setEnabled(ready && !busy && !running && operationId.isEmpty());

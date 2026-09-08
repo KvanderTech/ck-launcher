@@ -23,6 +23,33 @@ fn object() -> Value {
 fn send(tx: &mpsc::SyncSender<Value>, value: Value) {
     let _ = tx.send(value);
 }
+
+fn control_request(method: &str) -> bool {
+    matches!(
+        method,
+        "stop_game"
+            | "cancel_operation"
+            | "cancel_content_operation"
+            | "cancel_microsoft_login"
+            | "launch_status"
+            | "installation_status"
+    )
+}
+
+fn reserve_request(
+    method: &str,
+    ordinary: &Arc<tokio::sync::Semaphore>,
+    control: &Arc<tokio::sync::Semaphore>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::TryAcquireError> {
+    // Icon downloads may wait on their own six-request queue. They must not exhaust
+    // the capacity needed to stop a game or cancel a long-running operation.
+    if control_request(method) {
+        control.clone()
+    } else {
+        ordinary.clone()
+    }
+    .try_acquire_owned()
+}
 fn run() -> Result<(), LauncherError> {
     let (tx, rx) = mpsc::sync_channel::<Value>(256);
     std::thread::spawn(move || {
@@ -49,6 +76,7 @@ fn run() -> Result<(), LauncherError> {
     let paths = AppPaths::windows_default()?;
     let ctx = Arc::new(tasks::block_on(AppContext::new(paths, events))?);
     let concurrency = Arc::new(tokio::sync::Semaphore::new(32));
+    let control_capacity = Arc::new(tokio::sync::Semaphore::new(8));
     let stdin = io::stdin();
     let mut input = stdin.lock();
     loop {
@@ -91,7 +119,7 @@ fn run() -> Result<(), LauncherError> {
                 continue;
             }
         };
-        let permit = match concurrency.clone().try_acquire_owned() {
+        let permit = match reserve_request(&req.method, &concurrency, &control_capacity) {
             Ok(p) => p,
             Err(_) => {
                 send(
@@ -118,5 +146,48 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("{}: {}", error.code(), error.message());
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saturated_image_queue_cannot_block_stop_or_cancellation() {
+        let ordinary = Arc::new(tokio::sync::Semaphore::new(32));
+        let control = Arc::new(tokio::sync::Semaphore::new(8));
+        let images: Vec<_> = (0..32)
+            .map(|_| reserve_request("load_public_image", &ordinary, &control).unwrap())
+            .collect();
+        assert!(reserve_request("load_public_image", &ordinary, &control).is_err());
+        for method in [
+            "stop_game",
+            "cancel_operation",
+            "cancel_content_operation",
+            "cancel_microsoft_login",
+            "launch_status",
+            "installation_status",
+        ] {
+            assert!(
+                reserve_request(method, &ordinary, &control).is_ok(),
+                "{method}"
+            );
+        }
+        drop(images);
+        assert!(reserve_request("load_public_image", &ordinary, &control).is_ok());
+    }
+
+    #[test]
+    fn reserved_control_queue_is_bounded_and_never_available_to_slow_requests() {
+        let ordinary = Arc::new(tokio::sync::Semaphore::new(0));
+        let control = Arc::new(tokio::sync::Semaphore::new(8));
+        let requests: Vec<_> = (0..8)
+            .map(|_| reserve_request("stop_game", &ordinary, &control).unwrap())
+            .collect();
+        assert!(reserve_request("stop_game", &ordinary, &control).is_err());
+        drop(requests);
+        assert!(reserve_request("install_modrinth_modpack", &ordinary, &control).is_err());
+        assert!(reserve_request("stop_game", &ordinary, &control).is_ok());
     }
 }

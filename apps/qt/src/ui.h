@@ -5,6 +5,7 @@
 #include <QPointer>
 
 QIcon glyph(const QString &name, const QColor &color = QColor(174, 199, 217), int size = 24);
+QIcon roundedIcon(const QImage &image, int size = 36, qreal radius = 9);
 QPushButton *iconButton(const QString &name, const QString &label, QWidget *parent = nullptr);
 QFrame *panel(const QString &kind = QString());
 QFrame *clickPanel(std::function<void()> action);

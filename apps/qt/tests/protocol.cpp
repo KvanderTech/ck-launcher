@@ -16,7 +16,10 @@ class ProtocolTest : public QObject {
         QJsonObject result;
         QList<QByteArray> frames;
         frames << "[]" << "null" << "{bad}" << "{\"id\":1,\"result\":0,\"error\":{}}"
-               << "{\"id\":\"1\",\"result\":0}" << "{\"event\":7,\"data\":{}}";
+               << "{\"id\":\"1\",\"result\":0}" << "{\"event\":7,\"data\":{}}"
+               << "{\"id\":1,\"error\":\"failed\"}" << "{\"id\":1,\"error\":null}"
+               << "{\"id\":1,\"error\":{}}" << "{\"id\":1.5,\"result\":0}"
+               << "{\"id\":-1,\"result\":0}" << "{\"id\":1e99,\"result\":0}";
         for (const auto &frame : frames) {
             QVERIFY(!Backend::decode(frame, &result));
         }

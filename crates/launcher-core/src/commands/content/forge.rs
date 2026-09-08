@@ -66,6 +66,60 @@ fn validate_versions(minecraft: &str, loader: &str) -> Result<(), LauncherError>
 fn invalid_install() -> LauncherError {
     input_error("forge_installation_invalid", "Файлы Forge отсутствуют или повреждены. Откройте настройки сборки и нажмите «Переустановить и восстановить».")
 }
+fn checksum_network_error() -> LauncherError {
+    input_error("forge_download_unavailable", "Не удалось получить контрольную сумму с официального сервера Forge. Проверьте соединение и повторите установку.")
+}
+
+async fn installer_checksum(
+    client: &reqwest::Client,
+    url: &str,
+    token: &crate::downloads::DownloadCancellationToken,
+) -> Result<String, LauncherError> {
+    for attempt in 0..3 {
+        let response = tokio::select! {
+            _ = token.cancelled() => return Err(security::cancelled()),
+            response = client.get(url).send() => response,
+        };
+        let retry = match &response {
+            Ok(response) => {
+                response.status().is_server_error()
+                    || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+            }
+            Err(error) => error.is_timeout() || error.is_connect(),
+        };
+        if retry && attempt < 2 {
+            tokio::select! {
+                _ = token.cancelled() => return Err(security::cancelled()),
+                _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {},
+            }
+            continue;
+        }
+        let mut response = response
+            .map_err(|_| checksum_network_error())?
+            .error_for_status()
+            .map_err(|_| checksum_network_error())?;
+        security::validate_url(response.url().as_str())?;
+        let mut checksum = Vec::new();
+        loop {
+            let chunk = tokio::select! {
+                _ = token.cancelled() => return Err(security::cancelled()),
+                chunk = response.chunk() => chunk.map_err(|_| checksum_network_error())?,
+            };
+            let Some(chunk) = chunk else { break };
+            checksum.extend_from_slice(&chunk);
+            if checksum.len() > 128 {
+                return Err(security::limit_error());
+            }
+        }
+        let sha1 = String::from_utf8(checksum)
+            .map_err(|_| checksum_network_error())?
+            .trim()
+            .to_owned();
+        security::validate_hashes(None, Some(&sha1))?;
+        return Ok(sha1);
+    }
+    Err(checksum_network_error())
+}
 fn inventory_path(version: &str) -> PathBuf {
     Path::new("versions")
         .join(version)
@@ -280,26 +334,7 @@ impl ContentService {
             return Ok(loader);
         }
         let url = format!("https://maven.minecraftforge.net/net/minecraftforge/forge/{minecraft}-{loader}/forge-{minecraft}-{loader}-installer.jar");
-        let response = tokio::select! { _ = token.cancelled() => return Err(security::cancelled()), r = self.client.get(format!("{url}.sha1")).send() => r.map_err(|_| invalid_install())? }.error_for_status().map_err(|_| invalid_install())?;
-        security::validate_url(response.url().as_str())?;
-        let mut response = response;
-        let mut checksum = Vec::new();
-        loop {
-            let chunk = tokio::select! {
-                _ = token.cancelled() => return Err(security::cancelled()),
-                chunk = response.chunk() => chunk.map_err(|_| invalid_install())?,
-            };
-            let Some(chunk) = chunk else { break };
-            checksum.extend_from_slice(&chunk);
-            if checksum.len() > 128 {
-                return Err(invalid_install());
-            }
-        }
-        let sha1 = String::from_utf8(checksum)
-            .map_err(|_| invalid_install())?
-            .trim()
-            .to_owned();
-        security::validate_hashes(None, Some(&sha1))?;
+        let sha1 = installer_checksum(&self.client, &format!("{url}.sha1"), &token).await?;
         let staging = tempfile::Builder::new()
             .prefix(".ck-forge-")
             .tempdir_in(game_root)
@@ -425,6 +460,60 @@ impl ContentService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checksum_retries_transient_server_failures_with_a_bounded_count() {
+        crate::tasks::block_on(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let mut count = 0;
+                for _ in 0..3 {
+                    let (mut connection, _) =
+                        tokio::time::timeout(Duration::from_secs(4), listener.accept())
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    let mut request = [0; 2048];
+                    connection.read(&mut request).await.unwrap();
+                    connection.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                    count += 1;
+                }
+                count
+            });
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap();
+            let token = crate::downloads::DownloadCancellationToken::new();
+            let error =
+                installer_checksum(&client, &format!("http://{address}/fixture.sha1"), &token)
+                    .await
+                    .unwrap_err();
+            assert_eq!(error.code(), "forge_download_unavailable");
+            assert_eq!(server.await.unwrap(), 3);
+        });
+    }
+
+    #[test]
+    fn checksum_cancellation_does_not_turn_into_a_corruption_error() {
+        crate::tasks::block_on(async {
+            let token = crate::downloads::DownloadCancellationToken::new();
+            token.cancel();
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let error = installer_checksum(
+                &client,
+                "https://maven.minecraftforge.net/fixture.sha1",
+                &token,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code(), "operation_cancelled");
+        });
+    }
+
     #[test]
     fn forge_coordinates_are_numbers_not_paths_or_arguments() {
         assert!(validate_versions("1.20.1", "47.4.10").is_ok());

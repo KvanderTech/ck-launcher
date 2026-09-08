@@ -117,6 +117,10 @@ int main(int argc, char **argv) {
     }
     QString currentSkin = skinUrl;
     int launches = 0;
+    int versionErrorAttempts = 0;
+    QMap<QString, QString> failNext;
+    bool holdInstall = false;
+    QJsonObject heldInstall;
     std::string line;
     while (std::getline(std::cin, line)) {
         const auto request = QJsonDocument::fromJson(QByteArray::fromStdString(line)).object();
@@ -165,9 +169,12 @@ int main(int argc, char **argv) {
             result = profile;
         } else if (method == key("list_builds")) {
             QJsonArray builds;
-            for (int i = 0; i < 2; ++i)
+            const int count = qEnvironmentVariable("CK_TEST_MANY_BUILDS") == key("1") ? 12 : 2;
+            for (int i = 0; i < count; ++i)
                 builds.append(
-                    QJsonObject{{key("id"), i == 0 ? key("fo") : key("sodium")},
+                    QJsonObject{{key("id"), i == 0   ? key("fo")
+                                            : i == 1 ? key("sodium")
+                                                     : key("extra-") + QString::number(i)},
                                 {key("name"), i == 0 ? key("Fabulously Optimized") : key("2.4.3")},
                                 {key("gameVersion"), key("fabric-loader-0.16.14-1.21.1")},
                                 {key("loaderVersion"), key("0.16.14")},
@@ -233,6 +240,8 @@ int main(int argc, char **argv) {
                                          : key("INACTIVE");
                 capes[i] = cape;
             }
+        } else if (method == key("check_update")) {
+            result = QJsonObject{{key("available"), false}};
         } else if (method == key("runtime_statuses")) {
             QJsonArray runtimes;
             for (int n : {8, 16, 17, 21, 25})
@@ -251,9 +260,33 @@ int main(int argc, char **argv) {
                 QJsonArray{QJsonObject{{key("id"), key("1.21.1")}, {key("type"), key("release")}},
                            QJsonObject{{key("id"), key("1.20.1")}, {key("type"), key("release")}}};
         else if (method == key("install_modrinth_project") ||
-                 method == key("install_modrinth_modpack"))
+                 method == key("install_modrinth_modpack")) {
+            if (holdInstall) {
+                heldInstall = request;
+                continue;
+            }
             result = QJsonObject{};
-        else if (method == key("modrinth_project"))
+        } else if (method == key("test_hold_install")) {
+            holdInstall = true;
+        } else if (method == key("test_finish_install")) {
+            holdInstall = false;
+            if (!heldInstall.isEmpty()) {
+                QJsonObject response{{key("id"), heldInstall.value(key("id"))}};
+                if (params.contains(key("error")))
+                    response[key("error")] =
+                        QJsonObject{{key("message"), params.value(key("error"))}};
+                else
+                    response[key("result")] = QJsonObject{};
+                std::cout << QJsonDocument(response).toJson(QJsonDocument::Compact).constData()
+                          << std::endl;
+                heldInstall = {};
+            }
+        } else if (method == key("test_wait")) {
+            continue;
+        } else if (method == key("test_fail_next")) {
+            failNext[params.value(key("method")).toString()] =
+                params.value(key("message")).toString();
+        } else if (method == key("modrinth_project"))
             result = QJsonObject{
                 {key("id"), params.value(key("projectId"))},
                 {key("title"), key("Fabulously Optimized")},
@@ -321,11 +354,47 @@ int main(int argc, char **argv) {
         } else
             known = false;
         QJsonObject reply{{key("id"), request.value(key("id"))}};
+        const auto projectId = params.value(key("projectId")).toString();
+        QString testError = failNext.take(method);
+        if (projectId.startsWith(key("project-test"))) {
+            if (method == key("modrinth_project")) {
+                auto project = result.toObject();
+                project[key("project_type")] =
+                    projectId == key("project-test-mod") ? key("mod") : key("modpack");
+                result = project;
+                if (projectId == key("project-test-metadata-error"))
+                    testError = key("Test project unavailable");
+            } else if (method == key("modrinth_project_versions")) {
+                QJsonArray versions;
+                for (int i = 0; i < 3; ++i)
+                    versions.append(QJsonObject{
+                        {key("id"), i == 0   ? key("pv-new")
+                                    : i == 1 ? key("pv-old")
+                                             : key("pv-compatible-old")},
+                        {key("version_number"),
+                         i == 2 ? QString(150, QChar('W')) : key("2.") + QString::number(3 - i)},
+                        {key("name"), key("Test release ") + QString::number(i)},
+                        {key("version_type"), i == 0   ? key("release")
+                                              : i == 1 ? key("beta")
+                                                       : key("alpha")},
+                        {key("date_published"),
+                         key("2026-09-0") + QString::number(3 - i) + key("T10:00:00Z")},
+                        {key("game_versions"), QJsonArray{i == 1 ? key("1.20.1") : key("1.21.1")}},
+                        {key("loaders"), QJsonArray{i == 1 ? key("forge") : key("fabric")}}});
+                result = projectId == key("project-test-empty") ? QJsonArray{} : versions;
+                if (projectId == key("project-test-error") && versionErrorAttempts++ == 0)
+                    testError = key("Test versions unavailable");
+            }
+        }
         if (known)
             reply[key("result")] = result;
         else
             reply[key("error")] =
                 QJsonObject{{key("message"), key("Unhandled test method: ") + method}};
+        if (!testError.isEmpty()) {
+            reply.remove(key("result"));
+            reply[key("error")] = QJsonObject{{key("message"), testError}};
+        }
         std::cout << QJsonDocument(reply).toJson(QJsonDocument::Compact).constData() << std::endl;
     }
 }

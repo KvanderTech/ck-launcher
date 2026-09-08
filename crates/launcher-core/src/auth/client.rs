@@ -363,6 +363,9 @@ async fn response_json<T: DeserializeOwned>(
 ) -> Result<T, LauncherError> {
     if !response.status().is_success() {
         let status = response.status();
+        if let Some(error) = transient_service_error(status) {
+            return Err(error);
+        }
         let body = response.text().await.unwrap_or_default();
         if code == "auth_exchange_failed" {
             return Err(oauth_exchange_error(status, &body));
@@ -377,6 +380,15 @@ async fn response_json<T: DeserializeOwned>(
             true,
         )
     })
+}
+
+fn transient_service_error(status: StatusCode) -> Option<LauncherError> {
+    (status.is_server_error() || matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS))
+        .then(|| LauncherError::new(
+            "auth_service_unavailable",
+            "Сервис входа временно недоступен. Проверьте подключение и повторите попытку немного позже.",
+            Some(format!("HTTP {}", status.as_u16())), true,
+        ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -651,6 +663,17 @@ fn auth_network_error() -> LauncherError {
 #[cfg(test)]
 mod oauth_error_tests {
     use super::*;
+
+    #[test]
+    fn temporary_service_failures_are_distinct_from_rejected_credentials() {
+        for code in [408, 429, 500, 502, 503, 504] {
+            let error = transient_service_error(StatusCode::from_u16(code).unwrap()).unwrap();
+            assert_eq!(error.code(), "auth_service_unavailable");
+        }
+        for code in [200, 400, 401, 403, 404] {
+            assert!(transient_service_error(StatusCode::from_u16(code).unwrap()).is_none());
+        }
+    }
 
     fn request_json(request: &reqwest::Request) -> serde_json::Value {
         serde_json::from_slice(

@@ -2,7 +2,9 @@
 
 Основной интерфейс — Qt Widgets. WebView2, Node.js и браузерный движок пользователю не нужны. Игровая логика находится в `crates/launcher-core`; `ck-launcher-service.exe` связывает её с Qt через закрытые каналы стандартного ввода/вывода. Сетевой порт для управления лаунчером не открывается.
 
-## Интерфейс 0.2.3-beta.1
+## Интерфейс 0.2.4-beta.1
+
+Вкладка «Версии» позволяет установить нужный релиз прямо из строки. Выбор в таблице и форме синхронизирован по ID, недоступные сочетания Minecraft/загрузчика исключены, ошибки загрузки и установки можно повторить. Для проверки интерфейса без учётных данных доступен отдельный тестовый target `ui-preview`; в установщик он не входит.
 
 Qt использует оригинальные изображения и компоновку лаунчера. Библиотека адаптируется к ширине окна; сборки и установленный контент открываются по всей карточке, отдельные кнопки запуска, включения и удаления не меняют страницу. Проекты Modrinth открываются внутри лаунчера с форматированным описанием, выбором версии Minecraft, загрузчика, релиза и целевой сборки. Markdown не выполняет JavaScript и не читает локальные файлы.
 
@@ -57,10 +59,13 @@ NSIS Unicode компилируется с `/INPUTCHARSET UTF8`, чтобы ру
 ```powershell
 cmake -S scripts/installer-theme -B build/installer-theme -G "Visual Studio 17 2022" -A Win32
 cmake --build build/installer-theme --config Release
-makensis /INPUTCHARSET UTF8 "/DTHEME_PLUGIN_DIR=$((Resolve-Path build/installer-theme/Release).Path)" "/DPACKAGE=$((Resolve-Path dist/modern).Path)" "/DOUTFILE=$((Resolve-Path dist).Path)/ck-launcher-setup.exe" scripts/native-installer.nsi
+./scripts/build-native-installer.ps1 -PackageRoot dist/modern -Makensis 'C:/Program Files (x86)/NSIS/makensis.exe' -ThemePluginDir "$((Resolve-Path build/installer-theme/Release).Path)" -OutFile dist/ck-launcher-setup.exe
+Compress-Archive -Path dist/modern/* -DestinationPath dist/ck-launcher-windows-x64.zip
 ```
 
-Для безопасной проверки всех страниц мастера добавьте `/DCK_INSTALLER_PREVIEW`: этот вариант не устанавливает файлы, не пишет регистрации/ярлыки и не запускает лаунчер. Не распространяйте его вместо настоящего установщика.
+Скрипт сначала создаёт готовый `uninstall.exe` в пакете без установки и регистрации программы, затем пересчитывает `SHA256SUMS.txt` и собирает установщик. ZIP формируйте после этого шага: автообновление должно заменять и старый деинсталлятор. Удаление использует только список файлов, зафиксированный при сборке, и сохраняет посторонние файлы; опасные папки, ссылки и занятые EXE блокируются до начала операции.
+
+Для безопасной проверки всех страниц мастера можно отдельно скомпилировать `scripts/native-installer.nsi` через `makensis /INPUTCHARSET UTF8` с `/DCK_INSTALLER_PREVIEW` и определениями `THEME_PLUGIN_DIR`, `PACKAGE`, `OUTFILE`: этот вариант не устанавливает файлы, не пишет регистрации/ярлыки и не запускает лаунчер. Не распространяйте его вместо настоящего установщика. `scripts/test-native-installer.py` проверяет безопасность настоящего деинсталлятора только на изолированном фиктивном пакете.
 
 ## Проверка выпуска
 

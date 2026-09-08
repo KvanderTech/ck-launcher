@@ -65,6 +65,10 @@ class UiTest final : public QObject {
         snapshot(s("home"));
         QCOMPARE(window->findChild<QWidget *>(s("sidebar"))->width(), 72);
         QCOMPARE(window->findChild<QPushButton *>(s("playButton"))->size(), QSize(205, 56));
+        auto *sidebarScroll = window->findChild<QScrollArea *>(s("sidebar-builds-scroll"));
+        auto *secondShortcut = window->findChild<QPushButton *>(s("build-shortcut-sodium"));
+        QVERIFY(sidebarScroll->viewport()->rect().contains(QRect(
+            secondShortcut->mapTo(sidebarScroll->viewport(), QPoint()), secondShortcut->size())));
         for (const auto &page :
              {s("library"), s("catalog"), s("skins"), s("settings"), s("details"), s("logs")}) {
             window->showPage(page);
@@ -216,6 +220,132 @@ class UiTest final : public QObject {
         sounds->setChecked(true);
         QVERIFY(AudioFeedback::isEnabled());
         sounds->setChecked(false);
+    }
+    void installationFailureAllowsRetryFromVersionRow() {
+        window->showPage(s("catalog"));
+        window->findChild<QTabBar *>(s("catalog-tabs"))->setCurrentIndex(0);
+        QTest::qWait(100);
+        auto *open = namedButton(QString::fromUtf8("+ Установить"));
+        QVERIFY(open);
+        QTest::mouseClick(open, Qt::LeftButton);
+        auto *tabs = window->findChild<QTabBar *>(s("project-tabs"));
+        QVERIFY(tabs);
+        tabs->setCurrentIndex(1);
+        auto row = [&] {
+            return window->findChild<QPushButton *>(s("project-version-install-compatible"));
+        };
+        QTRY_VERIFY(row() && row()->isEnabled());
+        backend->request(s("test_hold_install"));
+        state(); // Flush the service queue before clicking.
+        QTest::mouseClick(row(), Qt::LeftButton);
+        QTRY_VERIFY(!row()->isEnabled());
+        QVERIFY(!window->findChild<QPushButton *>(s("project-install"))->isEnabled());
+        QVERIFY(!window->findChild<QComboBox *>(s("project-game"))->isEnabled());
+        snapshot(s("project-installing"));
+        const QString error =
+            QString::fromUtf8("Проверка: соединение прервано. Повторите установку.");
+        backend->request(s("test_finish_install"), {{s("error"), error}});
+        QTRY_VERIFY(row()->isEnabled());
+        QCOMPARE(window->findChild<QLabel *>(s("project-status"))->text(), error);
+        snapshot(s("project-install-error"));
+        QTest::mouseClick(row(), Qt::LeftButton);
+        QTRY_VERIFY(!window->findChild<QWidget *>(s("project-page"))->isVisible());
+        QVERIFY(window->findChild<QPushButton *>(s("playButton"))->isEnabled());
+    }
+    void networkErrorsStopLoadingAndAllowRetry() {
+        const auto failure = QString::fromUtf8("Проверка: сеть недоступна");
+        backend->request(s("test_fail_next"),
+                         {{s("method"), s("check_update")}, {s("message"), failure}});
+        state();
+        window->showPage(s("settings"));
+        auto *check = window->findChild<QPushButton *>(s("check-update"));
+        auto *status = window->findChild<QLabel *>(s("update-status"));
+        QVERIFY(check && status);
+        QTest::mouseClick(check, Qt::LeftButton);
+        QTRY_COMPARE(status->text(), failure);
+        QVERIFY(check->isEnabled());
+        QTest::mouseClick(check, Qt::LeftButton);
+        QTRY_COMPARE(status->text(), QString::fromUtf8("Установлена актуальная версия"));
+        QVERIFY(check->isEnabled());
+        window->showPage(s("catalog"));
+        backend->request(s("test_fail_next"),
+                         {{s("method"), s("search_modrinth")}, {s("message"), failure}});
+        state();
+        auto *search = window->findChild<QLineEdit *>(s("catalog-search"));
+        QTest::keyClick(search, Qt::Key_Return);
+        const auto hasLabel = [this](const QString &text) {
+            for (auto *label : window->findChildren<QLabel *>())
+                if (label->isVisible() && label->text() == text)
+                    return true;
+            return false;
+        };
+        QTRY_VERIFY(hasLabel(QString::fromUtf8("Не удалось загрузить проекты. Повторите поиск.")));
+        QVERIFY(!hasLabel(QString::fromUtf8("Загружаем проекты…")));
+        QTest::keyClick(search, Qt::Key_Return);
+        QTRY_VERIFY(!hasLabel(QString::fromUtf8("Не удалось загрузить проекты. Повторите поиск.")));
+    }
+    void manyBuildsDoNotPushWindowOffScreen() {
+        Backend isolated;
+        LauncherWindow gallery(&isolated);
+        gallery.resize(980, 620);
+        gallery.show();
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(s("CK_TEST_MANY_BUILDS"), s("1"));
+        environment.insert(s("APPDATA"), temporary.path());
+        isolated.start(QCoreApplication::applicationDirPath() + s("/ui-fixture.exe"), environment);
+        QTRY_VERIFY(gallery.findChild<QPushButton *>(s("build-shortcut-extra-11")));
+        QTest::qWait(200);
+        QCOMPARE(gallery.size(), QSize(980, 620));
+        auto *scroll = gallery.findChild<QScrollArea *>(s("sidebar-builds-scroll"));
+        QVERIFY(scroll->verticalScrollBar()->maximum() > 0);
+        auto *account = gallery.findChild<QPushButton *>(s("accountButton"));
+        QVERIFY(
+            gallery.rect().contains(QRect(account->mapTo(&gallery, QPoint()), account->size())));
+        QVERIFY(gallery.grab().save(output + s("/home-many-builds-small.png")));
+        isolated.shutdown();
+    }
+    void cancellationHasReservedQueueCapacity() {
+        Backend isolated;
+        QSignalSpy ready(&isolated, &Backend::ready);
+        isolated.start(QCoreApplication::applicationDirPath() + s("/ui-fixture.exe"),
+                       QProcessEnvironment::systemEnvironment());
+        QTRY_COMPARE(ready.count(), 1);
+        for (int i = 0; i < 64; ++i)
+            isolated.request(s("test_wait"));
+        auto controlFinished = std::make_shared<bool>(false);
+        auto rejected = std::make_shared<bool>(false);
+        isolated.request(
+            s("get_profile"), {},
+            [rejected](const QJsonValue &, const QJsonObject &e) { *rejected = !e.isEmpty(); });
+        isolated.request(s("cancel_content_operation"), {},
+                         [controlFinished](const QJsonValue &, const QJsonObject &e) {
+                             *controlFinished = e.isEmpty();
+                         });
+        QTRY_VERIFY(*rejected);
+        QTRY_VERIFY(*controlFinished);
+        isolated.shutdown();
+    }
+    void iconCornersAndArtworkAreIntact() {
+        QImage source(60, 30, QImage::Format_ARGB32);
+        source.fill(QColor(111, 198, 83));
+        const auto icon = roundedIcon(source);
+        const auto pixels = icon.pixmap(36, 36).toImage();
+        QVERIFY(pixels.pixelColor(0, 0).alpha() < 5);
+        QCOMPARE(pixels.pixelColor(pixels.width() / 2, pixels.height() / 2).green(), 198);
+        QVERIFY(!QImage(s(":/assets/home-render.png")).isNull());
+        window->showPage(s("home"));
+        window->resize(980, 620);
+        snapshot(s("home-small"));
+        const auto art = window->findChild<QWidget *>(s("home-artwork"))->grab().toImage();
+        int colourful = 0;
+        for (int y = 0; y < art.height(); y += 4)
+            for (int x = art.width() / 2; x < art.width(); x += 4) {
+                const auto color = art.pixelColor(x, y);
+                if (color.red() > 130 && color.red() > color.blue() + 20)
+                    ++colourful;
+            }
+        QVERIFY2(colourful > 50, "Home artwork is missing or clipped off-screen");
+        window->resize(1280, 720);
     }
     void exactKeyframesAndJointBends() {
         const auto yes = EmoteClip::load(s(":/assets/emotes/yes.json"));
