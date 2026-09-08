@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
@@ -171,6 +171,7 @@ impl ProcessLog {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
+            .read(true)
             .write(true)
             .open(safe_log_path(root, Path::new("latest.log"))?)
             .map_err(|_| log_failed())?;
@@ -192,19 +193,46 @@ impl ProcessLog {
 
     fn append_sanitized(&self, text: &str) -> Result<(), LauncherError> {
         let mut inner = self.inner.lock().map_err(|_| log_failed())?;
-        let mut length = MAX_LOG_BYTES.saturating_sub(inner.written).min(text.len());
-        while length > 0 && !text.is_char_boundary(length) {
-            length -= 1;
+        // Keep a live tail rather than silently freezing the console after the first MiB.
+        let mut start = text.len().saturating_sub(MAX_LOG_BYTES);
+        while !text.is_char_boundary(start) {
+            start += 1;
         }
-        if length == 0 {
+        let text = &text[start..];
+        if text.is_empty() {
             return Ok(());
+        }
+        if inner.written.saturating_add(text.len()) > MAX_LOG_BYTES {
+            // Compact in half-buffer batches, not on every output chunk once full.
+            let keep = (MAX_LOG_BYTES / 2)
+                .min(MAX_LOG_BYTES - text.len())
+                .min(inner.written);
+            let offset = inner.written - keep;
+            inner
+                .file
+                .seek(SeekFrom::Start(offset as u64))
+                .map_err(|_| log_failed())?;
+            let mut tail = vec![0; keep];
+            inner.file.read_exact(&mut tail).map_err(|_| log_failed())?;
+            let boundary = tail
+                .iter()
+                .position(|byte| byte & 0xc0 != 0x80)
+                .unwrap_or(tail.len());
+            let tail = &tail[boundary..];
+            inner
+                .file
+                .seek(SeekFrom::Start(0))
+                .map_err(|_| log_failed())?;
+            inner.file.set_len(0).map_err(|_| log_failed())?;
+            inner.file.write_all(tail).map_err(|_| log_failed())?;
+            inner.written = tail.len();
         }
         inner
             .file
-            .write_all(&text.as_bytes()[..length])
+            .write_all(text.as_bytes())
             .map_err(|_| log_failed())?;
         inner.file.flush().map_err(|_| log_failed())?;
-        inner.written += length;
+        inner.written += text.len();
         Ok(())
     }
 }
@@ -247,6 +275,7 @@ impl RedactingStream {
                 }
             }
         }
+        split = complete_utf8_prefix(&self.pending[..split]);
         if split == 0 {
             return Ok(());
         }
@@ -256,6 +285,21 @@ impl RedactingStream {
     }
     fn finish(self) -> Result<(), LauncherError> {
         self.log.write_complete(&self.pending)
+    }
+}
+
+// A pipe read may end halfway through a Unicode scalar. Keep that suffix for the next
+// read, while still allowing genuinely invalid bytes to be replaced by from_utf8_lossy.
+fn complete_utf8_prefix(bytes: &[u8]) -> usize {
+    let mut offset = 0;
+    loop {
+        match std::str::from_utf8(&bytes[offset..]) {
+            Ok(_) => return bytes.len(),
+            Err(error) => match error.error_len() {
+                Some(length) => offset += error.valid_up_to() + length,
+                None => return offset + error.valid_up_to(),
+            },
+        }
     }
 }
 
@@ -320,7 +364,7 @@ fn log_failed() -> LauncherError {
 
 #[cfg(test)]
 mod tests {
-    use super::{GameProcessEvent, ProcessLog, RedactingStream};
+    use super::{GameProcessEvent, ProcessLog, RedactingStream, MAX_LOG_BYTES};
     use std::{fs, sync::Arc};
 
     #[test]
@@ -354,6 +398,52 @@ mod tests {
         let text = fs::read_to_string(root.join("latest.log")).expect("read");
         assert_eq!(text, "prefix [REDACTED] suffix");
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn stream_preserves_unicode_at_every_byte_boundary_without_exposing_secrets() {
+        let text = "Игра запущена 🎮 access-secret 日本語\n";
+        for secrets in [Vec::new(), vec!["access-secret".to_owned()]] {
+            for split in 0..=text.len() {
+                let root = tempfile::tempdir().expect("root");
+                let log = ProcessLog::open(root.path(), secrets.clone()).expect("log");
+                let mut stream = RedactingStream::new(log.clone());
+                stream
+                    .write(&text.as_bytes()[..split])
+                    .expect("first chunk");
+                stream
+                    .write(&text.as_bytes()[split..])
+                    .expect("second chunk");
+                stream.finish().expect("finish");
+                drop(log);
+                let expected = if secrets.is_empty() {
+                    text.to_owned()
+                } else {
+                    text.replace("access-secret", "[REDACTED]")
+                };
+                assert_eq!(
+                    fs::read_to_string(root.path().join("latest.log")).unwrap(),
+                    expected,
+                    "UTF-8 reader split at byte {split}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn live_log_keeps_new_output_after_reaching_its_size_limit() {
+        let root = tempfile::tempdir().expect("root");
+        let log = ProcessLog::open(root.path(), vec!["access-secret".to_owned()]).expect("log");
+        log.write_complete("Старые строки\n".repeat(MAX_LOG_BYTES / 10).as_bytes())
+            .unwrap();
+        log.write_complete("Игра полностью запущена 🎮 access-secret\n".as_bytes())
+            .unwrap();
+        drop(log);
+        let text = fs::read_to_string(root.path().join("latest.log")).unwrap();
+        assert!(text.len() <= MAX_LOG_BYTES);
+        assert!(text.ends_with("Игра полностью запущена 🎮 [REDACTED]\n"));
+        assert!(!text.contains("access-secret"));
+        assert!(!text.contains('\u{fffd}'));
     }
 
     #[test]

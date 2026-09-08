@@ -1,8 +1,8 @@
 #include <windows.h>
 IDI_ICON1 ICON DISCARDABLE "launcher.ico"
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,2,3,1
- PRODUCTVERSION 0,2,3,1
+ FILEVERSION 0,2,4,1
+ PRODUCTVERSION 0,2,4,1
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -12,9 +12,9 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "KvanderTech"
    VALUE "FileDescription", "CK Launcher"
-   VALUE "FileVersion", "0.2.3-beta.1"
+   VALUE "FileVersion", "0.2.4-beta.1"
    VALUE "ProductName", "CK Launcher"
-   VALUE "ProductVersion", "0.2.3-beta.1"
+   VALUE "ProductVersion", "0.2.4-beta.1"
    VALUE "OriginalFilename", "ck-launcher-qt.exe"
   END
  END

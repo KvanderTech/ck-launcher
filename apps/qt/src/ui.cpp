@@ -87,54 +87,55 @@ bool AudioFeedback::eventFilter(QObject *object, QEvent *event) {
 #include <QPainterPath>
 #include <cmath>
 
-QIcon glyph(const QString &name, const QColor &color, int size) {
-    QPixmap pix(size * 2, size * 2);
+static QPixmap glyphPixmap(const QString &name, const QColor &color, int size, int scale) {
+    QPixmap pix(size * scale, size * scale);
     pix.fill(Qt::transparent);
     QPainter p(&pix);
     p.setRenderHint(QPainter::Antialiasing);
-    p.scale(size / 12.0, size / 12.0);
+    p.scale(size * scale / 24.0, size * scale / 24.0);
     p.setPen(QPen(color, 1.75, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     p.setBrush(Qt::NoBrush);
     auto line = [&](qreal x, qreal y, qreal a, qreal b) {
         p.drawLine(QPointF(x, y), QPointF(a, b));
     };
     if (name == s("home")) {
-        p.drawPolyline(QPolygonF(QVector<QPointF>{QPointF(3, 11), {12, 3}, {21, 11}}));
-        p.drawRect(QRectF(6, 10, 12, 11));
-        p.drawRect(QRectF(10, 14, 4, 7));
+        p.drawPolyline(QPolygonF(QVector<QPointF>{{3.5, 10.7}, {12, 3.7}, {20.5, 10.7}}));
+        p.drawPolyline(
+            QPolygonF(QVector<QPointF>{{5.5, 9.7}, {5.5, 19.5}, {18.5, 19.5}, {18.5, 9.7}}));
+        p.drawPolyline(
+            QPolygonF(QVector<QPointF>{{9.2, 19.5}, {9.2, 13.5}, {14.8, 13.5}, {14.8, 19.5}}));
     } else if (name == s("library")) {
-        p.drawRoundedRect(QRectF(3, 4, 4, 17), 1, 1);
-        p.drawRoundedRect(QRectF(9, 4, 4, 17), 1, 1);
-        p.save();
-        p.translate(16, 4);
-        p.rotate(-10);
-        p.drawRoundedRect(QRectF(0, 0, 4, 17), 1, 1);
-        p.restore();
+        p.drawRoundedRect(QRectF(2.5, 4, 5, 16), 1.7, 1.7);
+        p.drawRoundedRect(QRectF(9.2, 4, 4.6, 16), 1.7, 1.7);
+        p.drawPolygon(
+            QPolygonF(QVector<QPointF>{{16, 5}, {19.3, 4.2}, {22.6, 18.9}, {19.2, 19.7}}));
     } else if (name == s("grid")) {
-        for (int y : {4, 14})
-            for (int x : {4, 14})
-                p.drawRoundedRect(QRectF(x, y, 6, 6), 1.3, 1.3);
+        for (int y : {3, 14})
+            for (int x : {3, 14})
+                p.drawRoundedRect(QRectF(x, y, 7, 7), 2, 2);
     } else if (name == s("shirt")) {
-        p.drawPolygon(QPolygonF(QVector<QPointF>{{8, 3},
-                                                 {9, 5},
-                                                 {15, 5},
-                                                 {16, 3},
-                                                 {22, 7},
-                                                 {19, 12},
-                                                 {17, 10},
-                                                 {17, 21},
-                                                 {7, 21},
-                                                 {7, 10},
-                                                 {5, 12},
-                                                 {2, 7}}));
+        QPainterPath shirt;
+        shirt.moveTo(8.2, 4.1);
+        for (const auto &point : QVector<QPointF>{{5, 5.6},
+                                                  {2, 10.7},
+                                                  {6, 12.7},
+                                                  {6, 20.4},
+                                                  {18, 20.4},
+                                                  {18, 12.7},
+                                                  {22, 10.7},
+                                                  {19, 5.6},
+                                                  {15.8, 4.1}})
+            shirt.lineTo(point);
+        shirt.cubicTo(14.5, 7.5, 9.5, 7.5, 8.2, 4.1);
+        shirt.closeSubpath();
+        p.drawPath(shirt);
     } else if (name == s("settings")) {
-        line(3, 6, 21, 6);
-        line(3, 12, 21, 12);
-        line(3, 18, 21, 18);
-        p.setBrush(QColor(8, 20, 34));
-        p.drawEllipse(QPointF(15, 6), 2.2, 2.2);
-        p.drawEllipse(QPointF(8, 12), 2.2, 2.2);
-        p.drawEllipse(QPointF(15, 18), 2.2, 2.2);
+        line(3, 7, 12, 7);
+        line(18, 7, 21, 7);
+        line(3, 17, 6, 17);
+        line(12, 17, 21, 17);
+        p.drawEllipse(QPointF(15, 7), 3, 3);
+        p.drawEllipse(QPointF(9, 17), 3, 3);
     } else if (name == s("close")) {
         line(7, 7, 17, 17);
         line(17, 7, 7, 17);
@@ -201,8 +202,40 @@ QIcon glyph(const QString &name, const QColor &color, int size) {
         for (int x : {5, 12, 19})
             p.drawEllipse(QPointF(x, 12), 1, 1);
     }
-    pix.setDevicePixelRatio(2);
-    return QIcon(pix);
+    p.end();
+    pix.setDevicePixelRatio(scale);
+    return pix;
+}
+QIcon glyph(const QString &name, const QColor &color, int size) {
+    QIcon icon;
+    for (int scale : {1, 2, 3})
+        icon.addPixmap(glyphPixmap(name, color, size, scale));
+    return icon;
+}
+QIcon roundedIcon(const QImage &image, int size, qreal radius) {
+    if (image.isNull() || size <= 0)
+        return {};
+    QIcon icon;
+    for (int scale : {1, 2, 3}) {
+        QPixmap pix(size * scale, size * scale);
+        pix.fill(Qt::transparent);
+        QPainter painter(&pix);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.scale(scale, scale);
+        // A textured rounded shape gives antialiased corners at every Windows DPI.
+        const auto square = image.scaled(size * scale, size * scale, Qt::KeepAspectRatioByExpanding,
+                                         Qt::SmoothTransformation);
+        QBrush brush(square.copy((square.width() - size * scale) / 2,
+                                 (square.height() - size * scale) / 2, size * scale, size * scale));
+        brush.setTransform(QTransform::fromScale(1.0 / scale, 1.0 / scale));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(brush);
+        painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius);
+        painter.end();
+        pix.setDevicePixelRatio(scale);
+        icon.addPixmap(pix);
+    }
+    return icon;
 }
 QPushButton *iconButton(const QString &name, const QString &text, QWidget *parent) {
     auto *b = new MotionButton(parent);
@@ -493,7 +526,11 @@ void Picture::paintEvent(QPaintEvent *) {
     p.fillRect(rect(), QColor(22, 64, 94));
     if (!image.isNull()) {
         p.setRenderHint(QPainter::SmoothPixmapTransform, !pixelated);
-        p.drawImage(rect(), image);
+        QSizeF fitted = image.size();
+        fitted.scale(size(), Qt::KeepAspectRatio);
+        p.drawImage(QRectF((width() - fitted.width()) / 2, (height() - fitted.height()) / 2,
+                           fitted.width(), fitted.height()),
+                    image);
     } else {
         p.setPen(QColor(158, 220, 250));
         auto f = font();

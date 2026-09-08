@@ -189,6 +189,12 @@ void LauncherWindow::searchCatalog() {
                 tabs->setCurrentIndex(i);
     }
     const auto request = ++catalogRequest;
+    catalog = {};
+    clearLayout(catalogRows);
+    catalogRows->addWidget(label(tr("Загружаем проекты…"), "muted"));
+    catalogRows->addStretch();
+    findChild<QPushButton *>(s("catalog-prev"))->setEnabled(false);
+    findChild<QPushButton *>(s("catalog-next"))->setEnabled(false);
     catalogStatus->setText(tr("Ищем проекты…"));
     auto filter = [](QComboBox *combo) -> QJsonValue {
         return combo->currentData().toString().isEmpty()
@@ -208,6 +214,10 @@ void LauncherWindow::searchCatalog() {
             if (request != catalogRequest)
                 return;
             if (!error.isEmpty()) {
+                clearLayout(catalogRows);
+                catalogRows->addWidget(
+                    label(tr("Не удалось загрузить проекты. Повторите поиск."), "muted"));
+                catalogRows->addStretch();
                 catalogStatus->setText(
                     tr("Каталог недоступен. Проверьте подключение и нажмите «Найти» ещё раз."));
                 return;

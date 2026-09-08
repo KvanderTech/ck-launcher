@@ -25,7 +25,7 @@ class LauncherWindow final : public QMainWindow {
   private:
     Backend *core;
     ImagePool *images;
-    ProjectView *projectView;
+    ProjectView *projectView = nullptr;
     int projectReturnPage = 2;
     Backdrop *background;
     QStackedWidget *pages, *skinPages, *detailSections;
@@ -54,7 +54,7 @@ class LauncherWindow final : public QMainWindow {
     QString selectedBuild, selectedAccount, selectedSkin, operationId,
         catalogKind = QStringLiteral("modpack"), contentKind;
     bool running = false, closing = false, busy = false, ready = false, signingIn = false,
-         cosmeticPending = false;
+         cosmeticPending = false, contentInstalling = false;
     int currentPage = 0, catalogOffset = 0;
     quint64 catalogRequest = 0, skinRequest = 0;
     QSet<QString> completedOperations;

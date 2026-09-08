@@ -273,7 +273,11 @@ impl AuthService {
             })?;
         profile.is_active = true;
 
-        let _mutation = self.mutations.lock().await;
+        let _mutation =
+            await_auth_or_cancel(&cancel, async { Ok(self.mutations.lock().await) }).await?;
+        // Cancellation is still allowed until persistence starts. Once the credential and
+        // public account transaction begins it must finish (or roll back) together.
+        ensure_auth_not_cancelled(&cancel)?;
         let previous = self.credentials.get(&profile.id)?;
         self.credentials.save(&profile.id, oauth.refresh_token())?;
         if let Err(error) = self.storage.upsert_account(&profile).await {
@@ -301,7 +305,8 @@ impl AuthService {
         &self,
         cancel: DownloadCancellationToken,
     ) -> Result<RefreshedMinecraftAccount, LauncherError> {
-        let _mutation = self.mutations.lock().await;
+        let _mutation =
+            await_auth_or_cancel(&cancel, async { Ok(self.mutations.lock().await) }).await?;
         ensure_auth_not_cancelled(&cancel)?;
         let account = self
             .storage
@@ -333,17 +338,7 @@ impl AuthService {
         })?;
         let oauth = await_auth_or_cancel(&cancel, self.api.refresh_token(&refresh))
             .await
-            .map_err(|error| {
-                if error.code() == "download_cancelled" {
-                    return error;
-                }
-                LauncherError::new(
-                    "account_reauthentication_required",
-                    "Sign in again to launch Minecraft.",
-                    None,
-                    true,
-                )
-            })?;
+            .map_err(map_refresh_error)?;
         let xbox = await_auth_or_cancel(&cancel, self.api.xbox_live(oauth.access_token())).await?;
         let xsts = await_auth_or_cancel(&cancel, self.api.xsts(&xbox)).await?;
         let access_token = await_auth_or_cancel(&cancel, self.api.minecraft(&xsts)).await?;
@@ -388,6 +383,21 @@ impl AuthService {
         });
         Ok(())
     }
+}
+
+fn map_refresh_error(error: LauncherError) -> LauncherError {
+    if matches!(
+        error.code(),
+        "download_cancelled" | "auth_network_error" | "auth_service_unavailable"
+    ) {
+        return error;
+    }
+    LauncherError::new(
+        "account_reauthentication_required",
+        "Sign in again to launch Minecraft.",
+        None,
+        true,
+    )
 }
 
 async fn await_auth_or_cancel<T>(
@@ -752,6 +762,103 @@ mod tests {
                 "refresh-secret"
             );
         });
+    }
+
+    #[test]
+    fn cancellation_while_waiting_to_persist_login_does_not_save_the_account() {
+        crate::tasks::block_on(async {
+            let storage = Arc::new(ControlledAccountStore::new(Vec::new(), false, false));
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            let mutations = Arc::new(AccountMutationCoordinator::default());
+            let api = Arc::new(MockMicrosoftApi {
+                calls: Mutex::new(Vec::new()),
+                profile_error: false,
+                refresh_error: false,
+            });
+            let auth = Arc::new(AuthService::new(
+                Some("public-client-id".to_owned()),
+                api.clone(),
+                storage.clone(),
+                credentials.clone(),
+                Arc::new(RecordingOpener::default()),
+                mutations.clone(),
+            ));
+            let guard = mutations.lock().await;
+            let session = auth.begin_login().expect("login begins");
+            let login = crate::tasks::spawn({
+                let auth = auth.clone();
+                async move { auth.complete_login(session, "oauth-code").await }
+            });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !api.calls.lock().unwrap().contains(&"profile") {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("all network steps complete");
+            auth.cancel_login().expect("cancel login");
+            drop(guard);
+            let error = login
+                .await
+                .unwrap()
+                .expect_err("cancel wins before persistence");
+            assert_eq!(error.code(), "download_cancelled");
+            assert!(storage.list_accounts().await.unwrap().is_empty());
+            assert!(credentials.get("stable-account-id").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn cancelling_refresh_does_not_wait_for_an_unrelated_account_mutation() {
+        crate::tasks::block_on(async {
+            let mutations = Arc::new(AccountMutationCoordinator::default());
+            let auth = AuthService::new(
+                Some("public-client-id".to_owned()),
+                Arc::new(MockMicrosoftApi {
+                    calls: Mutex::new(Vec::new()),
+                    profile_error: false,
+                    refresh_error: false,
+                }),
+                Arc::new(ControlledAccountStore::new(Vec::new(), false, false)),
+                Arc::new(InMemoryCredentialStore::default()),
+                Arc::new(RecordingOpener::default()),
+                mutations.clone(),
+            );
+            let _guard = mutations.lock().await;
+            let cancel = crate::downloads::DownloadCancellationToken::new();
+            cancel.cancel();
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                auth.refresh_active_minecraft_account_cancellable(cancel),
+            )
+            .await;
+            assert!(result.is_ok(), "cancellation must interrupt the mutex wait");
+            let error = match result.unwrap() {
+                Ok(_) => panic!("refresh was cancelled"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "download_cancelled");
+        });
+    }
+
+    #[test]
+    fn transient_refresh_failures_do_not_ask_the_user_to_sign_in_again() {
+        for code in [
+            "download_cancelled",
+            "auth_network_error",
+            "auth_service_unavailable",
+        ] {
+            let error =
+                super::map_refresh_error(LauncherError::new(code, "Temporary failure", None, true));
+            assert_eq!(error.code(), code);
+        }
+        let error = super::map_refresh_error(LauncherError::new(
+            "auth_refresh_failed",
+            "Rejected",
+            None,
+            true,
+        ));
+        assert_eq!(error.code(), "account_reauthentication_required");
     }
 
     #[test]

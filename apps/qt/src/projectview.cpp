@@ -44,15 +44,90 @@ class ProjectDocument final : public QTextDocument {
 QStringList strings(const QJsonArray &array) {
     QStringList result;
     for (const auto &item : array)
-        result << item.toString();
+        if (!item.toString().isEmpty() && !result.contains(item.toString()))
+            result << item.toString();
     return result;
 }
+QString loaderName(const QString &loader) {
+    if (loader == s("fabric"))
+        return s("Fabric");
+    if (loader == s("quilt"))
+        return s("Quilt");
+    if (loader == s("forge"))
+        return s("Forge");
+    if (loader == s("neoforge"))
+        return s("NeoForge");
+    if (loader == s("minecraft") || loader == s("vanilla"))
+        return s("Minecraft");
+    return loader;
+}
+QString channelName(const QJsonObject &version) {
+    const auto channel = value(version, "version_type");
+    if (channel == s("release"))
+        return ProjectView::tr("Релиз");
+    if (channel == s("beta"))
+        return ProjectView::tr("Бета");
+    if (channel == s("alpha"))
+        return ProjectView::tr("Альфа");
+    return channel;
+}
+QString versionName(const QJsonObject &version) {
+    auto name = value(version, "version_number");
+    if (name.isEmpty())
+        name = value(version, "name");
+    return name.isEmpty() ? value(version, "id") : name;
+}
+enum VersionRole { VersionId = Qt::UserRole, VersionTitle, VersionSubtitle };
+
+// Keep the version list readable even when Minecraft compatibility contains dozens of entries.
+// Full text remains available in the tooltip and accessible item text; only its painting elides.
+class VersionDelegate final : public QStyledItemDelegate {
+  public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override {
+        if (index.column() != 0) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+        painter->save();
+        if (option.state & QStyle::State_Selected)
+            painter->fillRect(option.rect, QColor(18, 62, 87));
+        else if (option.state & QStyle::State_MouseOver)
+            painter->fillRect(option.rect, QColor(15, 44, 64));
+        const auto rect = option.rect.adjusted(16, 12, -12, -10);
+        auto font = option.font;
+        font.setPixelSize(14);
+        font.setWeight(QFont::DemiBold);
+        painter->setFont(font);
+        painter->setPen(QColor(240, 247, 252));
+        painter->drawText(QRect(rect.left(), rect.top(), rect.width(), 22),
+                          Qt::AlignLeft | Qt::AlignVCenter,
+                          QFontMetrics(font).elidedText(index.data(VersionTitle).toString(),
+                                                        Qt::ElideRight, rect.width()));
+        font.setPixelSize(12);
+        font.setWeight(QFont::Normal);
+        painter->setFont(font);
+        painter->setPen(QColor(147, 184, 207));
+        painter->drawText(QRect(rect.left(), rect.top() + 26, rect.width(), 20),
+                          Qt::AlignLeft | Qt::AlignVCenter,
+                          QFontMetrics(font).elidedText(index.data(VersionSubtitle).toString(),
+                                                        Qt::ElideRight, rect.width()));
+        painter->setPen(QColor(44, 72, 92, 140));
+        painter->drawLine(option.rect.bottomLeft() + QPoint(16, 0), option.rect.bottomRight());
+        painter->restore();
+    }
+};
 } // namespace
 
 ProjectView::ProjectView(Backend *core, ImagePool *pool, QWidget *parent)
     : QWidget(parent), backend(core), images(pool) {
     setObjectName(s("project-page"));
+    setMinimumWidth(0);
     auto *layout = new QVBoxLayout(this);
+    // Switching from stacked filters back to columns must not leave the page's old
+    // minimum height on the host window. The description/list and filters scroll themselves.
+    layout->setSizeConstraint(QLayout::SetNoConstraint);
     layout->setContentsMargins(40, 16, 44, 24);
     layout->setSpacing(14);
     auto *top = new QHBoxLayout;
@@ -70,6 +145,7 @@ ProjectView::ProjectView(Backend *core, ImagePool *pool, QWidget *parent)
         },
         this);
     site->setProperty("textButton", true);
+    site->setMinimumWidth(136);
     layout->addLayout(top);
     auto *head = panel(s("hero"));
     auto *h = new QHBoxLayout(head);
@@ -79,22 +155,33 @@ ProjectView::ProjectView(Backend *core, ImagePool *pool, QWidget *parent)
     auto *copy = new QVBoxLayout;
     title = label(QString(), "sectionTitle");
     title->setWordWrap(true);
+    title->setTextFormat(Qt::PlainText);
+    title->setMinimumWidth(0);
     description = label(QString(), "muted");
     description->setWordWrap(true);
+    description->setTextFormat(Qt::PlainText);
+    description->setMinimumWidth(0);
     copy->addWidget(title);
     copy->addWidget(description);
     h->addLayout(copy, 1);
     layout->addWidget(head);
-    auto *columns = new QHBoxLayout;
+    columns = new QBoxLayout(QBoxLayout::LeftToRight);
     columns->setSpacing(16);
-    auto *left = new QVBoxLayout;
+    leftColumn = new QWidget;
+    leftColumn->setMinimumWidth(0);
+    leftColumn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    auto *left = new QVBoxLayout(leftColumn);
+    left->setContentsMargins(0, 0, 0, 0);
+    left->setSpacing(12);
     tabs = new QTabBar;
+    tabs->setObjectName(s("project-tabs"));
     tabs->setDrawBase(false);
     tabs->setExpanding(false);
     tabs->addTab(tr("Описание"));
     tabs->addTab(tr("Версии"));
     left->addWidget(tabs, 0, Qt::AlignLeft);
     auto *sections = new QStackedWidget;
+    sections->setMinimumSize(0, 150);
     body = new QTextBrowser;
     body->setObjectName(s("project-description"));
     body->setOpenLinks(false);
@@ -106,56 +193,120 @@ ProjectView::ProjectView(Backend *core, ImagePool *pool, QWidget *parent)
             QDesktopServices::openUrl(url);
     });
     sections->addWidget(body);
-    versionTable = new QTableWidget(0, 3);
+    auto *versionsSection = new QWidget;
+    versionsSection->setMinimumWidth(0);
+    auto *versionsLayout = new QVBoxLayout(versionsSection);
+    versionsLayout->setContentsMargins(0, 0, 0, 0);
+    versionsLayout->setSpacing(8);
+    versionCount = label(QString(), "muted");
+    versionCount->setObjectName(s("project-versions-count"));
+    versionsLayout->addWidget(versionCount);
+    versionPages = new QStackedWidget;
+    versionTable = new QTableWidget(0, 2);
     versionTable->setObjectName(s("project-versions-table"));
-    versionTable->setHorizontalHeaderLabels({tr("Версия"), tr("Minecraft"), tr("Загрузчик")});
-    versionTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    versionTable->setHorizontalHeaderLabels({tr("Версия и совместимость"), tr("Установка")});
+    versionTable->setMinimumWidth(0);
+    versionTable->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    versionTable->setItemDelegate(new VersionDelegate(versionTable));
+    versionTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    versionTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    versionTable->setColumnWidth(1, 136);
+    versionTable->horizontalHeader()->hide();
     versionTable->verticalHeader()->hide();
     versionTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     versionTable->setSelectionMode(QAbstractItemView::SingleSelection);
     versionTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     versionTable->setShowGrid(false);
-    sections->addWidget(versionTable);
+    versionTable->setMouseTracking(true);
+    versionTable->setFocusPolicy(Qt::StrongFocus);
+    versionTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    versionTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    versionTable->setStyleSheet(s("QTableWidget {background:rgba(8,26,44,240);"
+                                  "border:1px solid #27415a;border-radius:16px;padding:6px;}"));
+    versionPages->addWidget(versionTable);
+    auto *empty = panel();
+    empty->setObjectName(s("project-versions-empty"));
+    auto *emptyLayout = new QVBoxLayout(empty);
+    emptyLayout->setContentsMargins(22, 22, 22, 22);
+    emptyLayout->setSpacing(10);
+    emptyLayout->addStretch();
+    emptyTitle = label(QString(), "strong");
+    emptyTitle->setAlignment(Qt::AlignCenter);
+    emptyTitle->setWordWrap(true);
+    emptyText = label(QString(), "muted");
+    emptyText->setTextFormat(Qt::PlainText);
+    emptyText->setAlignment(Qt::AlignCenter);
+    emptyText->setWordWrap(true);
+    emptyLayout->addWidget(emptyTitle);
+    emptyLayout->addWidget(emptyText);
+    retry = button(
+        tr("Повторить загрузку"), emptyLayout,
+        [this] { open(project, builds, target->currentData().toString()); }, this);
+    retry->setObjectName(s("project-retry"));
+    emptyLayout->setAlignment(retry, Qt::AlignHCenter);
+    emptyLayout->addStretch();
+    versionPages->addWidget(empty);
+    versionsLayout->addWidget(versionPages, 1);
+    sections->addWidget(versionsSection);
     connect(tabs, &QTabBar::currentChanged, sections, &QStackedWidget::setCurrentIndex);
-    connect(versionTable, &QTableWidget::cellClicked, this,
-            [this](int row, int) { version->setCurrentIndex(row); });
+    connect(versionTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
+        if (const auto *item = versionTable->item(row, 0))
+            selectVersion(item->data(VersionId).toString());
+    });
     left->addWidget(sections, 1);
-    columns->addLayout(left, 1);
-    auto *installPanel = panel();
-    installPanel->setMinimumHeight(430);
-    auto *r = new QVBoxLayout(installPanel);
-    r->setContentsMargins(18, 18, 18, 18);
-    r->setSpacing(10);
-    r->addWidget(label(tr("Установка"), "sectionTitle"));
+    columns->addWidget(leftColumn, 1);
+    installPanel = panel();
+    installPanel->setMinimumWidth(0);
+    installPanel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    installLayout = new QGridLayout(installPanel);
+    installLayout->setContentsMargins(18, 18, 18, 18);
+    installLayout->setHorizontalSpacing(12);
+    installLayout->setVerticalSpacing(12);
+    installTitle = label(tr("Установка"), "sectionTitle");
     target = new QComboBox;
     target->setObjectName(s("project-target"));
     target->setToolTip(tr("Установить в сборку"));
-    r->addWidget(target);
-    r->addWidget(label(tr("Minecraft"), "mutedSmall"));
     game = new QComboBox;
     game->setObjectName(s("project-game"));
-    r->addWidget(game);
-    r->addWidget(label(tr("Загрузчик"), "mutedSmall"));
     loader = new QComboBox;
     loader->setObjectName(s("project-loader"));
-    r->addWidget(loader);
-    r->addWidget(label(tr("Версия проекта"), "mutedSmall"));
     version = new QComboBox;
     version->setObjectName(s("project-version"));
-    version->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    version->setMinimumContentsLength(8);
-    r->addWidget(version);
-    for (auto *control : {target, game, loader, version})
+    for (auto *control : {target, game, loader, version}) {
         control->setFixedHeight(38);
-    install = button(tr("Установить"), r, [this] { installSelected(); }, this, true);
+        control->setMinimumWidth(0);
+        control->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        control->setMinimumContentsLength(5);
+        control->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    }
+    const auto field = [](const QString &name, QComboBox *control) {
+        auto *container = new QWidget;
+        container->setMinimumWidth(0);
+        auto *layout = new QVBoxLayout(container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(6);
+        auto *caption = label(name, "mutedSmall");
+        caption->setBuddy(control);
+        layout->addWidget(caption);
+        layout->addWidget(control);
+        return container;
+    };
+    targetField = field(tr("В сборку"), target);
+    gameField = field(tr("Minecraft"), game);
+    loaderField = field(tr("Загрузчик"), loader);
+    versionField = field(tr("Версия проекта"), version);
+    install = new MotionButton(tr("Установить"));
+    install->setProperty("primary", true);
+    connect(install, &QPushButton::clicked, this, [this] { installSelected(); });
     install->setFixedHeight(44);
     install->setObjectName(s("project-install"));
     status = label(QString(), "mutedSmall");
+    status->setObjectName(s("project-status"));
+    status->setTextFormat(Qt::PlainText);
     status->setWordWrap(true);
-    r->addWidget(status);
-    auto *installScroll = new QScrollArea;
+    status->setMinimumWidth(0);
+    installScroll = new QScrollArea;
     installScroll->setObjectName(s("project-install-scroll"));
-    installScroll->setFixedWidth(270);
     installScroll->setWidgetResizable(true);
     installScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     installScroll->setWidget(installPanel);
@@ -167,6 +318,9 @@ ProjectView::ProjectView(Backend *core, ImagePool *pool, QWidget *parent)
             [this] { filterVersions(); });
     connect(target, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this] { targetChanged(); });
+    connect(version, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this] { selectVersion(version->currentData().toString()); });
+    arrangeColumns();
 }
 
 bool ProjectView::compatible(const QJsonObject &v, const QJsonObject &build, const QString &type) {
@@ -185,6 +339,10 @@ void ProjectView::open(const QJsonObject &input, const QJsonArray &list, const Q
     project.insert(s("id"), id);
     builds = list;
     allVersions = {};
+    projectLoading = versionsLoading = true;
+    projectError.clear();
+    versionsError.clear();
+    installationError.clear();
     title->setText(value(input, "title"));
     description->setText(value(input, "description"));
     icon->setImage({});
@@ -209,19 +367,26 @@ void ProjectView::open(const QJsonObject &input, const QJsonArray &list, const Q
         }
         target->setCurrentIndex(qMax(0, target->findData(selected)));
     }
-    target->setVisible(value(project, "project_type") != s("modpack"));
-    version->clear();
-    versionTable->setRowCount(0);
-    install->setEnabled(false);
-    status->setText(tr("Загружаем версии…"));
+    targetField->setVisible(value(project, "project_type") != s("modpack"));
+    {
+        QSignalBlocker a(version), b(versionTable);
+        version->clear();
+        versionTable->setRowCount(0);
+    }
+    filterVersions();
     QPointer<ProjectView> guard(this);
     backend->request(
         s("modrinth_project"), {{s("projectId"), id}},
         [guard, request](const QJsonValue &v, const QJsonObject &error) {
             if (!guard || request != guard->generation)
                 return;
+            guard->projectLoading = false;
             if (!error.isEmpty()) {
-                guard->body->setPlainText(value(error, "message"));
+                guard->projectError = value(error, "message");
+                if (guard->projectError.isEmpty())
+                    guard->projectError = tr("Не удалось загрузить описание проекта.");
+                guard->body->setPlainText(guard->projectError);
+                guard->filterVersions();
                 return;
             }
             const auto metadata = v.toObject();
@@ -253,16 +418,20 @@ void ProjectView::open(const QJsonObject &input, const QJsonArray &list, const Q
                                     if (guard && request == guard->generation)
                                         guard->icon->setImage(image);
                                 });
-            guard->target->setVisible(value(guard->project, "project_type") != s("modpack"));
-            guard->filterVersions();
+            guard->targetField->setVisible(value(guard->project, "project_type") != s("modpack"));
+            guard->targetChanged();
         });
     backend->request(
         s("modrinth_project_versions"), {{s("projectId"), id}},
         [guard, request](const QJsonValue &v, const QJsonObject &error) {
             if (!guard || request != guard->generation)
                 return;
+            guard->versionsLoading = false;
             if (!error.isEmpty()) {
-                guard->status->setText(value(error, "message"));
+                guard->versionsError = value(error, "message");
+                if (guard->versionsError.isEmpty())
+                    guard->versionsError = tr("Не удалось загрузить версии проекта.");
+                guard->filterVersions();
                 return;
             }
             guard->allVersions = v.toArray();
@@ -285,9 +454,11 @@ void ProjectView::open(const QJsonObject &input, const QJsonArray &list, const Q
             {
                 QSignalBlocker a(guard->game), b(guard->loader);
                 for (const auto &game : gameList)
-                    guard->game->addItem(game, game);
+                    if (guard->game->findData(game) < 0)
+                        guard->game->addItem(game, game);
                 for (const auto &loader : loaderList)
-                    guard->loader->addItem(loader, loader);
+                    if (guard->loader->findData(loader) < 0)
+                        guard->loader->addItem(loaderName(loader), loader);
             }
             guard->targetChanged();
         });
@@ -296,66 +467,252 @@ void ProjectView::open(const QJsonObject &input, const QJsonArray &list, const Q
 void ProjectView::targetChanged() {
     QSignalBlocker a(game), b(loader);
     if (value(project, "project_type") != s("modpack")) {
-        for (const auto &entry : builds) {
-            const auto build = entry.toObject();
-            if (value(build, "id") != target->currentData().toString())
-                continue;
-            game->setCurrentIndex(qMax(0, game->findData(baseGameVersion(build))));
-            loader->setCurrentIndex(value(project, "project_type") == s("mod")
-                                        ? qMax(0, loader->findData(value(build, "loader")))
-                                        : 0);
+        const auto build = selectedBuild();
+        if (!build.isEmpty()) {
+            const auto gameVersion = baseGameVersion(build), buildLoader = value(build, "loader");
+            // An incompatible target should still display its actual Minecraft/loader,
+            // instead of silently falling back to the misleading "All" filter.
+            if (game->findData(gameVersion) < 0)
+                game->addItem(gameVersion, gameVersion);
+            if (loader->findData(buildLoader) < 0)
+                loader->addItem(loaderName(buildLoader), buildLoader);
+            game->setCurrentIndex(game->findData(gameVersion));
+            loader->setCurrentIndex(
+                value(project, "project_type") == s("mod") ? loader->findData(buildLoader) : 0);
         }
     }
+    installationError.clear();
     filterVersions();
 }
 
 void ProjectView::filterVersions() {
     const auto previous = version->currentData().toString();
-    version->clear();
-    versionTable->setRowCount(0);
-    QJsonObject build;
-    for (const auto &entry : builds)
-        if (value(entry.toObject(), "id") == target->currentData().toString())
-            build = entry.toObject();
-    for (const auto &entry : allVersions) {
-        const auto v = entry.toObject();
-        const auto games = v.value(s("game_versions")).toArray(),
-                   loaders = v.value(s("loaders")).toArray();
-        if ((!game->currentData().toString().isEmpty() &&
-             !games.contains(game->currentData().toString())) ||
-            (!loader->currentData().toString().isEmpty() &&
-             !loaders.contains(loader->currentData().toString())) ||
-            !compatible(v, build, value(project, "project_type")))
-            continue;
-        const auto name = value(v, "version_number") + s(" · ") + value(v, "version_type");
-        version->addItem(name, value(v, "id"));
-        const auto row = versionTable->rowCount();
-        versionTable->insertRow(row);
-        cells(versionTable, row,
-              {name, strings(games).join(s(", ")), strings(loaders).join(s(", "))});
-        versionTable->setRowHeight(row, 52);
+    const auto build = selectedBuild();
+    {
+        QSignalBlocker a(version), b(versionTable);
+        version->clear();
+        versionTable->setRowCount(0);
+        QSet<QString> seen;
+        for (const auto &entry : allVersions) {
+            const auto v = entry.toObject();
+            const auto id = value(v, "id");
+            const auto games = v.value(s("game_versions")).toArray(),
+                       loaders = v.value(s("loaders")).toArray();
+            if (id.isEmpty() || seen.contains(id) ||
+                (!game->currentData().toString().isEmpty() &&
+                 !games.contains(game->currentData().toString())) ||
+                (!loader->currentData().toString().isEmpty() &&
+                 !loaders.contains(loader->currentData().toString())) ||
+                !compatible(v, build, value(project, "project_type")))
+                continue;
+            seen.insert(id);
+            const auto channel = channelName(v);
+            const auto name = versionName(v) + (channel.isEmpty() ? QString() : s(" · ") + channel);
+            version->addItem(name, id);
+            QStringList loaderNames;
+            for (const auto &loaderId : strings(loaders))
+                loaderNames << loaderName(loaderId);
+            QStringList details;
+            if (!games.isEmpty())
+                details << s("Minecraft ") + strings(games).join(s(", "));
+            if (!loaderNames.isEmpty())
+                details << loaderNames.join(s(", "));
+            const auto published = QDateTime::fromString(value(v, "date_published"), Qt::ISODate);
+            if (published.isValid())
+                details << published.toLocalTime().date().toString(s("dd.MM.yyyy"));
+            const auto subtitle = details.join(s(" · "));
+            const auto row = versionTable->rowCount();
+            versionTable->insertRow(row);
+            auto *item = new QTableWidgetItem(name + s("\n") + subtitle);
+            item->setData(VersionId, id);
+            item->setData(VersionTitle, name);
+            item->setData(VersionSubtitle, subtitle);
+            item->setToolTip(name + s("\n") + subtitle);
+            versionTable->setItem(row, 0, item);
+            auto *actionCell = new QWidget;
+            auto *rowLayout = new QHBoxLayout(actionCell);
+            rowLayout->setContentsMargins(4, 16, 12, 16);
+            auto *action = button(
+                tr("Установить"), rowLayout,
+                [this, id] {
+                    if (installing)
+                        return;
+                    selectVersion(id);
+                    if (version->currentData().toString() == id)
+                        installSelected();
+                },
+                this, true);
+            action->setObjectName(s("project-version-install-") + id);
+            action->setProperty("versionId", id);
+            action->setAccessibleName(tr("Установить версию %1").arg(name));
+            action->setToolTip(tr("Установить именно эту версию: %1").arg(name));
+            action->setFixedHeight(36);
+            action->setStyleSheet(
+                s("QPushButton {font-size:12px;padding:6px 10px;border-radius:10px;}"));
+            versionTable->setCellWidget(row, 1, actionCell);
+            versionTable->setRowHeight(row, 74);
+        }
+        const auto restored = version->findData(previous);
+        version->setCurrentIndex(restored >= 0 ? restored : (version->count() ? 0 : -1));
     }
-    if (version->findData(previous) >= 0)
-        version->setCurrentIndex(version->findData(previous));
-    install->setEnabled(version->count() > 0);
-    status->setText(version->count()
-                        ? tr("%1 доступных версий. Устанавливайте проекты, которым доверяете.")
-                              .arg(version->count())
-                        : tr("Совместимых версий нет. Выберите другую версию Minecraft, загрузчик "
-                             "или сборку."));
+    selectVersion(version->currentData().toString());
+    updateActions();
 }
 
 void ProjectView::installSelected() {
-    if (version->currentIndex() < 0)
+    if (installing || !actionBlockedReason.isEmpty() || projectLoading || versionsLoading ||
+        !projectError.isEmpty() || !versionsError.isEmpty() || version->currentIndex() < 0)
         return;
     const bool pack = value(project, "project_type") == s("modpack");
-    install->setEnabled(false);
-    status->setText(tr("Установка началась. Ход операции — справа сверху."));
-    emit installRequested(value(project, "id"), version->currentData().toString(),
+    const auto id = version->currentData().toString();
+    const auto build = selectedBuild();
+    bool allowed = false;
+    for (const auto &entry : allVersions)
+        if (value(entry.toObject(), "id") == id &&
+            compatible(entry.toObject(), build, value(project, "project_type"))) {
+            allowed = true;
+            break;
+        }
+    if (!allowed || value(project, "id").isEmpty() || (!pack && build.isEmpty()))
+        return;
+    setInstalling(true);
+    emit installRequested(value(project, "id"), id,
                           pack ? QString() : target->currentData().toString(), pack);
 }
 void ProjectView::setInstalling(bool active) {
-    install->setEnabled(!active && version->count() > 0);
-    if (!active)
-        filterVersions();
+    if (installing == active)
+        return;
+    installing = active;
+    installationError.clear();
+    updateActions();
+}
+
+void ProjectView::setInstallationError(const QString &message) {
+    installing = false;
+    installationError =
+        message.isEmpty() ? tr("Не удалось установить проект. Повторите попытку.") : message;
+    updateActions();
+}
+
+void ProjectView::setActionBlockedReason(const QString &reason) {
+    if (actionBlockedReason == reason)
+        return;
+    actionBlockedReason = reason;
+    updateActions();
+}
+
+QJsonObject ProjectView::selectedBuild() const {
+    for (const auto &entry : builds)
+        if (value(entry.toObject(), "id") == target->currentData().toString())
+            return entry.toObject();
+    return {};
+}
+
+void ProjectView::selectVersion(const QString &id) {
+    const auto index = version->findData(id);
+    QSignalBlocker a(version), b(versionTable);
+    version->setCurrentIndex(index);
+    for (int row = 0; row < versionTable->rowCount(); ++row)
+        if (versionTable->item(row, 0)->data(VersionId).toString() == id) {
+            versionTable->setCurrentCell(row, 0);
+            return;
+        }
+    versionTable->clearSelection();
+    versionTable->setCurrentCell(-1, -1);
+}
+
+void ProjectView::updateActions() {
+    const bool loading = projectLoading || versionsLoading;
+    const auto loadError = !versionsError.isEmpty() ? versionsError : projectError;
+    const bool ready = !loading && loadError.isEmpty();
+    const bool canInstall =
+        ready && !installing && actionBlockedReason.isEmpty() && version->currentIndex() >= 0 &&
+        (value(project, "project_type") == s("modpack") || !selectedBuild().isEmpty());
+    install->setEnabled(canInstall);
+    install->setText(installing && actionBlockedReason.isEmpty() ? tr("Устанавливаем…")
+                                                                 : tr("Установить"));
+    for (auto *control : {target, game, loader, version})
+        control->setEnabled(ready && !installing && control->count() > 0);
+    versionTable->setEnabled(!installing);
+    for (auto *action : versionTable->findChildren<QPushButton *>())
+        if (action->property("versionId").isValid())
+            action->setEnabled(canInstall);
+    retry->setVisible(!loading && !loadError.isEmpty());
+    retry->setEnabled(!installing);
+    versionCount->setText(loading                ? tr("Загружаем версии…")
+                          : !loadError.isEmpty() ? tr("Версии недоступны")
+                                                 : tr("Доступно версий: %1").arg(version->count()));
+    if (loading) {
+        emptyTitle->setText(tr("Загружаем версии"));
+        emptyText->setText(tr("Получаем данные проекта с Modrinth…"));
+    } else if (!loadError.isEmpty()) {
+        emptyTitle->setText(tr("Не удалось загрузить проект"));
+        emptyText->setText(loadError);
+    } else if (value(project, "project_type") != s("modpack") && target->count() == 0) {
+        emptyTitle->setText(tr("Сначала добавьте сборку"));
+        emptyText->setText(tr("Моды, ресурспаки и шейдеры устанавливаются в выбранную сборку. "
+                              "Создайте или установите её в библиотеке."));
+    } else {
+        emptyTitle->setText(tr("Нет совместимых версий"));
+        emptyText->setText(
+            tr("Измените фильтры Minecraft и загрузчика или выберите другую сборку."));
+    }
+    versionPages->setCurrentIndex(ready && version->count() > 0 ? 0 : 1);
+    if (!actionBlockedReason.isEmpty())
+        status->setText(actionBlockedReason);
+    else if (installing)
+        status->setText(tr("Установка выполняется. Прогресс и отмена — справа сверху."));
+    else if (!installationError.isEmpty())
+        status->setText(installationError);
+    else if (!loadError.isEmpty())
+        status->setText(loadError);
+    else if (loading)
+        status->setText(tr("Загружаем данные проекта…"));
+    else if (version->count())
+        status->setText(tr("Выберите версию здесь или установите её прямо из списка «Версии»."));
+    else
+        status->setText(emptyText->text());
+    status->setStyleSheet(actionBlockedReason.isEmpty() &&
+                                  (!installationError.isEmpty() || !loadError.isEmpty())
+                              ? s("color:#ef96b0;")
+                              : QString());
+    arrangeColumns();
+}
+
+void ProjectView::resizeEvent(QResizeEvent *event) {
+    QWidget::resizeEvent(event);
+    arrangeColumns();
+}
+
+void ProjectView::arrangeColumns() {
+    const bool compact = width() < 840;
+    if (installLayout->count() == 0 || narrow != compact) {
+        narrow = compact;
+        while (auto *item = installLayout->takeAt(0))
+            delete item;
+        for (int row = 0; row < 8; ++row)
+            installLayout->setRowStretch(row, 0);
+        installLayout->addWidget(installTitle, 0, 0, 1, 2);
+        installLayout->addWidget(targetField, 1, 0, 1, 2);
+        installLayout->addWidget(gameField, 2, 0, 1, narrow ? 1 : 2);
+        installLayout->addWidget(loaderField, narrow ? 2 : 3, narrow ? 1 : 0, 1, narrow ? 1 : 2);
+        installLayout->addWidget(versionField, narrow ? 3 : 4, 0, 1, narrow ? 1 : 2);
+        installLayout->addWidget(install, narrow ? 3 : 5, narrow ? 1 : 0, 1, narrow ? 1 : 2,
+                                 Qt::AlignBottom);
+        installLayout->addWidget(status, narrow ? 4 : 6, 0, 1, 2);
+        if (!narrow)
+            installLayout->setRowStretch(7, 1);
+        columns->removeWidget(leftColumn);
+        columns->removeWidget(installScroll);
+        columns->setDirection(narrow ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+        columns->addWidget(narrow ? static_cast<QWidget *>(installScroll) : leftColumn,
+                           narrow ? 0 : 1);
+        columns->addWidget(narrow ? leftColumn : static_cast<QWidget *>(installScroll),
+                           narrow ? 1 : 0);
+        installScroll->setMinimumSize(narrow ? QSize(0, 0) : QSize(270, 0));
+        installScroll->setMaximumSize(narrow ? QSize(QWIDGETSIZE_MAX, 300)
+                                             : QSize(270, QWIDGETSIZE_MAX));
+    }
+    if (narrow)
+        installScroll->setFixedHeight(qBound(180, installPanel->sizeHint().height(), 300));
 }

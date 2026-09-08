@@ -643,13 +643,28 @@ impl Storage {
         account_id: &str,
         skin_id: &str,
     ) -> Result<Option<OfflineSkin>, LauncherError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
         let row = sqlx::query("DELETE FROM offline_skins WHERE account_id=? AND id=? RETURNING id,account_id,name,file_path,is_active,is_favorite")
             .bind(account_id)
             .bind(skin_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
-        row.map(skin_from_row).transpose()
+        let removed = row.map(skin_from_row).transpose()?;
+        if removed.as_ref().is_some_and(|skin| skin.is_active) {
+            sqlx::query("UPDATE offline_skins SET is_active=1 WHERE id=(SELECT id FROM offline_skins WHERE account_id=? ORDER BY created_at DESC,id LIMIT 1)")
+                .bind(account_id).execute(&mut *transaction).await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        Ok(removed)
     }
 
     pub async fn update_offline_skin(
@@ -1101,6 +1116,43 @@ mod tests {
                 .await
                 .expect("lists skins")
                 .is_empty());
+        });
+    }
+
+    #[test]
+    fn deleting_active_skin_selects_remaining_skin_and_preserves_favorite_metadata() {
+        crate::tasks::block_on(async {
+            let storage = Storage::connect("sqlite::memory:").await.unwrap();
+            storage
+                .upsert_account(&account("account-one", "Player", true))
+                .await
+                .unwrap();
+            let first = OfflineSkin {
+                id: "skin-one".to_owned(),
+                account_id: "account-one".to_owned(),
+                name: "Favorite name".to_owned(),
+                file_path: "one.png".to_owned(),
+                is_active: true,
+                is_favorite: true,
+            };
+            storage.add_offline_skin(&first).await.unwrap();
+            let mut second = first.clone();
+            second.id = "skin-two".to_owned();
+            second.is_favorite = false;
+            storage.add_offline_skin(&second).await.unwrap();
+            storage
+                .delete_offline_skin("account-one", "skin-two")
+                .await
+                .unwrap();
+            assert_eq!(
+                storage.list_offline_skins("account-one").await.unwrap(),
+                vec![first]
+            );
+            assert!(storage
+                .select_offline_skin("account-one", "missing")
+                .await
+                .is_err());
+            assert!(storage.list_offline_skins("account-one").await.unwrap()[0].is_active);
         });
     }
 

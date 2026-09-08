@@ -103,14 +103,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test-native.py 'dist/${{ matrix.channel }}' build/qt-smoke.png
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ck-launcher-qt-${{ matrix.channel }}-windows-x64
-          path: |
-            dist/${{ matrix.channel }}/
-            build/qt-smoke.png
-            build/qt/ui-screenshots/
-          if-no-files-found: error
       - name: Create release packages
         shell: pwsh
         run: |
@@ -120,10 +112,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build/installer-theme -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Compress-Archive -Path 'dist/${{ matrix.channel }}/*' -DestinationPath 'ck-launcher-qt-${{ matrix.channel }}-windows-x64.zip' -CompressionLevel Optimal
           choco install nsis --no-progress -y
-          & 'C:/Program Files (x86)/NSIS/makensis.exe' /INPUTCHARSET UTF8 "/DTHEME_PLUGIN_DIR=$((Resolve-Path 'build/installer-theme/Release').Path)" "/DPACKAGE=$((Resolve-Path 'dist/${{ matrix.channel }}').Path)" "/DOUTFILE=$((Resolve-Path '.').Path)/ck-launcher-qt-${{ matrix.channel }}-windows-x64-setup.exe" scripts/native-installer.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-native-installer.py 'C:/Program Files (x86)/NSIS/makensis.exe' 'build/installer-theme/Release'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/build-native-installer.ps1 -PackageRoot "dist/${{ matrix.channel }}" -Makensis 'C:/Program Files (x86)/NSIS/makensis.exe' -ThemePluginDir "$((Resolve-Path 'build/installer-theme/Release').Path)" -OutFile "ck-launcher-qt-${{ matrix.channel }}-windows-x64-setup.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path 'dist/${{ matrix.channel }}/*' -DestinationPath 'ck-launcher-qt-${{ matrix.channel }}-windows-x64.zip' -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ck-launcher-qt-${{ matrix.channel }}-windows-x64
+          path: |
+            dist/${{ matrix.channel }}/
+            build/qt-smoke.png
+            build/qt/ui-screenshots/
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.channel }}
