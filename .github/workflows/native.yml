@@ -111,15 +111,13 @@ jobs:
             build/qt-smoke.png
             build/qt/ui-screenshots/
           if-no-files-found: error
-      - name: Create update archive
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create release packages
         shell: pwsh
         run: |
           Compress-Archive -Path 'dist/${{ matrix.channel }}/*' -DestinationPath 'ck-launcher-qt-${{ matrix.channel }}-windows-x64.zip' -CompressionLevel Optimal
           choco install nsis --no-progress -y
           & 'C:/Program Files (x86)/NSIS/makensis.exe' "/DPACKAGE=$((Resolve-Path 'dist/${{ matrix.channel }}').Path)" "/DOUTFILE=$((Resolve-Path '.').Path)/ck-launcher-qt-${{ matrix.channel }}-windows-x64-setup.exe" scripts/native-installer.nsi
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           name: release-${{ matrix.channel }}
           path: |
