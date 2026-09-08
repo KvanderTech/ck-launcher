@@ -1,242 +1,259 @@
-#include "widgets.h"
 #include "window.h"
-#include <QPointer>
 QWidget *LauncherWindow::settingsPage() {
     auto *page = new QWidget;
-    auto *layout = pageLayout(page, tr("Всё под контролем"),
-                              tr("Лаунчер подбирает Java по требованиям версии игры. Путь и память "
-                                 "можно настроить вручную."));
-    auto *memoryRow = new QHBoxLayout;
-    layout->addLayout(memoryRow);
-    memoryRow->addWidget(new QLabel(tr("Память для игры")));
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(76, 44, 76, 24);
+    layout->setSpacing(20);
+    layout->addWidget(label(tr("Настройки"), "heading"));
+    auto *columns = new QHBoxLayout;
+    columns->setSpacing(16);
+    auto *left = new QVBoxLayout;
+    left->setSpacing(12);
+    auto *ram = panel();
+    ram->setMaximumWidth(360);
+    ram->setMinimumWidth(280);
+    auto *r = new QVBoxLayout(ram);
+    r->setContentsMargins(18, 18, 18, 18);
+    r->setSpacing(12);
+    r->addWidget(label(tr("Оперативная память"), "strong"));
     memory = new QSpinBox;
+    memory->setObjectName(s("memory"));
     memory->setRange(1024, 65536);
     memory->setSingleStep(512);
     memory->setSuffix(tr(" МБ"));
-    memoryRow->addWidget(memory);
-    button(
-        tr("Сохранить"), memoryRow,
+    memory->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    r->addWidget(memory);
+    memorySlider = new QSlider(Qt::Horizontal);
+    memorySlider->setRange(1024, 65536);
+    memorySlider->setSingleStep(512);
+    memorySlider->setPageStep(1024);
+    r->addWidget(memorySlider);
+    auto *save = button(
+        tr("Сохранить"), r,
         [this] {
+            const auto requested = memory->value();
             call(
-                s("update_profile_memory"), {{s("memoryMb"), memory->value()}},
-                [this](const QJsonValue &v) {
+                s("update_profile_memory"), {{s("memoryMb"), requested}},
+                [this, requested](const QJsonValue &v) {
                     profile = v.toObject();
-                    memory->setValue(profile.value(s("memoryMb")).toInt());
+                    if (memory->value() == requested)
+                        findChild<QPushButton *>(s("save-memory"))->hide();
                 },
                 true);
         },
         this);
-    memoryRow->addStretch();
-    javaTable = table({tr("Java"), tr("Состояние"), tr("Путь")}, layout);
-    auto *javaActions = new QHBoxLayout;
-    layout->addLayout(javaActions);
-    for (const auto &pair :
-         QList<QPair<QString, QString>>{{tr("Найти"), s("detect_runtime")},
-                                        {tr("Установить"), s("install_runtime")},
-                                        {tr("Выбрать java.exe"), s("choose_runtime_path")}})
-        button(
-            pair.first, javaActions,
-            [this, method = pair.second] {
-                int row = javaTable->currentRow();
-                if (row < 0)
-                    return;
-                const int major = javaTable->item(row, 0)->data(Qt::UserRole).toInt();
-                call(
-                    method, {{s("requirement"), major}},
-                    [this](const QJsonValue &) { refreshRuntimes(); }, true);
-            },
-            this);
+    save->setObjectName(s("save-memory"));
+    save->hide();
+    connect(memory, qOverload<int>(&QSpinBox::valueChanged), this, [this, save](int n) {
+        QSignalBlocker blocker(memorySlider);
+        memorySlider->setValue(n);
+        save->setVisible(n != profile.value(s("memoryMb")).toInt());
+    });
+    connect(memorySlider, &QSlider::valueChanged, this, [this](int n) {
+        const int step = memory->singleStep();
+        memory->setValue(
+            qBound(memory->minimum(), (n + step / 2) / step * step, memory->maximum()));
+    });
+    left->addWidget(ram);
+    auto *directory = panel();
+    auto *d = new QVBoxLayout(directory);
+    d->setContentsMargins(18, 18, 18, 18);
+    d->setSpacing(12);
+    d->addWidget(label(tr("Папка игры"), "strong"));
+    gameDirectory = label(QString(), "mutedSmall");
+    gameDirectory->setWordWrap(true);
+    gameDirectory->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    gameDirectory->setMaximumWidth(322);
+    d->addWidget(gameDirectory);
     button(
-        tr("Обновить версии"), javaActions,
-        [this] {
-            loadVersions();
-            refreshRuntimes();
-        },
-        this);
-    auto *options = new QHBoxLayout;
-    layout->addLayout(options);
-    button(
-        tr("Папка игры…"), options,
+        tr("Выбрать папку игры"), d,
         [this] {
             call(
                 s("choose_game_directory"), {},
                 [this](const QJsonValue &v) {
-                    if (v.isObject())
+                    if (v.isObject()) {
                         profile = v.toObject();
+                        gameDirectory->setText(value(profile, "gameDir"));
+                        refreshLibrary();
+                    }
                 },
                 true);
         },
         this);
+    left->addWidget(directory);
+    auto *updates = panel();
+    auto *u = new QVBoxLayout(updates);
+    u->setContentsMargins(18, 18, 18, 18);
+    u->setSpacing(10);
+    u->addWidget(label(tr("Обновление лаунчера"), "strong"));
+    updateStatus = label(tr("Готово к проверке"), "mutedSmall");
+    updateStatus->setWordWrap(true);
+    u->addWidget(updateStatus);
     button(
-        tr("Отменить загрузку"), options,
+        tr("Проверить обновления"), u,
         [this] {
-            core->request(s("cancel_content_operation"));
-            if (!operationId.isEmpty())
-                core->request(s("cancel_operation"), {{s("operationId"), operationId}});
-            message(tr("Отмена запрошена…"));
-        },
-        this);
-    auto *updateActions = new QHBoxLayout;
-    layout->addLayout(updateActions);
-    button(
-        tr("Проверить обновление"), updateActions,
-        [this] {
-            call(s("check_update"), {}, [this](const QJsonValue &v) {
-                const auto u = v.toObject();
-                if (!u.value(s("available")).toBool()) {
-                    message(tr("Установлена актуальная версия этого канала."));
+            updateStatus->setText(tr("Проверяем…"));
+            core->request(s("check_update"), {}, [this](const QJsonValue &v, const QJsonObject &e) {
+                if (!e.isEmpty()) {
+                    updateStatus->setText(value(e, "message"));
                     return;
                 }
+                const auto update = v.toObject();
+                if (!update.value(s("available")).toBool()) {
+                    updateStatus->setText(tr("Установлена актуальная версия"));
+                    return;
+                }
+                updateStatus->setText(tr("Доступна версия %1").arg(value(update, "version")));
                 QMessageBox info(this);
                 info.setWindowTitle(tr("Доступно обновление"));
                 info.setTextFormat(Qt::PlainText);
                 info.setText(tr("Версия %1\n%2\n\nОткрыть страницу выпуска?")
-                                 .arg(value(u, "version"), value(u, "notes")));
+                                 .arg(value(update, "version"), value(update, "notes")));
                 info.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
                 if (info.exec() == QMessageBox::Yes)
-                    call(s("open_release_page"), {{s("url"), value(u, "url")}});
+                    call(s("open_release_page"), {{s("url"), value(update, "url")}});
             });
         },
         this);
-    button(
-        tr("Страница проекта"), updateActions,
-        [this] {
-            call(s("open_external_url"),
-                 {{s("url"), s("https://github.com/KvanderTech/ck-launcher")}});
-        },
-        this);
-    updateActions->addStretch();
-    auto *note =
-        new QLabel(tr("Данные прежней версии используются автоматически. Перед обновлением базы "
-                      "создаётся резервная копия.\nWindows 7/8.1 используют отдельную сборку "
-                      "Legacy на Qt 5; доступность игры зависит также от Java и видеодрайвера."));
-    note->setWordWrap(true);
-    note->setProperty("muted", true);
-    layout->addWidget(note);
-    return page;
+    left->addWidget(updates);
+    auto *appearance = panel();
+    auto *a = new QVBoxLayout(appearance);
+    a->setContentsMargins(18, 18, 18, 18);
+    a->addWidget(label(tr("Внешний вид"), "strong"));
+    auto *motion = new QCheckBox(tr("Плавные анимации"));
+    motion->setObjectName(s("motion-setting"));
+    motion->setChecked(QSettings().value(s("motion"), true).toBool());
+    a->addWidget(motion);
+    connect(motion, &QCheckBox::toggled, this, [this](bool enabled) {
+        QSettings().setValue(s("motion"), enabled);
+        qApp->setProperty("reduceMotion", !enabled);
+        background->setMotion(enabled);
+        skinPreview->setAnimated(enabled);
+    });
+    left->addWidget(appearance);
+    left->addStretch();
+    columns->addLayout(left, 36);
+    auto *java = panel();
+    auto *j = new QVBoxLayout(java);
+    j->setContentsMargins(18, 18, 18, 18);
+    j->setSpacing(12);
+    auto *heading = new QHBoxLayout;
+    heading->addWidget(label(tr("Установки Java"), "strong"), 1);
+    auto *refresh = iconButton(s("dots"), tr("Обновить установки Java и версии Minecraft"));
+    refresh->setFixedSize(24, 24);
+    refresh->setIconSize(QSize(18, 18));
+    connect(refresh, &QPushButton::clicked, this, [this] {
+        refreshRuntimes();
+        loadVersions();
+    });
+    heading->addWidget(refresh);
+    j->addLayout(heading);
+    auto *hint =
+        label(tr("Лаунчер подберёт подходящую Java для выбранной версии игры."), "mutedSmall");
+    hint->setWordWrap(true);
+    j->addWidget(hint);
+    runtimeRows = new QVBoxLayout;
+    runtimeRows->setSpacing(10);
+    j->addLayout(runtimeRows);
+    columns->addWidget(java, 66, Qt::AlignTop);
+    layout->addLayout(columns);
+    layout->addStretch();
+    return scrollPage(page);
 }
 void LauncherWindow::refreshRuntimes() {
-    call(s("runtime_statuses"), {}, [this](const QJsonValue &v) {
-        auto list = v.toArray();
-        javaTable->setRowCount(list.size());
-        for (int r = 0; r < list.size(); ++r) {
-            auto j = list[r].toObject();
-            int major = j.value(s("requirement")).toInt();
-            auto state = value(j, "state");
-            cells(javaTable, r,
-                  {QString::number(major),
-                   state == s("valid")     ? tr("Готова")
-                   : state == s("missing") ? tr("Не найдена")
-                                           : tr("Требует проверки"),
-                   value(j, "path")});
-            javaTable->item(r, 0)->setData(Qt::UserRole, major);
+    core->request(s("runtime_statuses"), {}, [this](const QJsonValue &v, const QJsonObject &e) {
+        clearLayout(runtimeRows);
+        if (!e.isEmpty()) {
+            auto *hint = label(value(e, "message"), "muted");
+            hint->setWordWrap(true);
+            runtimeRows->addWidget(hint);
+            return;
         }
-        if (javaTable->currentRow() < 0 && !list.isEmpty())
-            javaTable->selectRow(0);
-    });
-}
-void LauncherWindow::browseFiles() {
-    if (selectedBuild.isEmpty())
-        return;
-    const auto build = selectedBuild;
-    auto *dialog = new QDialog(this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(tr("Файлы сборки"));
-    dialog->resize(760, 540);
-    auto *layout = new QVBoxLayout(dialog);
-    auto *path = new QLineEdit;
-    path->setPlaceholderText(tr("Путь внутри сборки, например saves"));
-    layout->addWidget(path);
-    auto *files = table({tr("Имя"), tr("Тип"), tr("Размер, байт")}, layout);
-    auto refresh = [this, dialog, files, path, build] {
-        QPointer<QDialog> guard(dialog);
-        core->request(s("list_build_files"),
-                      {{s("buildId"), build}, {s("relativePath"), path->text()}},
-                      [this, guard, files](const QJsonValue &v, const QJsonObject &e) {
-                          if (!guard)
-                              return;
-                          if (!e.isEmpty()) {
-                              message(value(e, "message"), true);
-                              return;
-                          }
-                          auto list = v.toArray();
-                          files->setRowCount(list.size());
-                          for (int r = 0; r < list.size(); ++r) {
-                              auto f = list[r].toObject();
-                              cells(files, r,
-                                    {value(f, "name"), value(f, "kind"),
-                                     QString::number(f.value(s("size")).toDouble(), 'f', 0)});
-                              files->item(r, 0)->setData(Qt::UserRole, f);
-                          }
-                      });
-    };
-    connect(path, &QLineEdit::returnPressed, dialog, refresh);
-    connect(files, &QTableWidget::cellDoubleClicked, dialog, [files, path, refresh](int row, int) {
-        auto item = files->item(row, 0)->data(Qt::UserRole).toJsonObject();
-        if (value(item, "kind") == s("directory")) {
-            path->setText(value(item, "relativePath"));
-            refresh();
+        for (const auto &item : v.toArray()) {
+            const auto runtime = item.toObject();
+            const auto major = runtime.value(s("requirement")).toInt();
+            const auto state = value(runtime, "state");
+            auto *card = panel(s("inset"));
+            auto *layout = new QVBoxLayout(card);
+            layout->setContentsMargins(12, 12, 12, 12);
+            layout->setSpacing(10);
+            auto *head = new QHBoxLayout;
+            head->addWidget(label(tr("Java %1").arg(major), "strong"), 1);
+            auto *badge = label(state == s("valid")     ? tr("Готова")
+                                : state == s("missing") ? tr("Не установлена")
+                                                        : tr("Не подходит"),
+                                "statusBadge");
+            badge->setProperty("valid", state == s("valid"));
+            head->addWidget(badge);
+            layout->addLayout(head);
+            auto *path = new QLineEdit(value(runtime, "path"));
+            path->setReadOnly(true);
+            path->setToolTip(value(runtime, "path"));
+            path->setPlaceholderText(tr("Выберите или установите Java"));
+            layout->addWidget(path);
+            auto *actions = new QHBoxLayout;
+            for (const auto &pair :
+                 QList<QPair<QString, QString>>{{tr("Найти"), s("detect_runtime")},
+                                                {tr("Выбрать"), s("choose_runtime_path")},
+                                                {tr("Установить"), s("install_runtime")}}) {
+                auto *b = button(
+                    pair.first, actions,
+                    [this, major, method = pair.second] {
+                        call(
+                            method, {{s("requirement"), major}},
+                            [this](const QJsonValue &) { refreshRuntimes(); }, true);
+                    },
+                    this);
+                b->setProperty("compact", true);
+                b->setObjectName(pair.second + s("-") + QString::number(major));
+            }
+            actions->addStretch();
+            layout->addLayout(actions);
+            runtimeRows->addWidget(card);
         }
     });
-    auto *actions = new QHBoxLayout;
-    layout->addLayout(actions);
-    button(tr("Обновить"), actions, refresh, dialog);
-    button(
-        tr("В корень"), actions,
-        [path, refresh] {
-            path->clear();
-            refresh();
-        },
-        dialog);
-    button(
-        tr("Показать в Проводнике"), actions,
-        [this, build, files, path] {
-            auto relative = path->text();
-            if (files->currentRow() >= 0)
-                relative =
-                    value(files->item(files->currentRow(), 0)->data(Qt::UserRole).toJsonObject(),
-                          "relativePath");
-            call(s("open_build_path"), {{s("buildId"), build}, {s("relativePath"), relative}});
-        },
-        dialog);
-    refresh();
-    dialog->show();
 }
 QWidget *LauncherWindow::logsPage() {
     auto *page = new QWidget;
-    auto *layout = pageLayout(page, tr("Что происходит с игрой"),
-                              tr("Показывается ограниченный фрагмент журнала. Типичные токены "
-                                 "авторизации скрываются перед выводом и экспортом."));
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(12);
     auto *actions = new QHBoxLayout;
-    layout->addLayout(actions);
     logFiles = new QComboBox;
     actions->addWidget(logFiles, 1);
     button(tr("Обновить"), actions, [this] { showLogs(); }, this);
     button(
-        tr("Экспорт…"), actions,
+        tr("Сохранить журнал"), actions,
         [this] {
             auto name = QFileDialog::getSaveFileName(this, tr("Сохранить журнал"),
                                                      s("minecraft-log.txt"), tr("Текст (*.txt)"));
             if (name.isEmpty())
                 return;
             QSaveFile file(name);
-            if (!file.open(QIODevice::WriteOnly) ||
-                file.write(logText->toPlainText().toUtf8()) < 0 || !file.commit())
+            const auto data = logText->toPlainText().toUtf8();
+            if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() ||
+                !file.commit())
                 message(tr("Не удалось сохранить журнал."), true);
         },
         this);
+    layout->addLayout(actions);
     logText = new QPlainTextEdit;
     logText->setReadOnly(true);
     logText->setMaximumBlockCount(15000);
+    logText->setMinimumHeight(330);
     layout->addWidget(logText, 1);
     connect(logFiles, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
         if (index < 0)
             return;
-        const auto path = logFiles->currentData().toString();
+        const auto path = logFiles->currentData().toString(), build = selectedBuild;
+        logText->clear();
         call(path.isEmpty() ? s("read_latest_game_log") : s("read_build_log"),
              path.isEmpty() ? QJsonObject{}
-                            : QJsonObject{{s("buildId"), selectedBuild}, {s("relativePath"), path}},
-             [this](const QJsonValue &v) { logText->setPlainText(v.toString()); });
+                            : QJsonObject{{s("buildId"), build}, {s("relativePath"), path}},
+             [this, build, path](const QJsonValue &v) {
+                 if (build == selectedBuild && path == logFiles->currentData().toString())
+                     logText->setPlainText(v.toString());
+             });
     });
     return page;
 }
@@ -250,8 +267,8 @@ void LauncherWindow::showLogs() {
         if (build != selectedBuild)
             return;
         for (const auto &item : v.toArray()) {
-            auto f = item.toObject();
-            logFiles->addItem(value(f, "name"), value(f, "relativePath"));
+            const auto file = item.toObject();
+            logFiles->addItem(value(file, "name"), value(file, "relativePath"));
         }
     });
 }

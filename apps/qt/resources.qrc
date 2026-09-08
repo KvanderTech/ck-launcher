@@ -1,1 +1,8 @@
-<RCC><qresource prefix="/assets"><file alias="logo.png">../../app/src/assets/logo-transparent.png</file><file alias="theme.qss">src/theme.qss</file></qresource></RCC>
+<RCC><qresource prefix="/assets">
+<file alias="logo.png">../../app/src/assets/logo-transparent.png</file>
+<file alias="bg-1.jpg">../../app/src/assets/bg-1.jpg</file>
+<file alias="bg-2.jpg">../../app/src/assets/bg-2.jpg</file>
+<file alias="bg-3.jpg">../../app/src/assets/bg-3.jpg</file>
+<file alias="home-render.png">../../app/src/assets/home-render.png</file>
+<file alias="theme.qss">src/theme.qss</file>
+</qresource></RCC>

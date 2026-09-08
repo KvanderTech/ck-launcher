@@ -1,77 +1,98 @@
 #pragma once
 #include "backend.h"
-#include <QJsonArray>
-#include <QMainWindow>
-class QListWidget;
-class QStackedWidget;
-class QLabel;
-class QPushButton;
-class QTableWidget;
-class QProgressBar;
-class QLineEdit;
-class QComboBox;
-class QSpinBox;
-class QPlainTextEdit;
-class QCloseEvent;
+#include "skinview.h"
+#include "ui.h"
 class LauncherWindow final : public QMainWindow {
     Q_OBJECT
   public:
     explicit LauncherWindow(Backend *core, QWidget *parent = nullptr);
     void importPack(const QString &path = {});
     void initialize();
+    void showPage(const QString &name);
 
   protected:
-    void closeEvent(QCloseEvent *event) override;
-
+    void closeEvent(QCloseEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
+#ifdef Q_OS_WIN
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    bool nativeEvent(const QByteArray &, void *, qintptr *) override;
+#else
+    bool nativeEvent(const QByteArray &, void *, long *) override;
+#endif
+#endif
   private:
     Backend *core;
-    QListWidget *navigation;
-    QStackedWidget *pages;
-    QLabel *status;
-    QLabel *accountLabel;
-    QLabel *libraryHint;
-    QLabel *catalogStatus;
-    QPushButton *play;
-    QPushButton *stop;
+    ImagePool *images;
+    Backdrop *background;
+    QStackedWidget *pages, *skinPages, *detailSections;
+    QVector<QPushButton *> navigation;
+    QHBoxLayout *catalogBuilds;
+    QVBoxLayout *sidebarBuilds, *catalogRows, *contentRows, *capeRows, *runtimeRows, *worldRows;
+    CardGrid *libraryCards, *skinCards;
+    QFrame *activity = nullptr;
+    QLabel *status, *activityTitle, *libraryHint, *catalogStatus, *skinStatus, *previewName,
+        *detailName, *gameDirectory, *updateStatus;
+    QPushButton *accountButton, *play, *stop, *detailPlay, *addSkinButton;
     QProgressBar *progress;
-    QTableWidget *buildsTable;
-    QTableWidget *installedTable;
-    QTableWidget *catalogTable;
-    QTableWidget *accountsTable;
-    QTableWidget *skinsTable;
-    QLineEdit *searchText;
-    QComboBox *searchType;
-    QComboBox *versionFilter;
+    QLineEdit *searchText, *skinSearch, *filePath;
+    QComboBox *versionFilter, *loaderFilter, *categoryFilter, *sortFilter, *buildFilter,
+        *skinVariant, *logFiles;
+    QCheckBox *hideInstalled, *favoriteSkins;
     QSpinBox *memory;
-    QTableWidget *javaTable;
+    QSlider *memorySlider;
     QPlainTextEdit *logText;
-    QComboBox *logFiles;
+    QTableWidget *filesTable;
+    SkinView *skinPreview;
+    Picture *detailIcon;
     QJsonArray builds, installed, catalog, accounts, skins, versions;
-    QJsonObject profile;
-    QString selectedBuild, selectedAccount, operationId;
-    bool running = false;
-    bool closing = false;
-    bool busy = false;
-    int catalogOffset = 0;
-    quint64 catalogRequest = 0;
-    void call(const QString &method, const QJsonObject &params = {},
-              std::function<void(const QJsonValue &)> done = {}, bool mutation = false);
+    QJsonObject profile, cosmetics;
+    QString selectedBuild, selectedAccount, selectedSkin, operationId,
+        catalogKind = QStringLiteral("modpack"), contentKind;
+    bool running = false, closing = false, busy = false, ready = false, signingIn = false,
+         cosmeticPending = false;
+    int currentPage = 0, catalogOffset = 0;
+    quint64 catalogRequest = 0, skinRequest = 0;
+    QSet<QString> completedOperations;
+    qint64 cosmeticsLoadedAt = 0;
+    void call(const QString &, const QJsonObject & = {},
+              std::function<void(const QJsonValue &)> = {}, bool mutation = false);
+    void navigate(int page);
+    void message(const QString &, bool error = false);
     void refreshLibrary();
-    void refreshAccounts();
-    void refreshRuntimes();
+    void renderLibrary();
     void refreshContent();
+    void renderContent();
+    void refreshAccounts();
+    void refreshSkins();
+    void renderSkins();
+    void renderCapes();
+    void updateSkinPreview();
+    void refreshRuntimes();
     void loadVersions();
     void searchCatalog();
-    void refreshSkins();
+    void renderCatalog();
     void createBuild();
+    void openBuild(const QString &id);
+    void buildSettings();
     void launch();
-    void projectDetails();
+    void updatePlayState();
+    void cancel();
+    void accountMenu();
+    void signIn();
+    void addSkin();
+    void skinAction(const QString &, const QJsonObject &);
+    void projectDetails(const QJsonObject &project);
+    void installCatalog(const QJsonObject &project);
     void browseFiles();
+    void refreshFiles();
+    void refreshWorlds();
     void showLogs();
-    void installCatalog();
+    void addLocalContent();
     QJsonObject currentBuild() const;
-    void message(const QString &text, bool error = false);
+    QJsonObject currentAccount() const;
+    QWidget *homePage();
     QWidget *libraryPage();
+    QWidget *detailPage();
     QWidget *catalogPage();
     QWidget *accountsPage();
     QWidget *settingsPage();

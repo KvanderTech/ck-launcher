@@ -26,6 +26,15 @@ else { $deployArguments += @('--no-angle', '--no-opengl-sw', '--no-system-d3d-co
 $deployArguments += (Join-Path $packageRoot 'ck-launcher-qt.exe')
 & (Join-Path $QtBin 'windeployqt.exe') @deployArguments
 if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+# Only ship formats the UI accepts. WebP is supplied by Qt Image Formats.
+$imageRoot = Join-Path $packageRoot 'imageformats'
+$imagePlugins = @('qgif.dll','qico.dll','qjpeg.dll','qwebp.dll')
+foreach ($plugin in $imagePlugins) {
+    if (!(Test-Path -LiteralPath (Join-Path $imageRoot $plugin))) { throw "Missing image plugin: $plugin" }
+}
+Get-ChildItem -LiteralPath $imageRoot -File | Where-Object { $_.Name -notin $imagePlugins } | ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Force
+}
 # Headless smoke tests must use a shipped plugin, never one from the developer's Qt install.
 $platformRoot = Join-Path $packageRoot 'platforms'
 New-Item -ItemType Directory -Path $platformRoot -Force | Out-Null

@@ -22,6 +22,8 @@ def main():
             assert call("get_profile")["result"]["id"] == "default"
             assert call("list_builds")["result"] == []
             assert call("unknown")["error"]["code"] == "unknown_method"
+            for image_url in ("file:///C:/secret.png", "http://127.0.0.1/image.png", "https://cdn.modrinth.com.attacker.test/a", "https://user:secret@textures.minecraft.net/a"):
+                assert call("load_public_image", {"url": image_url})["error"]["code"] == "image_source_denied"
             build = call("create_build", {"name":"Тест с пробелами", "gameVersion":"1.20.1", "loader":"vanilla"})["result"]
             assert len(call("list_builds")["result"]) == 1
             assert call("confirm_mrpack", {"sha256":"0"*64})["error"]["code"] == "preview_required"
@@ -66,7 +68,7 @@ def main():
             assert any(item["projectId"] == "disabled" for item in listed)
             assert "result" in call("remove_installed_content", {"buildId":new_build["id"], "projectId":"disabled"})
             assert not disabled.exists()
-            print("PASS: protocol, local startup, Unicode paths, build lifecycle, preview consent, harmless PoC rejection, traversal rejection, consent replay prevention, local pack repair, user config preservation, disabled mod deletion")
+            print("PASS: protocol, local startup, Unicode paths, build lifecycle, preview consent, harmless PoC rejection, traversal rejection, consent replay prevention, local pack repair, user config preservation, disabled mod deletion, public image source policy")
         finally:
             process.stdin.close()
             try: process.wait(timeout=5)

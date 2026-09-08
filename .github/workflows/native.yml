@@ -70,8 +70,12 @@ jobs:
           $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
           if (!(Test-Path -LiteralPath $sevenZip)) { $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source }
           $env:AQT_CONFIG = (Resolve-Path '.github/aqt.ini').Path
-          python -m aqt install-qt windows desktop ${{ matrix.qt }} ${{ matrix.arch }} -O C:/Qt --archives qtbase qttools --external $sevenZip
+          python -m aqt install-qt windows desktop ${{ matrix.qt }} ${{ matrix.arch }} -O C:/Qt --archives qtbase qttools qtimageformats --external $sevenZip
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ('${{ matrix.channel }}' -eq 'modern') {
+            python -m aqt install-qt windows desktop ${{ matrix.qt }} ${{ matrix.arch }} -O C:/Qt --noarchives --modules qtimageformats --external $sevenZip
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           python -m aqt install-tool windows desktop ${{ matrix.tool }} ${{ matrix.tool_variant }} -O C:/Qt --external $sevenZip
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           'C:/Qt/Tools/${{ matrix.compiler }}/bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -104,6 +108,7 @@ jobs:
           path: |
             dist/${{ matrix.channel }}/
             build/qt-smoke.png
+            build/qt/ui-screenshots/
           if-no-files-found: error
   transition-web:
     runs-on: windows-2022

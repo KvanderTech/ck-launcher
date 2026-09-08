@@ -64,6 +64,9 @@ pub async fn dispatch(
         None
     };
     match method {
+        "load_public_image" => {
+            result(crate::images::load_public_image(argument(&params, "url")?).await?)
+        }
         "check_update" => result(crate::updates::check_update().await?),
         "open_release_page" => {
             let url: String = argument(&params, "url")?;
