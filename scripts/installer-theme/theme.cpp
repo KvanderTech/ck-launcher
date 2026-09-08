@@ -11,6 +11,8 @@ namespace {
 constexpr COLORREF background = RGB(8, 26, 44);
 constexpr COLORREF text = RGB(242, 247, 252);
 HWND mainWindow = nullptr;
+enum class Page { Neutral, Welcome, Progress, Finish };
+Page currentPage = Page::Neutral;
 
 bool drawButton(const DRAWITEMSTRUCT &item) {
     if (item.CtlType != ODT_BUTTON)
@@ -64,6 +66,16 @@ LRESULT CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 LRESULT CALLBACK buttonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id,
                             DWORD_PTR) {
+    // The NSIS engine reapplies BS_PUSHBUTTON/BS_DEFPUSHBUTTON after page callbacks.
+    // Keep native behavior, but don't let that reset our owner-drawn appearance.
+    if (message == BM_SETSTYLE)
+        wParam = (wParam & ~BS_TYPEMASK) | BS_OWNERDRAW;
+    if (window == GetDlgItem(mainWindow, IDOK) && message == WM_SETTEXT) {
+        if (currentPage == Page::Welcome)
+            lParam = reinterpret_cast<LPARAM>(L"Установить");
+        else if (currentPage == Page::Finish)
+            lParam = reinterpret_cast<LPARAM>(L"Готово");
+    }
     if (message == WM_SETCURSOR && IsWindowEnabled(window)) {
         SetCursor(LoadCursorW(nullptr, IDC_HAND));
         return TRUE;
@@ -105,6 +117,12 @@ BOOL CALLBACK styleControl(HWND window, LPARAM) {
         SetWindowSubclass(GetParent(window), dialogProc, 1, 0);
         SetWindowSubclass(window, buttonProc, 1, 0);
         InvalidateRect(window, nullptr, TRUE);
+    } else if (lstrcmpiW(className, PROGRESS_CLASSW) == 0) {
+        SetWindowTheme(window, L"", L"");
+        SetWindowLongPtrW(window, GWL_STYLE,
+                          (GetWindowLongPtrW(window, GWL_STYLE) & ~WS_BORDER) | PBS_SMOOTH);
+        SendMessageW(window, PBM_SETBARCOLOR, 0, RGB(19, 164, 237));
+        SendMessageW(window, PBM_SETBKCOLOR, 0, RGB(16, 46, 70));
     } else if (lstrcmpiW(className, L"Edit") == 0) {
         SetWindowTheme(window, L"", L"");
         SetWindowLongPtrW(window, GWL_EXSTYLE,
@@ -137,5 +155,47 @@ extern "C" __declspec(dllexport) void __cdecl Apply(HWND parent, int, wchar_t *,
                  SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(next, nullptr, right - width * 2 - gap, button.top, width, height,
                  SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(parent, 3), nullptr, height, button.top, width, height,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+
+    // InstallFiles has its own template, separate from our welcome/finish pages.
+    // Lay out all of its controls together rather than retaining the tiny stock strip.
+    HWND page = FindWindowExW(parent, nullptr, L"#32770", nullptr);
+    HWND progress = GetDlgItem(page, 1004);
+    if (progress) {
+        RECT bounds{};
+        GetClientRect(page, &bounds);
+        const int margin = int(height / 3), contentWidth = bounds.right - 2 * margin;
+        SetWindowPos(GetDlgItem(page, 1006), nullptr, margin, margin, contentWidth, height * 2,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(progress, nullptr, margin, height * 2 + margin, contentWidth, height / 3,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(page, 1027), nullptr, margin, height * 3, width, height,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(page, 1016), nullptr, margin, height * 4 + margin, contentWidth,
+                     std::max(height, bounds.bottom - height * 4 - margin * 2),
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     InvalidateRect(parent, nullptr, TRUE);
+}
+
+extern "C" __declspec(dllexport) void __cdecl Welcome(HWND parent, int size, wchar_t *vars,
+                                                      void **stack, void *extra) {
+    currentPage = Page::Welcome;
+    Apply(parent, size, vars, stack, extra);
+    SetWindowTextW(GetDlgItem(parent, IDOK), L"Установить");
+}
+extern "C" __declspec(dllexport) void __cdecl Progress(HWND parent, int size, wchar_t *vars,
+                                                       void **stack, void *extra) {
+    currentPage = Page::Progress;
+    Apply(parent, size, vars, stack, extra);
+}
+extern "C" __declspec(dllexport) void __cdecl Finish(HWND parent, int size, wchar_t *vars,
+                                                     void **stack, void *extra) {
+    currentPage = Page::Finish;
+    Apply(parent, size, vars, stack, extra);
+    ShowWindow(GetDlgItem(parent, 3), SW_HIDE);
+    ShowWindow(GetDlgItem(parent, IDCANCEL), SW_HIDE);
+    SetWindowTextW(GetDlgItem(parent, IDOK), L"Готово");
+    EnableMenuItem(GetSystemMenu(parent, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
 }

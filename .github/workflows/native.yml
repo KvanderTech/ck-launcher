@@ -118,6 +118,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build/installer-theme --config Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/installer-theme -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path 'dist/${{ matrix.channel }}/*' -DestinationPath 'ck-launcher-qt-${{ matrix.channel }}-windows-x64.zip' -CompressionLevel Optimal
           choco install nsis --no-progress -y
           & 'C:/Program Files (x86)/NSIS/makensis.exe' /INPUTCHARSET UTF8 "/DTHEME_PLUGIN_DIR=$((Resolve-Path 'build/installer-theme/Release').Path)" "/DPACKAGE=$((Resolve-Path 'dist/${{ matrix.channel }}').Path)" "/DOUTFILE=$((Resolve-Path '.').Path)/ck-launcher-qt-${{ matrix.channel }}-windows-x64-setup.exe" scripts/native-installer.nsi

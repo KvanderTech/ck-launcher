@@ -41,7 +41,7 @@ VIAddVersionKey /LANG=1049 "FileVersion" "${CK_VERSION}"
 VIAddVersionKey /LANG=1049 "ProductVersion" "${CK_VERSION}"
 VIAddVersionKey /LANG=1049 "LegalCopyright" "KvanderTech"
 Page custom WelcomePage WelcomeLeave
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW StyleFrame
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW StyleProgress
 !insertmacro MUI_PAGE_INSTFILES
 Page custom FinishPage FinishLeave
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -72,7 +72,14 @@ FunctionEnd
 !macroend
 !insertmacro StyleFrame ""
 !insertmacro StyleFrame "un."
+Function StyleProgress
+  CKTheme::Progress /NOUNLOAD
+  Call StyleFrame
+  SetCtlColors $mui.InstFilesPage F2F7FC 081A2C
+  SetCtlColors $mui.InstFilesPage.Text D8E8F4 081A2C
+FunctionEnd
 Function .onInit
+  SetAutoClose true
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CKLauncher" "InstallLocation"
   ${If} $0 != ""
     StrCpy $INSTDIR $0
@@ -106,7 +113,7 @@ Function WelcomePage
   SetCtlColors $0 91B8D3 081A2C
   GetDlgItem $0 $HWNDPARENT 1
   SendMessage $0 ${WM_SETTEXT} 0 "STR:Установить"
-  CKTheme::Apply /NOUNLOAD
+  CKTheme::Welcome /NOUNLOAD
   nsDialogs::Show
 FunctionEnd
 Function BrowseDirectory
@@ -143,7 +150,7 @@ Function FinishPage
   SetCtlColors $RunCheck 80D9FF 081A2C
   GetDlgItem $0 $HWNDPARENT 1
   SendMessage $0 ${WM_SETTEXT} 0 "STR:Готово"
-  CKTheme::Apply /NOUNLOAD
+  CKTheme::Finish /NOUNLOAD
   nsDialogs::Show
 FunctionEnd
 Function FinishLeave
