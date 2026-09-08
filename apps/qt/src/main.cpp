@@ -15,6 +15,8 @@ int main(int argc, char **argv) {
     app.setApplicationName(s("CKLauncherQt"));
     app.setApplicationVersion(s(CK_VERSION));
     app.setStyle(s("Fusion"));
+    AudioFeedback audio(&app);
+    app.installEventFilter(&audio);
     const auto args = app.arguments();
     const bool smoke = args.contains(s("--smoke"));
     QTemporaryDir smokeData;

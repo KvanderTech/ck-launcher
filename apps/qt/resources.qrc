@@ -5,4 +5,14 @@
 <file alias="bg-3.jpg">../../app/src/assets/bg-3.jpg</file>
 <file alias="home-render.png">../../app/src/assets/home-render.png</file>
 <file alias="theme.qss">src/theme.qss</file>
+<file alias="sounds/click.wav">../../app/src/assets/sounds/click.wav</file>
+<file alias="sounds/build-switch.wav">../../app/src/assets/sounds/build-switch.wav</file>
+<file alias="sounds/skin-select.wav">../../app/src/assets/sounds/skin-select.wav</file>
+<file alias="sounds/launch.wav">../../app/src/assets/sounds/launch.wav</file>
+<file alias="sounds/install-complete.wav">../../app/src/assets/sounds/install-complete.wav</file>
+<file alias="sounds/game-ready.wav">../../app/src/assets/sounds/game-ready.wav</file>
+<file alias="sounds/game-exit.wav">../../app/src/assets/sounds/game-exit.wav</file>
+<file alias="emotes/yes.json">../../app/src/assets/emotes/yes.json</file>
+<file alias="emotes/bow.json">../../app/src/assets/emotes/bow.json</file>
+<file alias="emotes/extend-arms.json">../../app/src/assets/emotes/extend-arms.json</file>
 </qresource></RCC>

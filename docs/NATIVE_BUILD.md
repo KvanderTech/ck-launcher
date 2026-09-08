@@ -35,7 +35,7 @@ cargo build --release -p ck-launcher-service --locked
 cmake -S apps/qt -B build/qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/mingw_64
 cmake --build build/qt
 ctest --test-dir build/qt --output-on-failure
-./scripts/package-native.ps1 -QtBin C:/Qt/6.8.3/mingw_64/bin -BuildDir build/qt -ServicePath target/release/ck-launcher-service.exe -Channel modern
+./scripts/package-native.ps1 -QtBin C:/Qt/6.8.3/mingw_64/bin -BuildDir build/qt -ServicePath target/release/ck-launcher-service.exe -UpdaterPath target/release/ck-launcher-updater.exe -Channel modern
 python scripts/test-service.py dist/modern/ck-launcher-service.exe
 ```
 

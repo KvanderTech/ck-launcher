@@ -260,6 +260,7 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
                 {s("launching"), tr("Запускаем Minecraft")}};
             message(stages.value(stage, tr("Подготавливаем Minecraft…")));
         } else if (event == s("launcher://game-started")) {
+            AudioFeedback::play(s("game-ready"));
             running = true;
             operationId = value(data, "operationId");
             progress->setRange(0, 100);
@@ -267,6 +268,7 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
             message(tr("Minecraft запущен"));
             updatePlayState();
         } else if (event == s("launcher://game-exited")) {
+            AudioFeedback::play(s("game-exit"));
             complete();
             message(tr("Игра завершена"));
             updatePlayState();

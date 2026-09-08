@@ -2,6 +2,7 @@ name: Native launcher
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -59,7 +60,7 @@ jobs:
           if ('${{ matrix.legacy }}' -eq 'ON') { $extra = @('-Z', 'build-std') }
           cargo +${{ matrix.rust }} test --workspace --locked --target ${{ matrix.target }} @extra
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo +${{ matrix.rust }} build --release --locked -p ck-launcher-service --target ${{ matrix.target }} @extra
+          cargo +${{ matrix.rust }} build --release --locked -p ck-launcher-service -p ck-launcher-updater --target ${{ matrix.target }} @extra
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install Qt and its matching compiler
         shell: pwsh
@@ -92,7 +93,7 @@ jobs:
       - name: Package and verify isolated startup
         shell: pwsh
         run: |
-          ./scripts/package-native.ps1 -QtBin 'C:/Qt/${{ matrix.qt }}/${{ matrix.qt_dir }}/bin' -BuildDir build/qt -ServicePath 'target/${{ matrix.target }}/release/ck-launcher-service.exe' -Channel '${{ matrix.channel }}'
+          ./scripts/package-native.ps1 -QtBin 'C:/Qt/${{ matrix.qt }}/${{ matrix.qt_dir }}/bin' -BuildDir build/qt -ServicePath 'target/${{ matrix.target }}/release/ck-launcher-service.exe' -UpdaterPath 'target/${{ matrix.target }}/release/ck-launcher-updater.exe' -Channel '${{ matrix.channel }}'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ('${{ matrix.legacy }}' -eq 'ON') {
             python scripts/check-legacy-imports.py dist/legacy
@@ -110,6 +111,18 @@ jobs:
             build/qt-smoke.png
             build/qt/ui-screenshots/
           if-no-files-found: error
+      - name: Create release packages
+        shell: pwsh
+        run: |
+          Compress-Archive -Path 'dist/${{ matrix.channel }}/*' -DestinationPath 'ck-launcher-qt-${{ matrix.channel }}-windows-x64.zip' -CompressionLevel Optimal
+          choco install nsis --no-progress -y
+          & 'C:/Program Files (x86)/NSIS/makensis.exe' "/DPACKAGE=$((Resolve-Path 'dist/${{ matrix.channel }}').Path)" "/DOUTFILE=$((Resolve-Path '.').Path)/ck-launcher-qt-${{ matrix.channel }}-windows-x64-setup.exe" scripts/native-installer.nsi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.channel }}
+          path: |
+            ck-launcher-qt-${{ matrix.channel }}-windows-x64.zip
+            ck-launcher-qt-${{ matrix.channel }}-windows-x64-setup.exe
   transition-web:
     runs-on: windows-2022
     steps:

@@ -1,6 +1,6 @@
 [package]
 name = "ck-launcher-core"
-version = "0.2.0-beta.2"
+version = "0.2.1-beta.1"
 edition = "2021"
 license.workspace = true
 rust-version = "1.90"
@@ -27,3 +27,4 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 tempfile = "3.23"
 semver = "1"
+minisign-verify = "0.2.5"

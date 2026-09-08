@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/launcher-core", "crates/launcher-service"]
+members = ["crates/launcher-core", "crates/launcher-service", "crates/launcher-updater"]
 exclude = ["app/src-tauri"]
 
 [workspace.package]

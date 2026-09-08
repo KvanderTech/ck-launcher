@@ -413,6 +413,7 @@ void LauncherWindow::renderSkins() {
         caption->setAttribute(Qt::WA_TransparentForMouseEvents);
         l->addWidget(caption);
         connect(card, &QPushButton::clicked, this, [this, id] {
+            AudioFeedback::play(s("skin-select"));
             selectedSkin = id;
             renderSkins();
             updateSkinPreview();

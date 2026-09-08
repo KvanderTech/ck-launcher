@@ -52,6 +52,7 @@ pub async fn dispatch(
             | "launch_or_install"
             | "install_runtime"
             | "choose_runtime_path"
+            | "install_update"
     );
     let _guard = if mutating {
         let guard = ctx.mutation.try_lock().map_err(|_| busy())?;
@@ -68,6 +69,15 @@ pub async fn dispatch(
             result(crate::images::load_public_image(argument(&params, "url")?).await?)
         }
         "check_update" => result(crate::updates::check_update().await?),
+        "install_update" => result(
+            crate::updates::install_update(
+                argument::<String>(&params, "assetUrl")?,
+                argument::<String>(&params, "signatureUrl")?,
+                argument::<String>(&params, "installDir")?,
+                argument::<u32>(&params, "launcherPid")?,
+            )
+            .await?,
+        ),
         "open_release_page" => {
             let url: String = argument(&params, "url")?;
             crate::updates::validate_release_url(&url)?;

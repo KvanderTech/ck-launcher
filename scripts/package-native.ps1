@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$QtBin,
     [Parameter(Mandatory=$true)][string]$BuildDir,
     [Parameter(Mandatory=$true)][string]$ServicePath,
+    [Parameter(Mandatory=$true)][string]$UpdaterPath,
     [ValidateSet('modern','legacy')][string]$Channel = 'modern'
 )
 $ErrorActionPreference = 'Stop'
@@ -17,6 +18,7 @@ if (Test-Path -LiteralPath $packageRoot) { Remove-Item -LiteralPath $packageRoot
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $BuildDir 'ck-launcher-qt.exe') -Destination $packageRoot -Force
 Copy-Item -LiteralPath $ServicePath -Destination $packageRoot -Force
+Copy-Item -LiteralPath $UpdaterPath -Destination $packageRoot -Force
 # Qt 5's MinGW debug heuristic rejects its own release plugins when --release is forced.
 # Auto detection uses the linked Qt5Core.dll and accepts the matching MinGW plugins.
 $deployArguments = @('--compiler-runtime', '--no-translations', '--dir', $packageRoot)
