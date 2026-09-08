@@ -1,6 +1,307 @@
 use super::*;
 use std::io::Write;
 
+fn skin_account(id: &str, uuid: &str) -> crate::storage::AccountSummary {
+    crate::storage::AccountSummary {
+        id: id.into(),
+        minecraft_name: "Player".into(),
+        minecraft_uuid: uuid.into(),
+        head_url: None,
+        is_active: true,
+    }
+}
+
+fn skin_header() -> Vec<u8> {
+    // Storage/migration fixture; the renderer has separate full-PNG tests.
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend_from_slice(&64u32.to_be_bytes());
+    bytes.extend_from_slice(&64u32.to_be_bytes());
+    bytes
+}
+
+#[cfg(windows)]
+#[test]
+fn skin_library_accepts_a_windows_data_root_alias_without_weakening_path_checks() {
+    crate::tasks::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let alias = PathBuf::from(temp.path().to_string_lossy().to_ascii_uppercase());
+        let service = service(&alias).await;
+        service
+            .storage
+            .upsert_account(&skin_account(
+                "alias-player",
+                "1234567890abcdef1234567890abcdef",
+            ))
+            .await
+            .unwrap();
+        let imported = service
+            .import_skin("alias-player".into(), "Alias".into(), &skin_header())
+            .await
+            .unwrap();
+        let skins = list_offline_skins("alias-player".into(), &service)
+            .await
+            .unwrap();
+        assert_eq!(skins.len(), 1);
+        assert_eq!(skins[0].id, imported.id);
+        let mut stored = service
+            .storage
+            .list_offline_skins("alias-player")
+            .await
+            .unwrap()
+            .remove(0);
+        stored.file_path = temp
+            .path()
+            .join("outside.png")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            service.skin_view(stored).unwrap_err().code(),
+            "invalid_path"
+        );
+    });
+}
+
+#[test]
+fn skin_library_survives_signout_restart_and_renamed_login_with_same_uuid() {
+    crate::tasks::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let original = service(temp.path()).await;
+        let uuid = "1234567890abcdef1234567890abcdef";
+        original
+            .storage
+            .upsert_account(&skin_account("first-login", uuid))
+            .await
+            .unwrap();
+        let skin = original
+            .import_skin("first-login".into(), "Original".into(), &skin_header())
+            .await
+            .unwrap();
+        rename_offline_skin(
+            "first-login".into(),
+            skin.id.clone(),
+            "Зимний".into(),
+            &original,
+        )
+        .await
+        .unwrap();
+        set_offline_skin_favorite("first-login".into(), skin.id.clone(), true, &original)
+            .await
+            .unwrap();
+        let expected = temp
+            .path()
+            .join("skins")
+            .join(uuid)
+            .join(format!("{}.png", skin.id));
+        assert_eq!(fs::read(&expected).unwrap(), skin_header());
+        original
+            .storage
+            .delete_account("first-login")
+            .await
+            .unwrap();
+        drop(original);
+
+        let reopened = service(temp.path()).await;
+        reopened
+            .storage
+            .upsert_account(&skin_account(
+                "new-login",
+                "12345678-90AB-CDEF-1234-567890ABCDEF",
+            ))
+            .await
+            .unwrap();
+        reopened
+            .storage
+            .upsert_account(&skin_account(
+                "other-player",
+                "ffffffffffffffffffffffffffffffff",
+            ))
+            .await
+            .unwrap();
+        let skins = list_offline_skins("new-login".into(), &reopened)
+            .await
+            .unwrap();
+        assert_eq!(skins.len(), 1);
+        assert_eq!(skins[0].id, skin.id);
+        assert_eq!(skins[0].name, "Зимний");
+        assert!(skins[0].is_favorite && skins[0].is_active);
+        assert!(list_offline_skins("other-player".into(), &reopened)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(
+            delete_offline_skin("other-player".into(), skin.id.clone(), &reopened)
+                .await
+                .is_err()
+        );
+        assert!(expected.is_file());
+        delete_offline_skin("new-login".into(), skin.id, &reopened)
+            .await
+            .unwrap();
+        assert!(!expected.exists());
+    });
+}
+
+#[test]
+fn legacy_skin_files_migrate_and_recover_only_the_current_accounts_orphans() {
+    crate::tasks::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let service = service(temp.path()).await;
+        let uuid = "1234567890abcdef1234567890abcdef";
+        service
+            .storage
+            .upsert_account(&skin_account("player", uuid))
+            .await
+            .unwrap();
+        let old = temp
+            .path()
+            .join("skins")
+            .join(format!("{:x}", Sha256::digest(b"player")));
+        let other = temp
+            .path()
+            .join("skins")
+            .join(format!("{:x}", Sha256::digest(b"someone-else")));
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        for path in [
+            old.join("skin-saved.png"),
+            old.join("skin-orphan.png"),
+            other.join("skin-other.png"),
+        ] {
+            fs::write(path, skin_header()).unwrap();
+        }
+        let skin = OfflineSkin {
+            id: "skin-saved".into(),
+            account_id: "player".into(),
+            name: "Сохранённый".into(),
+            file_path: old.join("skin-saved.png").to_string_lossy().into_owned(),
+            is_active: true,
+            is_favorite: true,
+        };
+        service.storage.add_offline_skin(&skin).await.unwrap();
+        let skins = list_offline_skins("player".into(), &service).await.unwrap();
+        assert_eq!(skins.len(), 2);
+        let saved = skins.iter().find(|s| s.id == skin.id).unwrap();
+        assert_eq!(saved.name, "Сохранённый");
+        assert!(saved.is_active && saved.is_favorite);
+        assert!(
+            !skins
+                .iter()
+                .find(|s| s.id == "skin-orphan")
+                .unwrap()
+                .is_active
+        );
+        assert!(other.join("skin-other.png").is_file());
+        assert!(!old.join("skin-saved.png").exists());
+        assert!(!old.join("skin-orphan.png").exists());
+        assert_eq!(
+            list_offline_skins("player".into(), &service)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        for skin in service.storage.list_offline_skins("player").await.unwrap() {
+            assert!(Path::new(&skin.file_path).starts_with(
+                security::safe_destination(temp.path(), &Path::new("skins").join(uuid)).unwrap()
+            ));
+        }
+    });
+}
+
+#[test]
+fn skin_folder_migration_rolls_back_files_when_database_update_fails() {
+    crate::tasks::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let service = service(temp.path()).await;
+        let uuid = "1234567890abcdef1234567890abcdef";
+        service
+            .storage
+            .upsert_account(&skin_account("player", uuid))
+            .await
+            .unwrap();
+        let old = temp
+            .path()
+            .join("skins")
+            .join(format!("{:x}", Sha256::digest(b"player")))
+            .join("skin-saved.png");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, skin_header()).unwrap();
+        let skin = OfflineSkin {
+            id: "skin-saved".into(),
+            account_id: "player".into(),
+            name: "Saved".into(),
+            file_path: old.to_string_lossy().into_owned(),
+            is_active: true,
+            is_favorite: true,
+        };
+        service.storage.add_offline_skin(&skin).await.unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new().filename(&service.paths.database),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TRIGGER reject_skin_migration BEFORE UPDATE ON offline_skins BEGIN SELECT RAISE(ABORT,'fixture'); END").execute(&pool).await.unwrap();
+        assert!(list_offline_skins("player".into(), &service).await.is_err());
+        assert_eq!(fs::read(&old).unwrap(), skin_header());
+        assert!(!temp
+            .path()
+            .join("skins")
+            .join(uuid)
+            .join("skin-saved.png")
+            .exists());
+        assert_eq!(
+            service.storage.list_offline_skins("player").await.unwrap(),
+            vec![skin]
+        );
+        pool.close().await;
+    });
+}
+
+#[test]
+fn cached_modrinth_identity_repairs_names_and_icons_without_changing_installed_files() {
+    crate::tasks::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let service = service(temp.path()).await;
+        let build = build(temp.path(), "test");
+        service.storage.upsert_build(&build).await.unwrap();
+        let mut item = content(&build, "AANobbMI", "sodium.jar", false);
+        item.version_id = "ABcd1234".into();
+        service
+            .storage
+            .upsert_installed_content(&item)
+            .await
+            .unwrap();
+        let identity = serde_json::from_value(serde_json::json!({"id":"AANobbMI","title":"Sodium","icon_url":"https://cdn.modrinth.com/data/AANobbMI/icon.png"})).unwrap();
+        service.project_identities.lock().unwrap().insert(
+            item.project_id.clone(),
+            (std::time::Instant::now(), Some(identity)),
+        );
+        let result = service.content_with_metadata(&build.id).await.unwrap();
+        item.title = "Sodium".into();
+        item.icon_url = Some("https://cdn.modrinth.com/data/AANobbMI/icon.png".into());
+        assert_eq!(result, vec![item.clone()]);
+        assert_eq!(
+            service
+                .storage
+                .list_installed_content(&build.id)
+                .await
+                .unwrap(),
+            vec![item.clone()]
+        );
+        service
+            .project_identities
+            .lock()
+            .unwrap()
+            .insert(item.project_id.clone(), (std::time::Instant::now(), None));
+        assert_eq!(
+            service.content_with_metadata(&build.id).await.unwrap(),
+            vec![item]
+        );
+    });
+}
+
 async fn service(root: &Path) -> ContentService {
     let paths = AppPaths::new(root.to_owned());
     paths.create_directories().unwrap();

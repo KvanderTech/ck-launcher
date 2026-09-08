@@ -13,33 +13,65 @@ class ProjectDocument final : public QTextDocument {
               "pre,code{background:#112f46} blockquote{color:#9fc2d9} th{background:#16364e}"));
         setDocumentMargin(20);
     }
+    void fitImages(int availableWidth) {
+        const int next = qMax(80, availableWidth - 44);
+        if (next == imageWidth)
+            return;
+        imageWidth = next;
+        for (auto it = originals.cbegin(); it != originals.cend(); ++it)
+            addResource(QTextDocument::ImageResource, it.key(), fitted(it.value()));
+        if (!originals.isEmpty())
+            markContentsDirty(0, characterCount());
+    }
 
   protected:
     QVariant loadResource(int type, const QUrl &url) override {
+        QImage placeholder(1, 1, QImage::Format_ARGB32);
+        placeholder.fill(Qt::transparent);
         if (type != QTextDocument::ImageResource || ImagePool::remoteUrl(url.toString()).isEmpty())
-            return QImage();
+            return placeholder;
         if (!pending.contains(url)) {
             pending.insert(url);
             QTimer::singleShot(0, this, [this, url] {
                 images->load(url.toString(), this, [this, url](const QImage &image) {
                     if (image.isNull())
                         return;
-                    addResource(
-                        QTextDocument::ImageResource, url,
-                        image.scaledToWidth(qMin(image.width(), qMax(200, int(textWidth()) - 44)),
-                                            Qt::SmoothTransformation));
+                    // Bound retained full-size images per document independently of the shared
+                    // cache.
+                    const auto source = image.width() > 1600 || image.height() > 1600
+                                            ? image.scaled(QSize(1600, 1600), Qt::KeepAspectRatio,
+                                                           Qt::SmoothTransformation)
+                                            : image;
+                    const auto cost = qint64(source.width()) * source.height() * 4;
+                    if (originalBytes + cost > 32 * 1024 * 1024)
+                        return;
+                    originalBytes += cost;
+                    originals.insert(url, source);
+                    addResource(QTextDocument::ImageResource, url, fitted(source));
                     markContentsDirty(0, characterCount());
                 });
             });
         }
-        QImage placeholder(1, 1, QImage::Format_ARGB32);
-        placeholder.fill(Qt::transparent);
         return placeholder;
     }
 
   private:
     ImagePool *images;
     QSet<QUrl> pending;
+    QHash<QUrl, QImage> originals;
+    qint64 originalBytes = 0;
+    int imageWidth = 600;
+    QImage fitted(const QImage &image) const {
+        return image.scaledToWidth(qMin(image.width(), imageWidth), Qt::SmoothTransformation);
+    }
+};
+class ProjectBrowser final : public QTextBrowser {
+  protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QTextBrowser::resizeEvent(event);
+        if (auto *doc = dynamic_cast<ProjectDocument *>(document()))
+            doc->fitImages(viewport()->width());
+    }
 };
 QStringList strings(const QJsonArray &array) {
     QStringList result;
@@ -182,7 +214,7 @@ ProjectView::ProjectView(Backend *core, ImagePool *pool, QWidget *parent)
     left->addWidget(tabs, 0, Qt::AlignLeft);
     auto *sections = new QStackedWidget;
     sections->setMinimumSize(0, 150);
-    body = new QTextBrowser;
+    body = new ProjectBrowser;
     body->setObjectName(s("project-description"));
     body->setOpenLinks(false);
     body->setOpenExternalLinks(false);
@@ -396,7 +428,12 @@ void ProjectView::open(const QJsonObject &input, const QJsonArray &list, const Q
                 guard->project.insert(it.key(), it.value());
             guard->title->setText(value(guard->project, "title"));
             guard->description->setText(value(guard->project, "description"));
-            guard->body->setMarkdown(value(metadata, "body").left(2 * 1024 * 1024));
+            if (metadata.contains(s("bodyHtml")))
+                guard->body->setHtml(value(metadata, "bodyHtml"));
+            else
+                guard->body->setMarkdown(value(metadata, "body").left(2 * 1024 * 1024));
+            if (auto *doc = dynamic_cast<ProjectDocument *>(guard->body->document()))
+                doc->fitImages(guard->body->viewport()->width());
             // Markdown assigns its own link format; keep links legible on our dark page.
             QVector<QPair<int, int>> anchors;
             for (auto block = guard->body->document()->begin(); block.isValid();

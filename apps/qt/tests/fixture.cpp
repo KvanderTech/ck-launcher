@@ -292,6 +292,17 @@ int main(int argc, char **argv) {
                 {key("title"), key("Fabulously Optimized")},
                 {key("description"), key("A fast, beautiful Minecraft experience.")},
                 {key("icon_url"), fo},
+                {key("bodyHtml"),
+                 key("<div align='center'><h1>Performance</h1><p><b>Fast and "
+                     "beautiful.</b></p></div>"
+                     "<h2>Included</h2><ul><li>Performance improvements</li><li>Familiar "
+                     "graphics</li><li>Easy installation</li></ul>"
+                     "<p>Pok&eacute;mon &amp; friends</p><img "
+                     "src='https://cdn.modrinth.com/banner.png'>"
+                     "<p>Text after the banner</p><a href='https://modrinth.com'>Project "
+                     "website</a>"
+                     "<table><tr><th>Feature</th><th>Included</th></tr><tr><td>Optimization</"
+                     "td><td>Yes</td></tr></table>")},
                 {key("body"),
                  key("# Performance\n\n**Fast and beautiful.** Keep the features you love.\n\n"
                      "## Included\n\n- Performance improvements\n- Familiar graphics\n- Easy "
@@ -354,6 +365,20 @@ int main(int argc, char **argv) {
         } else
             known = false;
         QJsonObject reply{{key("id"), request.value(key("id"))}};
+        // Optional recorded public responses for release QA; this executable is never shipped.
+        const auto recorded = qEnvironmentVariable("CK_QA_PROJECT_DIR");
+        if (!recorded.isEmpty() &&
+            (method == key("modrinth_project") || method == key("load_public_image"))) {
+            QFile file(recorded + (method == key("modrinth_project") ? key("/cobblemon.json")
+                                                                     : key("/public-images.json")));
+            if (file.open(QIODevice::ReadOnly)) {
+                const auto fixture = QJsonDocument::fromJson(file.read(32 * 1024 * 1024)).object();
+                if (method == key("modrinth_project"))
+                    result = fixture;
+                else if (fixture.contains(params.value(key("url")).toString()))
+                    result = fixture.value(params.value(key("url")).toString());
+            }
+        }
         const auto projectId = params.value(key("projectId")).toString();
         QString testError = failNext.take(method);
         if (projectId.startsWith(key("project-test"))) {

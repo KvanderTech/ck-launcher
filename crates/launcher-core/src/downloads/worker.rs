@@ -167,10 +167,24 @@ impl DownloadHttpClient {
         max_bytes: usize,
         cancel: &DownloadCancellationToken,
     ) -> Result<Vec<u8>, LauncherError> {
+        self.fetch_bytes_with_progress(url, max_bytes, cancel, &|_, _| {})
+            .await
+    }
+
+    pub(crate) async fn fetch_bytes_with_progress(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        cancel: &DownloadCancellationToken,
+        progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<Vec<u8>, LauncherError> {
         let sleeper = TokioSleeper;
         let jitter = RandomJitter;
         for attempt in 0..MAX_ATTEMPTS {
-            match self.fetch_bytes_once(url, max_bytes, cancel).await {
+            match self
+                .fetch_bytes_once(url, max_bytes, cancel, progress)
+                .await
+            {
                 Ok(bytes) => return Ok(bytes),
                 Err(failure) if failure.retryable && attempt + 1 < MAX_ATTEMPTS => {
                     let delay = sleeper.sleep(retry_delay(attempt, &jitter));
@@ -194,6 +208,7 @@ impl DownloadHttpClient {
         url: &str,
         max_bytes: usize,
         cancel: &DownloadCancellationToken,
+        progress: &(dyn Fn(u64, u64) + Send + Sync),
     ) -> Result<Vec<u8>, AttemptFailure> {
         let mut response = self.request(url, None, cancel).await?;
         if response.status() != StatusCode::OK {
@@ -205,13 +220,21 @@ impl DownloadHttpClient {
         {
             return Err(AttemptFailure::permanent(download_too_large_error()));
         }
+        let total = response.content_length().unwrap_or(0);
+        progress(0, total);
+        let mut reported = std::time::Instant::now();
         let mut bytes = Vec::new();
         while let Some(chunk) = self.next_chunk(&mut response, cancel).await? {
             if bytes.len().saturating_add(chunk.len()) > max_bytes {
                 return Err(AttemptFailure::permanent(download_too_large_error()));
             }
             bytes.extend_from_slice(&chunk);
+            if reported.elapsed() >= std::time::Duration::from_millis(100) {
+                progress(bytes.len() as u64, total);
+                reported = std::time::Instant::now();
+            }
         }
+        progress(bytes.len() as u64, total);
         Ok(bytes)
     }
 

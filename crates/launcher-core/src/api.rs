@@ -64,6 +64,16 @@ pub async fn dispatch(
     } else {
         None
     };
+    if matches!(
+        method,
+        "install_modrinth_modpack"
+            | "install_modrinth_project"
+            | "confirm_mrpack"
+            | "repair_build"
+            | "create_build"
+    ) {
+        ctx.events.progress("content-metadata", "", 0, 0, 0, 0);
+    }
     match method {
         "load_public_image" => {
             result(crate::images::load_public_image(argument(&params, "url")?).await?)
@@ -75,6 +85,8 @@ pub async fn dispatch(
                 argument::<String>(&params, "signatureUrl")?,
                 argument::<String>(&params, "installDir")?,
                 argument::<u32>(&params, "launcherPid")?,
+                &ctx.events,
+                &ctx.content.token(),
             )
             .await?,
         ),
@@ -416,11 +428,12 @@ pub async fn dispatch(
             .await?,
         ),
         "install_runtime" => result(
-            commands::runtime::install_runtime(
-                argument::<JavaRequirement>(&params, "requirement")?,
-                &ctx.runtimes,
-            )
-            .await?,
+            ctx.runtimes
+                .install_cancellable(
+                    argument::<JavaRequirement>(&params, "requirement")?,
+                    ctx.content.token(),
+                )
+                .await?,
         ),
         "choose_runtime_path" => result(
             commands::runtime::choose_runtime_path(

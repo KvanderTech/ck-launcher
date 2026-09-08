@@ -23,6 +23,7 @@ release/
 # Native build tools and generated packages
 /target/
 /build/
+/ui-screenshots/
 /dist/
 /aqtinstall.log
 

@@ -147,6 +147,13 @@ impl RuntimeManager {
         manager
     }
 
+    pub fn with_events(mut self, events: crate::events::EventBus) -> Self {
+        self.installer = self
+            .installer
+            .map(|installer| installer.with_events(events));
+        self
+    }
+
     pub fn production(runtime_root: PathBuf) -> Result<Self, LauncherError> {
         recover_interrupted_swaps_on_startup(&runtime_root)?;
         let system_candidates = system_java_candidates();

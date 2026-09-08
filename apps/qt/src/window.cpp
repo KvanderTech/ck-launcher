@@ -7,6 +7,15 @@
 #include <windows.h>
 #endif
 namespace {
+class HoverHintBlocker final : public QObject {
+  public:
+    using QObject::QObject;
+
+  protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        return event->type() == QEvent::ToolTip;
+    }
+};
 class ShortcutScroll final : public QScrollArea {
   public:
     QSize sizeHint() const override {
@@ -45,6 +54,11 @@ class HomeArtwork final : public QWidget {
     }
 
   protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QWidget::resizeEvent(event);
+        if (auto *socials = findChild<QWidget *>(s("home-socials")))
+            socials->move(qRound(width() * .055) - 4, 174);
+    }
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
@@ -70,7 +84,7 @@ class HomeArtwork final : public QWidget {
                    tr("комфортной"));
         p.drawText(QRectF(x, 104, width() * .50, 70), Qt::AlignLeft | Qt::AlignTop, tr("игры"));
         QSizeF size = image.size();
-        size.scale(QSizeF(width() * .50, height() * .75), Qt::KeepAspectRatio);
+        size.scale(QSizeF(width() * .65, height() * .85), Qt::KeepAspectRatio);
         p.drawPixmap(QRectF(width() - size.width() - 8, height() * .58 - size.height() / 2,
                             size.width(), size.height()),
                      image, image.rect());
@@ -92,6 +106,10 @@ void LauncherWindow::bringToFront() {
 }
 LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
     : QMainWindow(parent), core(backend), images(new ImagePool(backend, this)) {
+    if (!qApp->property("hoverHintsDisabled").toBool()) {
+        qApp->installEventFilter(new HoverHintBlocker(qApp));
+        qApp->setProperty("hoverHintsDisabled", true);
+    }
     setWindowTitle(tr("ЦК Лаунчер"));
     setWindowIcon(QIcon(s(":/assets/logo.png")));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
@@ -238,7 +256,8 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
         });
     activity = panel(s("activity"));
     activity->setParent(background);
-    activity->setFixedWidth(345);
+    activity->setFixedWidth(380);
+    activity->setObjectName(s("operation-progress"));
     auto *a = new QVBoxLayout(activity);
     a->setContentsMargins(16, 12, 16, 12);
     auto *top = new QHBoxLayout;
@@ -251,11 +270,23 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
     a->addLayout(top);
     status = label(QString(), "muted");
     status->setWordWrap(true);
-    a->addWidget(status);
+    status->setObjectName(s("operation-stage"));
+    auto *stageRow = new QHBoxLayout;
+    stageRow->addWidget(status, 1);
+    progressPercent = label(s("…"), "accent");
+    progressPercent->setObjectName(s("operation-percent"));
+    progressPercent->setStyleSheet(s("font-size:18px;font-weight:700;"));
+    stageRow->addWidget(progressPercent, 0, Qt::AlignTop);
+    a->addLayout(stageRow);
     progress = new QProgressBar;
-    progress->setFixedHeight(4);
+    progress->setObjectName(s("operation-bar"));
+    progress->setFixedHeight(6);
     progress->setTextVisible(false);
     a->addWidget(progress);
+    progressDetails = label(QString(), "mutedSmall");
+    progressDetails->setObjectName(s("operation-details"));
+    progressDetails->setWordWrap(true);
+    a->addWidget(progressDetails);
     connect(stop, &QPushButton::clicked, this, [this] {
         if (busy || running || !operationId.isEmpty())
             cancel();
@@ -287,27 +318,16 @@ LauncherWindow::LauncherWindow(Backend *backend, QWidget *parent)
             running = false;
             operationId.clear();
         };
-        if (event == s("launcher://progress")) {
-            const double total = data.value(s("totalBytes")).toDouble(),
-                         done = data.value(s("completedBytes")).toDouble();
-            progress->setRange(0, total > 0 ? 100 : 0);
-            if (total > 0)
-                progress->setValue(qBound(0, int(done * 100 / total), 100));
-            QString stage = value(data, "stage");
-            static const QMap<QString, QString> stages{
-                {s("resolving-metadata"), tr("Получаем информацию о версии")},
-                {s("downloading"), tr("Скачиваем файлы")},
-                {s("resolving-java"), tr("Подбираем Java")},
-                {s("checking"), tr("Подготавливаем библиотеки")},
-                {s("installing"), tr("Распаковываем файлы")},
-                {s("launching"), tr("Запускаем Minecraft")}};
-            message(stages.value(stage, tr("Подготавливаем Minecraft…")));
+        if (event == s("launcher://progress") || event == s("launcher://content-progress")) {
+            if (busy || !operationId.isEmpty())
+                showProgress(data);
         } else if (event == s("launcher://game-started")) {
             AudioFeedback::play(s("game-ready"));
             running = true;
             operationId = value(data, "operationId");
             progress->setRange(0, 100);
             progress->setValue(100);
+            progressPercent->setText(s("100%"));
             message(tr("Minecraft запущен"));
             updatePlayState();
         } else if (event == s("launcher://game-exited")) {
@@ -337,6 +357,7 @@ QWidget *LauncherWindow::homePage() {
     auto *art = new HomeArtwork;
     layout->addWidget(art, 1);
     auto *socials = new QWidget(art);
+    socials->setObjectName(s("home-socials"));
     auto *links = new QHBoxLayout(socials);
     links->setContentsMargins(0, 0, 0, 0);
     links->setSpacing(7);
@@ -351,7 +372,7 @@ QWidget *LauncherWindow::homePage() {
         connect(b, &QPushButton::clicked, this,
                 [this, url = urls[i]] { call(s("open_external_url"), {{s("url"), url}}); });
     }
-    socials->move(60, 174);
+    socials->move(qRound(art->width() * .055) - 4, 174);
     socials->adjustSize();
     auto *dock = new QHBoxLayout;
     dock->addStretch();
@@ -392,14 +413,70 @@ void LauncherWindow::showPage(const QString &name) {
     if (i >= 0)
         navigate(i);
 }
+void LauncherWindow::showProgress(const QJsonObject &data) {
+    static const QMap<QString, QString> stages{
+        {s("resolving-metadata"), tr("Информация о версии")},
+        {s("content-metadata"), tr("Проверка версии и зависимостей")},
+        {s("downloading"), tr("Загрузка Minecraft")},
+        {s("archive-download"), tr("Загрузка архива сборки")},
+        {s("content-download"), tr("Загрузка файлов")},
+        {s("content-install"), tr("Установка файлов")},
+        {s("loader-download"), tr("Загрузка загрузчика")},
+        {s("loader-install"), tr("Установка загрузчика")},
+        {s("runtime-download"), tr("Загрузка Java")},
+        {s("runtime-verify"), tr("Проверка Java")},
+        {s("runtime-install"), tr("Распаковка Java")},
+        {s("update-download"), tr("Загрузка обновления")},
+        {s("update-verify"), tr("Проверка подписи обновления")},
+        {s("update-install"), tr("Подготовка обновления")},
+        {s("resolving-java"), tr("Подготовка Java")},
+        {s("checking"), tr("Проверка библиотек")},
+        {s("installing"), tr("Распаковка файлов")},
+        {s("launching"), tr("Запуск Minecraft")}};
+    const auto total = qMax(0.0, data.value(s("totalBytes")).toDouble());
+    const auto done = qMax(0.0, data.value(s("completedBytes")).toDouble());
+    const auto fileTotal = data.value(s("totalFiles")).toInt();
+    const auto files = data.value(s("completedFiles")).toInt();
+    const int percent = total > 0       ? qBound(0, int(done * 100.0 / total), 100)
+                        : fileTotal > 0 ? qBound(0, files * 100 / fileTotal, 100)
+                                        : -1;
+    progress->setRange(0, percent >= 0 ? 100 : 0);
+    if (percent >= 0)
+        progress->setValue(percent);
+    progressPercent->setText(percent >= 0 ? QString::number(percent) + s("%") : s("…"));
+    QStringList detail;
+    if (total > 0)
+        detail << tr("%1 / %2 МБ")
+                      .arg(qMin(done, total) / (1024 * 1024), 0, 'f', 1)
+                      .arg(total / (1024 * 1024), 0, 'f', 1);
+    if (fileTotal > 0)
+        detail << tr("Файлы: %1 / %2").arg(qBound(0, files, fileTotal)).arg(fileTotal);
+    if (!value(data, "message").isEmpty())
+        detail << QFontMetrics(progressDetails->font())
+                      .elidedText(value(data, "message"), Qt::ElideMiddle, 340);
+    progressDetails->setText(detail.join(s("\n")));
+    message(stages.value(value(data, "stage"), tr("Подготовка…")));
+}
 void LauncherWindow::message(const QString &text, bool error) {
     if (text.isEmpty())
         return;
     status->setText(text);
+    static const QMap<QString, QString> actions{
+        {s("install_modrinth_modpack"), tr("Установка сборки")},
+        {s("confirm_mrpack"), tr("Установка сборки")},
+        {s("install_modrinth_project"), tr("Установка контента")},
+        {s("repair_build"), tr("Восстановление сборки")},
+        {s("install_runtime"), tr("Установка Java")},
+        {s("install_update"), tr("Обновление лаунчера")},
+        {s("create_build"), tr("Создание сборки")}};
     activityTitle->setText(error     ? tr("Не удалось выполнить действие")
                            : running ? tr("Minecraft")
-                           : busy    ? tr("Выполняется операция")
+                           : busy    ? actions.value(activeMethod, tr("Выполняется операция"))
                                      : tr("ЦК Лаунчер"));
+    if (error) {
+        progressPercent->setText({});
+        progressDetails->clear();
+    }
     activity->setProperty("error", error);
     polish(activity);
     activity->adjustSize();
@@ -426,11 +503,14 @@ void LauncherWindow::call(const QString &method, const QJsonObject &params,
     const bool quiet = method == s("select_build");
     if (mutation) {
         busy = true;
+        activeMethod = method;
+        progressPercent->setText(s("…"));
+        progressDetails->clear();
         contentInstalling =
             method == s("install_modrinth_project") || method == s("install_modrinth_modpack");
         progress->setRange(0, 0);
         if (!quiet)
-            message(tr("Выполняем действие…"));
+            message(tr("Подготовка…"));
         updatePlayState();
     }
     core->request(
@@ -445,6 +525,9 @@ void LauncherWindow::call(const QString &method, const QJsonObject &params,
                     projectView->setInstallationError(value(error, "message"));
                 progress->setRange(0, 100);
                 progress->setValue(error.isEmpty() ? 100 : 0);
+                progressPercent->setText(error.isEmpty() ? s("100%") : QString());
+                progressDetails->clear();
+                activeMethod.clear();
                 updatePlayState();
             }
             if (!error.isEmpty()) {

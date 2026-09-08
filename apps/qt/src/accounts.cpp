@@ -1,4 +1,62 @@
 #include "window.h"
+namespace {
+class CapeCard final : public MotionButton {
+  public:
+    CapeCard(const QString &name, bool none, bool active) : noCape(none), selected(active) {
+        setProperty("capeCard", true);
+        setAccessibleName(name);
+        setCheckable(true);
+        setChecked(active);
+    }
+    void setTexture(const QImage &texture) {
+        if (texture.width() >= 64 && texture.height() >= 32) {
+            const int scale = texture.width() / 64;
+            image = texture.copy(scale, scale, 10 * scale, 16 * scale);
+        }
+        update();
+    }
+
+  protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const auto box = QRectF(rect()).adjusted(2, 2, -2, -2);
+        QPainterPath clip;
+        clip.addRoundedRect(box, 7, 7);
+        p.setClipPath(clip);
+        p.fillRect(rect(), QColor(22, 41, 58));
+        if (!image.isNull()) {
+            p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+            p.drawImage(box, image);
+        } else {
+            p.setPen(QColor(123, 205, 240));
+            auto f = font();
+            f.setPixelSize(22);
+            p.setFont(f);
+            p.drawText(box.adjusted(0, -10, 0, -10), Qt::AlignCenter, noCape ? s("×") : s("…"));
+            if (noCape) {
+                f.setPixelSize(10);
+                p.setFont(f);
+                p.drawText(box.adjusted(0, 42, 0, 0), Qt::AlignCenter, tr("Без плаща"));
+            }
+        }
+        if (underMouse() && isEnabled())
+            p.fillRect(rect(), QColor(170, 227, 255, 22));
+        p.setClipping(false);
+        if (selected || hasFocus()) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(44, 183, 241), 2));
+            p.drawRoundedRect(box, 7, 7);
+        }
+        if (!isEnabled())
+            p.fillPath(clip, QColor(6, 18, 30, 110));
+    }
+
+  private:
+    QImage image;
+    bool noCape, selected;
+};
+} // namespace
 QWidget *LauncherWindow::accountsPage() {
     skinPages = new QStackedWidget;
     auto *gate = new QWidget;
@@ -494,7 +552,9 @@ void LauncherWindow::updateSkinPreview() {
 }
 void LauncherWindow::renderCapes() {
     clearLayout(capeRows);
-    auto *grid = new CardGrid(120, 165, 5);
+    auto *grid = new CardGrid(72, 116, 20);
+    grid->setCardWidth(72);
+    grid->setObjectName(s("cape-grid"));
     capeRows->addWidget(grid);
     const auto list = cosmetics.value(s("capes")).toArray();
     bool hasActive = false;
@@ -502,29 +562,10 @@ void LauncherWindow::renderCapes() {
         if (value(cape.toObject(), "state") == s("ACTIVE"))
             hasActive = true;
     auto addCape = [this, grid](const QJsonObject &cape, bool none, bool active) {
-        auto *card = new MotionButton;
-        card->setProperty("skinCard", true);
-        card->setProperty("selected", active);
-        card->setCursor(Qt::PointingHandCursor);
-        auto *l = new QVBoxLayout(card);
-        l->setContentsMargins(8, 10, 8, 10);
-        l->setSpacing(8);
-        auto *picture = new Picture(80);
-        picture->pixelated = true;
-        picture->setFallback(none ? QString::fromUtf8("—") : value(cape, "alias"));
-        l->addWidget(picture, 0, Qt::AlignHCenter);
-        images->load(value(cape, "url"), picture, [picture](const QImage &i) {
-            if (!i.isNull()) {
-                const int scale = qMax(1, i.width() / 64);
-                picture->setImage(i.copy(scale, scale, 10 * scale, 16 * scale));
-            }
-        });
-        auto *name = label(none ? tr("Без плаща") : value(cape, "alias"), "small");
-        name->setAlignment(Qt::AlignCenter);
-        name->setWordWrap(true);
-        name->setAttribute(Qt::WA_TransparentForMouseEvents);
-        picture->setAttribute(Qt::WA_TransparentForMouseEvents);
-        l->addWidget(name);
+        auto *card = new CapeCard(none ? tr("Без плаща") : value(cape, "alias"), none, active);
+        card->setObjectName(s("cape-") + (none ? s("none") : value(cape, "id")));
+        images->load(value(cape, "url"), card,
+                     [card](const QImage &image) { card->setTexture(image); });
         grid->append(card);
         connect(card, &QPushButton::clicked, this, [this, id = selectedAccount, cape, none] {
             skinAction(s("activate_minecraft_cape"),

@@ -25,6 +25,34 @@ struct TestResponse {
     chunks: Vec<(Vec<u8>, Duration)>,
 }
 
+#[test]
+fn bounded_download_reports_measured_bytes_and_honors_cancellation() {
+    crate::tasks::block_on(async {
+        let server = TestServer::start(|_, _| TestResponse::ok(vec![7; 4096]));
+        let client = DownloadHttpClient::new(DownloadTimeouts::default()).unwrap();
+        let samples = Mutex::new(Vec::new());
+        let token = DownloadCancellationToken::new();
+        let bytes = client
+            .fetch_bytes_with_progress(&server.url, 8192, &token, &|done, total| {
+                samples.lock().unwrap().push((done, total))
+            })
+            .await
+            .unwrap();
+        assert_eq!(bytes.len(), 4096);
+        let measured = samples.lock().unwrap();
+        assert_eq!(measured.first(), Some(&(0, 4096)));
+        assert_eq!(measured.last(), Some(&(4096, 4096)));
+        assert!(measured.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        drop(measured);
+        token.cancel();
+        let error = client
+            .fetch_bytes_with_progress(&server.url, 8192, &token, &|_, _| {})
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "download_cancelled");
+    });
+}
+
 impl TestResponse {
     fn ok(body: Vec<u8>) -> Self {
         Self {

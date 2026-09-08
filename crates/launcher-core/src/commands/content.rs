@@ -1,5 +1,8 @@
+mod description;
 pub(crate) mod forge;
+mod project_metadata;
 mod security;
+mod skins;
 #[cfg(test)]
 mod tests;
 use crate::downloads::DownloadCancellationToken;
@@ -44,6 +47,9 @@ pub struct ContentService {
     metadata: Arc<MetadataService>,
     runtimes: Arc<crate::runtime::RuntimeManager>,
     cancellation: Arc<Mutex<DownloadCancellationToken>>,
+    skin_mutation: Arc<tokio::sync::Mutex<()>>,
+    project_identities: project_metadata::IdentityCache,
+    events: crate::events::EventBus,
     previews: Arc<
         Mutex<std::collections::HashMap<String, (tempfile::NamedTempFile, std::time::Instant)>>,
     >,
@@ -231,6 +237,10 @@ pub struct BuildWorldSummary {
 pub type BuildLogSummary = BuildFileEntry;
 
 impl ContentService {
+    pub fn with_events(mut self, events: crate::events::EventBus) -> Self {
+        self.events = events;
+        self
+    }
     pub fn new(
         paths: AppPaths,
         storage: Storage,
@@ -262,6 +272,9 @@ impl ContentService {
             metadata,
             runtimes,
             cancellation: Arc::new(Mutex::new(DownloadCancellationToken::new())),
+            skin_mutation: Arc::new(tokio::sync::Mutex::new(())),
+            project_identities: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            events: crate::events::EventBus::default(),
             previews: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
@@ -841,13 +854,17 @@ impl ContentService {
             format!("{}.disabled", file.filename)
         });
         security::safe_destination(root, &destination)?;
-        let staged = security::download(
+        let staged = security::download_with_progress(
             &self.client,
             root,
             &file.url,
             &file.hashes,
             Some(file.size),
             &self.token(),
+            &|done, total| {
+                self.events
+                    .progress("content-download", &file.filename, done, total, 0, 1)
+            },
         )
         .await?;
         let item = InstalledContent {
@@ -861,6 +878,8 @@ impl ContentService {
             icon_url: project.icon_url,
             enabled,
         };
+        self.events
+            .progress("content-install", &item.title, 0, 0, 0, 1);
         let mut tx = FileTransaction::new(root)?;
         tx.replace(&destination, staged.path())?;
         if let Some(old) = old {
@@ -877,7 +896,7 @@ impl ContentService {
         Ok(item)
     }
 
-    fn token(&self) -> DownloadCancellationToken {
+    pub(crate) fn token(&self) -> DownloadCancellationToken {
         self.cancellation
             .lock()
             .expect("content cancellation")
@@ -910,13 +929,17 @@ impl ContentService {
             .find(|f| f.primary)
             .or_else(|| version.files.first())
             .ok_or_else(network_error)?;
-        let archive = security::download(
+        let archive = security::download_with_progress(
             &self.client,
             &self.cache_directory()?,
             &file.url,
             &file.hashes,
             Some(file.size),
             &self.token(),
+            &|done, total| {
+                self.events
+                    .progress("archive-download", &project.title, done, total, 0, 1)
+            },
         )
         .await?;
         self.install_mrpack_archive(
@@ -1003,6 +1026,19 @@ impl ContentService {
             .map_err(|_| LauncherError::storage_unavailable())?;
         let mut staged = Vec::new();
         let mut records = Vec::new();
+        let total_files = index
+            .files
+            .iter()
+            .filter(|f| f.env.as_ref().and_then(|e| e.client.as_deref()) != Some("unsupported"))
+            .count() as u64;
+        let total_bytes: u64 = index
+            .files
+            .iter()
+            .filter(|f| f.env.as_ref().and_then(|e| e.client.as_deref()) != Some("unsupported"))
+            .map(|f| f.file_size)
+            .sum();
+        let mut completed_bytes = 0;
+        let mut completed_files = 0;
         for entry in &index.files {
             if token.is_cancelled() {
                 return Err(security::cancelled());
@@ -1047,18 +1083,30 @@ impl ContentService {
             // Some packs list configs/world templates as downloads instead of
             // overrides. Repair must protect those user files in either form.
             if repairing && project_type == "file" && target.exists() {
+                completed_bytes += entry.file_size;
+                completed_files += 1;
                 continue;
             }
             let mut last_error = None;
             let mut downloaded = None;
             for url in &entry.downloads {
-                match security::download(
+                match security::download_with_progress(
                     &self.client,
                     staging.path(),
                     url,
                     &entry.hashes,
                     Some(entry.file_size),
                     &token,
+                    &|done, _| {
+                        self.events.progress(
+                            "content-download",
+                            &filename,
+                            completed_bytes + done,
+                            total_bytes,
+                            completed_files,
+                            total_files,
+                        )
+                    },
                 )
                 .await
                 {
@@ -1071,6 +1119,16 @@ impl ContentService {
                 }
             }
             let file = downloaded.ok_or_else(|| last_error.unwrap_or_else(network_error))?;
+            completed_bytes += entry.file_size;
+            completed_files += 1;
+            self.events.progress(
+                "content-download",
+                &filename,
+                completed_bytes,
+                total_bytes,
+                completed_files,
+                total_files,
+            );
             staged.push((destination, file));
             if project_type != "file" {
                 records.push(InstalledContent {
@@ -1088,6 +1146,8 @@ impl ContentService {
                 });
             }
         }
+        self.events
+            .progress("content-install", &build.name, 0, 0, 0, 0);
         let mut override_paths = std::collections::BTreeMap::new();
         for prefix in ["overrides/", "client-overrides/"] {
             for i in 0..archive.len() {
@@ -1305,7 +1365,17 @@ impl ContentService {
         result
     }
     fn skin_view(&self, skin: OfflineSkin) -> Result<OfflineSkinView, LauncherError> {
-        let bytes = fs::read(&skin.file_path).map_err(|_| LauncherError::storage_unavailable())?;
+        let stored = skins::stored_path(&skin)?;
+        // APPDATA/TEMP may use an 8.3 alias or different case on Windows.
+        let skin_root = security::safe_destination(&self.paths.root, Path::new("skins"))?;
+        let relative = stored
+            .strip_prefix(&skin_root)
+            .map_err(|_| LauncherError::invalid_path())?;
+        if relative.components().count() != 2 {
+            return Err(LauncherError::invalid_path());
+        }
+        let path = security::safe_destination(&skin_root, relative)?;
+        let bytes = skins::read_skin(&path)?;
         Ok(OfflineSkinView {
             id: skin.id,
             account_id: skin.account_id,
@@ -1396,10 +1466,15 @@ pub async fn search_modrinth(
 pub async fn modrinth_project(
     project_id: String,
     service: &ContentService,
-) -> Result<ProjectDetails, LauncherError> {
-    service
+) -> Result<serde_json::Value, LauncherError> {
+    let project: ProjectDetails = service
         .json(&format!("{MODRINTH_API}/project/{project_id}"))
-        .await
+        .await?;
+    let html = description::render(&project.body);
+    let mut value =
+        serde_json::to_value(project).map_err(|_| LauncherError::storage_unavailable())?;
+    value["bodyHtml"] = serde_json::Value::String(html);
+    Ok(value)
 }
 pub async fn modrinth_project_versions(
     project_id: String,
@@ -1592,7 +1667,7 @@ pub async fn list_installed_content(
     service: &ContentService,
 ) -> Result<Vec<InstalledContent>, LauncherError> {
     // Reading the installed library must never wait for Modrinth or mutate its records.
-    service.storage.list_installed_content(&build_id).await
+    service.content_with_metadata(&build_id).await
 }
 
 pub async fn remove_installed_content(
@@ -2235,6 +2310,8 @@ pub async fn list_offline_skins(
     account_id: String,
     service: &ContentService,
 ) -> Result<Vec<OfflineSkinView>, LauncherError> {
+    let _lock = service.skin_mutation.lock().await;
+    service.prepare_skin_library(&account_id).await?;
     service
         .storage
         .list_offline_skins(&account_id)
@@ -2248,40 +2325,23 @@ pub async fn add_offline_skin(
     account_id: String,
     service: &ContentService,
 ) -> Result<Option<OfflineSkinView>, LauncherError> {
+    let _lock = service.skin_mutation.lock().await;
     let Some(source) = choose_png_file()? else {
         return Ok(None);
     };
-    let bytes = fs::read(&source).map_err(|_| LauncherError::storage_unavailable())?;
-    validate_skin_png(&bytes)?;
-    let account_key = format!("{:x}", Sha256::digest(account_id.as_bytes()));
-    let directory = service
-        .paths
-        .safe_join(&service.paths.root, Path::new("skins"))?
-        .join(account_key);
-    fs::create_dir_all(&directory).map_err(|_| LauncherError::storage_unavailable())?;
-    let id = format!(
-        "skin-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-    let target = directory.join(format!("{id}.png"));
-    fs::write(&target, &bytes).map_err(|_| LauncherError::storage_unavailable())?;
-    let skin = OfflineSkin {
-        id,
-        account_id,
-        name: source
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Скин")
-            .to_owned(),
-        file_path: target.to_string_lossy().into_owned(),
-        is_active: true,
-        is_favorite: false,
-    };
-    service.storage.add_offline_skin(&skin).await?;
-    service.skin_view(skin).map(Some)
+    let bytes = skins::read_skin(&source)?;
+    service
+        .import_skin(
+            account_id,
+            source
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Скин")
+                .to_owned(),
+            &bytes,
+        )
+        .await
+        .map(Some)
 }
 
 pub async fn delete_offline_skin(
@@ -2289,6 +2349,7 @@ pub async fn delete_offline_skin(
     skin_id: String,
     service: &ContentService,
 ) -> Result<(), LauncherError> {
+    let _lock = service.skin_mutation.lock().await;
     let skin = service
         .storage
         .list_offline_skins(&account_id)
@@ -2296,14 +2357,7 @@ pub async fn delete_offline_skin(
         .into_iter()
         .find(|skin| skin.id == skin_id)
         .ok_or_else(|| input_error("skin_not_found", "Скин не найден в библиотеке."))?;
-    let account_key = format!("{:x}", Sha256::digest(account_id.as_bytes()));
-    let relative = Path::new("skins")
-        .join(account_key)
-        .join(format!("{skin_id}.png"));
-    let expected_path = security::safe_destination(&service.paths.root, &relative)?;
-    if crate::paths::strip_verbatim_prefix(PathBuf::from(&skin.file_path)) != expected_path {
-        return Err(LauncherError::storage_unavailable());
-    }
+    let relative = service.skin_relative(&account_id, &skin).await?;
     let mut transaction = FileTransaction::new(&service.paths.root)?;
     transaction.remove(&relative)?;
     service
@@ -2320,6 +2374,7 @@ pub async fn rename_offline_skin(
     name: String,
     service: &ContentService,
 ) -> Result<OfflineSkinView, LauncherError> {
+    let _lock = service.skin_mutation.lock().await;
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 60 {
         return Err(input_error(
@@ -2340,6 +2395,7 @@ pub async fn set_offline_skin_favorite(
     is_favorite: bool,
     service: &ContentService,
 ) -> Result<OfflineSkinView, LauncherError> {
+    let _lock = service.skin_mutation.lock().await;
     let skin = service
         .storage
         .update_offline_skin(&account_id, &skin_id, None, Some(is_favorite))
@@ -2453,6 +2509,7 @@ pub async fn apply_minecraft_skin(
     service: &ContentService,
     auth: &std::sync::Arc<crate::auth::AuthService>,
 ) -> Result<MinecraftCosmetics, LauncherError> {
+    let _lock = service.skin_mutation.lock().await;
     let variant = match variant.to_ascii_lowercase().as_str() {
         "slim" => "slim",
         "classic" => "classic",
@@ -2470,8 +2527,9 @@ pub async fn apply_minecraft_skin(
         .into_iter()
         .find(|skin| skin.id == skin_id)
         .ok_or_else(|| input_error("skin_not_found", "Скин не найден в библиотеке."))?;
-    let bytes = fs::read(&skin.file_path).map_err(|_| LauncherError::storage_unavailable())?;
-    validate_skin_png(&bytes)?;
+    let relative = service.skin_relative(&account_id, &skin).await?;
+    let path = security::safe_destination(&service.paths.root, &relative)?;
+    let bytes = skins::read_skin(&path)?;
     let token = online_account_token(&account_id, auth.as_ref()).await?;
     let boundary = format!(
         "----CKLauncher{:x}",
@@ -2546,6 +2604,7 @@ pub async fn select_offline_skin(
     skin_id: String,
     service: &ContentService,
 ) -> Result<OfflineSkinView, LauncherError> {
+    let _lock = service.skin_mutation.lock().await;
     service
         .storage
         .select_offline_skin(&account_id, &skin_id)

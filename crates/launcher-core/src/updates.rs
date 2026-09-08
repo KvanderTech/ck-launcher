@@ -129,6 +129,8 @@ pub async fn install_update(
     signature_url: String,
     install_dir: String,
     launcher_pid: u32,
+    events: &crate::events::EventBus,
+    cancel: &crate::downloads::DownloadCancellationToken,
 ) -> Result<bool, LauncherError> {
     let asset = url::Url::parse(&asset_url).map_err(|_| failed())?;
     let segments: Vec<_> = asset.path_segments().ok_or_else(failed)?.collect();
@@ -149,7 +151,8 @@ pub async fn install_update(
     validate_asset_url(&asset_url, tag, &name)?;
     validate_asset_url(&signature_url, tag, &format!("{name}.sig"))?;
     let http = client()?;
-    let archive = bounded(
+    events.progress("update-download", &format!("ЦК Лаунчер {tag}"), 0, 0, 0, 0);
+    let archive = bounded_with_progress(
         http.get(&asset_url)
             .send()
             .await
@@ -157,9 +160,21 @@ pub async fn install_update(
             .error_for_status()
             .map_err(|_| failed())?,
         MAX_ARCHIVE,
+        cancel,
+        &|done, total| {
+            events.progress(
+                "update-download",
+                &format!("ЦК Лаунчер {tag}"),
+                done,
+                total,
+                0,
+                0,
+            )
+        },
     )
     .await?;
-    let signature = bounded(
+    events.progress("update-verify", "Проверка подлинности пакета", 0, 0, 0, 0);
+    let signature = bounded_with_progress(
         http.get(&signature_url)
             .send()
             .await
@@ -167,6 +182,8 @@ pub async fn install_update(
             .error_for_status()
             .map_err(|_| failed())?,
         32 * 1024,
+        cancel,
+        &|_, _| {},
     )
     .await?;
     verify(&archive, &signature)?;
@@ -186,6 +203,10 @@ pub async fn install_update(
     ));
     let extracted = root.join("package");
     fs::create_dir_all(&extracted).map_err(|_| failed())?;
+    if cancel.is_cancelled() {
+        return Err(cancelled());
+    }
+    events.progress("update-install", "Подготовка файлов обновления", 0, 0, 0, 0);
     extract(&archive, &extracted)?;
     // The updater is part of the verified release, so future updater fixes apply to
     // this installation too; never execute a stale helper from the old installation.
@@ -207,19 +228,58 @@ pub async fn install_update(
 }
 
 async fn bounded(response: reqwest::Response, max: usize) -> Result<Vec<u8>, LauncherError> {
+    bounded_with_progress(
+        response,
+        max,
+        &crate::downloads::DownloadCancellationToken::new(),
+        &|_, _| {},
+    )
+    .await
+}
+
+async fn bounded_with_progress(
+    response: reqwest::Response,
+    max: usize,
+    cancel: &crate::downloads::DownloadCancellationToken,
+    progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<Vec<u8>, LauncherError> {
     if response.content_length().is_some_and(|n| n > max as u64) {
         return Err(failed());
     }
     let mut result = Vec::new();
+    let total = response.content_length().unwrap_or(0);
+    let mut reported = std::time::Instant::now();
+    progress(0, total);
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let chunk = tokio::select! {
+            _ = cancel.cancelled() => return Err(cancelled()),
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         let chunk = chunk.map_err(|_| failed())?;
         if result.len() + chunk.len() > max {
             return Err(failed());
         }
         result.extend_from_slice(&chunk);
+        if reported.elapsed() >= std::time::Duration::from_millis(100) {
+            progress(result.len() as u64, total);
+            reported = std::time::Instant::now();
+        }
     }
+    progress(result.len() as u64, total);
     Ok(result)
+}
+
+fn cancelled() -> LauncherError {
+    LauncherError::new(
+        "download_cancelled",
+        "Загрузка обновления отменена.",
+        None,
+        true,
+    )
 }
 
 fn verify(archive: &[u8], encoded: &[u8]) -> Result<(), LauncherError> {
@@ -378,6 +438,19 @@ mod tests {
             "modern"
         )
         .is_err());
+    }
+
+    #[test]
+    fn first_stable_release_updates_both_beta_channels_and_then_rejects_betas() {
+        let beta = semver::Version::parse("0.2.4-beta.1").unwrap();
+        let stable = semver::Version::parse("1.0.0").unwrap();
+        for channel in ["modern", "legacy"] {
+            let file = format!("ck-launcher-qt-{channel}-windows-x64.zip");
+            assert!(validate_install_version("v1.0.0", &file, &beta, channel).is_ok());
+            assert!(validate_install_version("v1.0.1", &file, &stable, channel).is_ok());
+            assert!(validate_install_version("v1.1.0-beta.1", &file, &stable, channel).is_err());
+            assert!(validate_install_version("v0.2.4-beta.1", &file, &stable, channel).is_err());
+        }
     }
 
     #[test]

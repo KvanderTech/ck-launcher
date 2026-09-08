@@ -269,13 +269,14 @@ pub(super) fn limit_error() -> LauncherError {
 pub(super) fn cancelled() -> LauncherError {
     input_error("operation_cancelled", "Операция отменена.")
 }
-pub(super) async fn download(
+pub(super) async fn download_with_progress(
     client: &reqwest::Client,
     root: &Path,
     url: &str,
     hashes: &FileHashes,
     size: Option<u64>,
     token: &DownloadCancellationToken,
+    progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<tempfile::NamedTempFile, LauncherError> {
     validate_url(url)?;
     validate_hashes(hashes.sha512.as_deref(), hashes.sha1.as_deref())?;
@@ -290,6 +291,9 @@ pub(super) async fn download(
     {
         return Err(limit_error());
     }
+    let total = size.or(response.content_length()).unwrap_or(0);
+    let mut reported = std::time::Instant::now();
+    progress(0, total);
     let mut file = tempfile::Builder::new()
         .prefix(".ck-download-")
         .tempfile_in(root)
@@ -314,6 +318,10 @@ pub(super) async fn download(
         sha1.update(&chunk);
         file.write_all(&chunk)
             .map_err(|_| LauncherError::storage_unavailable())?;
+        if reported.elapsed() >= std::time::Duration::from_millis(100) {
+            progress(count, total);
+            reported = std::time::Instant::now();
+        }
     }
     if size.is_some_and(|s| s != count)
         || hashes
@@ -334,6 +342,7 @@ pub(super) async fn download(
         .and_then(|_| file.as_file().sync_all())
         .and_then(|_| file.seek(SeekFrom::Start(0)))
         .map_err(|_| LauncherError::storage_unavailable())?;
+    progress(count, total.max(count));
     Ok(file)
 }
 /// Roll back every replaced file if validation, cancellation, or database commit fails.
