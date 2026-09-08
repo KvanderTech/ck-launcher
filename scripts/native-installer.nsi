@@ -3,7 +3,7 @@ Unicode true
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
-!define CK_VERSION "0.2.2-beta.1"
+!define CK_VERSION "0.2.3-beta.1"
 !define CK_ICON "..\app\src-tauri\icons\icon.ico"
 !define MUI_ICON "${CK_ICON}"
 !define MUI_UNICON "${CK_ICON}"
@@ -34,7 +34,7 @@ SetCompressor /SOLID lzma
 BrandingText "ЦК Лаунчер"
 SetFont "Segoe UI" 10
 InstallColors 20BBEE 102E46
-VIProductVersion "0.2.2.1"
+VIProductVersion "0.2.3.1"
 VIAddVersionKey /LANG=1049 "ProductName" "ЦК Лаунчер"
 VIAddVersionKey /LANG=1049 "FileDescription" "Установка ЦК Лаунчера"
 VIAddVersionKey /LANG=1049 "FileVersion" "${CK_VERSION}"

@@ -1,5 +1,7 @@
 # Third-party components
 
+Emotecraft format interpretation and joint deformation follow KosmX's PlayerAnimator (revision `cb3227efc19ec46065597332ae265076d0f2b495`) and BendyLib (`100125490d6c4f0e707678375b2923aae1f3de9a`) reference algorithms. Both are MIT-licensed; the copyright and permission notice is included in `licenses/animation-reference-MIT.txt`. This frontend implements its own Qt renderer and does not bundle the Java libraries.
+
 Qt Widgets/Core/Gui/Network are dynamically linked. Qt 6.8.3 and Qt 5.15.2 source archives and corresponding build instructions are available from https://download.qt.io/official_releases/qt/ and https://download.qt.io/archive/qt/ respectively. Users may replace compatible Qt DLLs and rebuild this frontend. This project does not impose restrictions on debugging modifications to those libraries. Qt license texts accompany the package in `licenses/qt/`. The WebP image plugin uses libwebp; the corresponding Qt 5.15.2 / 6.8.3 bundled notices and patent grants are included in `licenses/qt/webp/`. Unused image-format plugins are excluded from native packages.
 
 Rust dependencies are pinned in the root Cargo.lock. `scripts/collect-licenses.py` collects their declared licenses and available license/notice files from Cargo metadata into each native distribution. That inventory includes optional dependencies in Cargo's resolved metadata; actual target features are also recorded in a dependency tree. Review notices when changing dependencies or publishing binaries.

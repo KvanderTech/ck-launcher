@@ -85,30 +85,17 @@ void SkinView::paintEvent(QPaintEvent *) {
         auto p = clip.sample(QString::fromLatin1(part),
                              qBound(0.0, local * 20, clip.duration() * 20), bind);
         p.position = bind + (p.position - bind) * float(weight);
-        p.rotation *= float(weight);
         p.scale = QVector3D(1, 1, 1) + (p.scale - QVector3D(1, 1, 1)) * float(weight);
         p.bend *= float(weight);
         return p;
     };
     auto torsoPose = pose("torso", {});
     auto rootPose = pose("body", {});
-    QMatrix4x4 root;
-    root.translate(rootPose.position.x(), -rootPose.position.y(), -rootPose.position.z());
-    root.translate(0, 16, 0);
-    root.rotate(float(-rootPose.rotation.z() * 180 / pi), 0, 0, 1);
-    root.rotate(float(-rootPose.rotation.y() * 180 / pi), 0, 1, 0);
-    root.rotate(float(rootPose.rotation.x() * 180 / pi), 1, 0, 0);
-    root.scale(rootPose.scale);
-    root.translate(0, -16, 0);
-    auto matrix = [&](const EmotePart &p) {
-        QMatrix4x4 m;
-        m.translate(p.position.x(), 24 - p.position.y(), -p.position.z());
-        m.rotate(float(-p.rotation.z() * 180 / pi), 0, 0, 1);
-        m.rotate(float(-p.rotation.y() * 180 / pi), 0, 1, 0);
-        m.rotate(float(p.rotation.x() * 180 / pi), 1, 0, 0);
-        m.scale(p.scale);
-        return m;
-    };
+    const auto root = EmoteClip::bodyTransform(rootPose, float(weight));
+    const auto upper = EmoteClip::bendTransform({0, 18, 0}, rootPose.bend, rootPose.axis, true);
+    torsoPose.bend += rootPose.bend;
+    torsoPose.axis += rootPose.axis;
+    auto matrix = [&](const EmotePart &p) { return EmoteClip::modelTransform(p, float(weight)); };
     // Supersampled, perspective-correct, depth-tested software rendering works on
     // both Qt 5/Windows 7 and Qt 6 without depending on a particular GPU driver.
     const double factor = qBound(2.0, devicePixelRatioF() * 1.5, 3.0);
@@ -120,7 +107,7 @@ void SkinView::paintEvent(QPaintEvent *) {
     view.rotate(-6, 1, 0, 0);
     view.rotate(float(yaw), 0, 1, 0);
     const double scale =
-        std::min(width() / (compact ? 17.0 : 29.0), height() / (compact ? 24.5 : 39.0)) * factor;
+        std::min(width() / (compact ? 17.0 : 36.0), height() / (compact ? 24.5 : 43.0)) * factor;
     const double center = compact ? 20.0 : 16;
     struct Vertex {
         double x, y, inv, u, v;
@@ -132,8 +119,8 @@ void SkinView::paintEvent(QPaintEvent *) {
     };
     QVector<Face> faces;
     auto box = [&](float w, float h, float d, int tx, int ty, QMatrix4x4 m, QVector3D offset,
-                   const QImage &image, const EmotePart &part, float pivot, bool bendUpper,
-                   bool upperBody, float expand = 0) {
+                   const QImage &image, const EmotePart &part, bool bendUpper, bool upperBody,
+                   float expand = 0, bool mirrorTexture = false) {
         const float x = w / 2 + expand, top = h / 2 + expand, z = d / 2 + expand;
         const QVector<QVector<QVector3D>> planes{
             {{-x, top, z}, {x, top, z}, {x, -top, z}, {-x, -top, z}},
@@ -149,7 +136,7 @@ void SkinView::paintEvent(QPaintEvent *) {
                                   {double(tx + d), double(ty), w, d},
                                   {double(tx + d + w), double(ty), w, d}};
         for (int side = 0; side < planes.size(); ++side) {
-            const int slices = side < 4 && std::abs(part.bend) > .0001 ? int(h) : 1;
+            const int slices = side < 4 && std::abs(part.bend) > .0001 ? 2 : 1;
             const auto &plane = planes[side];
             for (int slice = 0; slice < slices; ++slice) {
                 const float a = float(slice) / slices, b = float(slice + 1) / slices;
@@ -159,11 +146,11 @@ void SkinView::paintEvent(QPaintEvent *) {
                 QVector<QVector3D> world;
                 for (auto &point : points) {
                     point += offset;
-                    point = EmoteClip::bendVertex(point, pivot, part.bend, part.axis, bendUpper);
+                    point = EmoteClip::bendVertex(point, offset, h / 2 + expand, part.bend,
+                                                  part.axis, bendUpper);
                     point = m.map(point);
                     if (upperBody)
-                        point =
-                            EmoteClip::bendVertex(point, 18, torsoPose.bend, torsoPose.axis, true);
+                        point = upper.map(point);
                     point = view.map(root.map(point));
                     world.append(point);
                 }
@@ -174,12 +161,15 @@ void SkinView::paintEvent(QPaintEvent *) {
                            .9 - std::abs(double(normal.x())) * .13 +
                                std::abs(double(normal.z())) * .08 - double(normal.y()) * .07,
                            1.0);
-                const auto uv = uvs[side];
+                const auto uv = uvs[mirrorTexture && (side == 2 || side == 3) ? 5 - side : side];
                 const double ratio = image.width() / 64.0;
                 QVector<QPointF> coords{{uv.left(), uv.top() + uv.height() * a},
                                         {uv.right(), uv.top() + uv.height() * a},
                                         {uv.right(), uv.top() + uv.height() * b},
                                         {uv.left(), uv.top() + uv.height() * b}};
+                if (mirrorTexture)
+                    for (auto &coordinate : coords)
+                        coordinate.setX(uv.left() + uv.right() - coordinate.x());
                 Face face{{}, &image, 0, shade};
                 for (int i = 0; i < 4; ++i) {
                     const auto &point = world[i];
@@ -195,46 +185,39 @@ void SkinView::paintEvent(QPaintEvent *) {
         }
     };
     auto torso = matrix(torsoPose);
-    box(8, 12, 4, 16, 16, torso, {0, -6, 0}, texture, torsoPose, -6, true, false);
+    box(8, 12, 4, 16, 16, torso, {0, -6, 0}, texture, torsoPose, true, false);
     auto headPose = pose("head", {});
-    headPose.rotation.setY(headPose.rotation.y() + float(std::sin(t * .7) * .04 * (1 - weight)));
     auto head = matrix(headPose);
-    box(8, 8, 8, 0, 0, head, {0, 4, 0}, texture, {}, 0, false, true);
-    box(8, 8, 8, 32, 0, head, {0, 4, 0}, texture, {}, 0, false, true, .25);
+    head.rotate(float(-std::sin(t * .7) * .04 * (1 - weight) * 180 / pi), 0, 1, 0);
+    box(8, 8, 8, 0, 0, head, {0, 4, 0}, texture, {}, false, true);
+    box(8, 8, 8, 32, 0, head, {0, 4, 0}, texture, {}, false, true, .25);
     const bool modern = texture.height() >= texture.width();
     const float arm = slim ? 3 : 4;
     auto rightPose = pose("rightArm", {-5, 2, 0}), leftPose = pose("leftArm", {5, 2, 0});
-    rightPose.rotation.setZ(rightPose.rotation.z() +
-                            float((.035 + std::sin(t * 1.5) * .015) * (1 - weight)));
-    leftPose.rotation.setZ(leftPose.rotation.z() -
-                           float((.035 + std::sin(t * 1.5) * .015) * (1 - weight)));
     auto right = matrix(rightPose), left = matrix(leftPose);
-    if (!modern)
-        left.scale(-1, 1, 1);
-    box(arm, 12, 4, 40, 16, right, {-arm / 2 + 1, -4, 0}, texture, rightPose, -4, false, true);
-    box(arm, 12, 4, modern ? 32 : 40, modern ? 48 : 16, left,
-        {modern ? arm / 2 - 1 : -arm / 2 + 1, -4, 0}, texture, leftPose, -4, false, true);
+    const auto idle = float((.035 + std::sin(t * 1.5) * .015) * (1 - weight) * 180 / pi);
+    right.rotate(-idle, 0, 0, 1);
+    left.rotate(idle, 0, 0, 1);
+    box(arm, 12, 4, 40, 16, right, {-arm / 2 + 1, -4, 0}, texture, rightPose, false, true);
+    box(arm, 12, 4, modern ? 32 : 40, modern ? 48 : 16, left, {arm / 2 - 1, -4, 0}, texture,
+        leftPose, false, true, 0, !modern);
     auto rightLeg = pose("rightLeg", {-1.9f, 12, .1f}), leftLeg = pose("leftLeg", {1.9f, 12, .1f});
     auto rleg = matrix(rightLeg), lleg = matrix(leftLeg);
-    if (!modern)
-        lleg.scale(-1, 1, 1);
-    box(4, 12, 4, 0, 16, rleg, {0, -6, 0}, texture, rightLeg, -6, false, false);
-    box(4, 12, 4, modern ? 16 : 0, modern ? 48 : 16, lleg, {0, -6, 0}, texture, leftLeg, -6, false,
-        false);
+    box(4, 12, 4, 0, 16, rleg, {0, -6, 0}, texture, rightLeg, false, false);
+    box(4, 12, 4, modern ? 16 : 0, modern ? 48 : 16, lleg, {0, -6, 0}, texture, leftLeg, false,
+        false, 0, !modern);
     if (modern) {
-        box(8, 12, 4, 16, 32, torso, {0, -6, 0}, texture, torsoPose, -6, true, false, .15);
-        box(arm, 12, 4, 40, 32, right, {-arm / 2 + 1, -4, 0}, texture, rightPose, -4, false, true,
-            .15);
-        box(arm, 12, 4, 48, 48, left, {arm / 2 - 1, -4, 0}, texture, leftPose, -4, false, true,
-            .15);
-        box(4, 12, 4, 0, 32, rleg, {0, -6, 0}, texture, rightLeg, -6, false, false, .15);
-        box(4, 12, 4, 0, 48, lleg, {0, -6, 0}, texture, leftLeg, -6, false, false, .15);
+        box(8, 12, 4, 16, 32, torso, {0, -6, 0}, texture, torsoPose, true, false, .15);
+        box(arm, 12, 4, 40, 32, right, {-arm / 2 + 1, -4, 0}, texture, rightPose, false, true, .15);
+        box(arm, 12, 4, 48, 48, left, {arm / 2 - 1, -4, 0}, texture, leftPose, false, true, .15);
+        box(4, 12, 4, 0, 32, rleg, {0, -6, 0}, texture, rightLeg, false, false, .15);
+        box(4, 12, 4, 0, 48, lleg, {0, -6, 0}, texture, leftLeg, false, false, .15);
     }
     if (!cape.isNull()) {
         QMatrix4x4 cloak;
         cloak.translate(0, 23, -2.6);
         cloak.rotate(float(-7 - std::sin(t * 1.8) * 2), 1, 0, 0);
-        box(10, 16, 1, 0, 0, cloak, {0, -8, 0}, cape, {}, 0, false, true, .03);
+        box(10, 16, 1, 0, 0, cloak, {0, -8, 0}, cape, {}, false, true, .03);
     }
     std::stable_sort(faces.begin(), faces.end(),
                      [](const Face &a, const Face &b) { return a.depth < b.depth; });
