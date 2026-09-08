@@ -5,8 +5,9 @@
 #include <cmath>
 #include <limits>
 
-SkinView::SkinView(bool small, QWidget *parent) : QWidget(parent), compact(small) {
-    setMinimumSize(small ? 100 : 180, small ? 150 : 260);
+SkinView::SkinView(bool compactPreview, QWidget *parent)
+    : QWidget(parent), compact(compactPreview) {
+    setMinimumSize(compactPreview ? 100 : 180, compactPreview ? 150 : 260);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     if (compact)
         setAttribute(Qt::WA_TransparentForMouseEvents);

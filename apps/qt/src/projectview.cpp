@@ -348,9 +348,11 @@ void ProjectView::open(const QJsonObject &input, const QJsonArray &list, const Q
     icon->setImage({});
     icon->setFallback(title->text());
     // A new document invalidates old image callbacks when another project is opened.
-    auto *previous = body->document();
+    // QTextBrowser can synchronously delete its default document in setDocument().
+    // Our own documents belong to body and need deferred cleanup when replaced.
+    QPointer<QTextDocument> previous = body->document();
     body->setDocument(new ProjectDocument(images, body));
-    if (previous->parent() == body)
+    if (previous && previous->parent() == body)
         previous->deleteLater();
     body->setPlainText(tr("Загружаем описание…"));
     tabs->setCurrentIndex(0);

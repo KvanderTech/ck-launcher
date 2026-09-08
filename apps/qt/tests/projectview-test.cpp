@@ -41,7 +41,11 @@ class ProjectViewTest final : public QObject {
         return view->findChild<QPushButton *>(s("project-install"));
     }
     QPushButton *rowButton(const QString &id) const {
-        return view->findChild<QPushButton *>(s("project-version-install-") + id);
+        // Removed cell widgets can remain QObject children until DeferredDelete.
+        // Resolve the live model row, not a retired button with the same object name.
+        const auto index = row(id);
+        auto *cell = index < 0 ? nullptr : table()->cellWidget(index, 1);
+        return cell ? cell->findChild<QPushButton *>(s("project-version-install-") + id) : nullptr;
     }
     QLabel *status() const {
         return view->findChild<QLabel *>(s("project-status"));
@@ -98,6 +102,32 @@ class ProjectViewTest final : public QObject {
     void cleanup() {
         delete view;
         view = nullptr;
+    }
+
+    void openingProjectsReleasesDescriptionDocumentsSafely() {
+        auto *description = view->findChild<QTextBrowser *>(s("project-description"));
+        QVERIFY(description);
+        QPointer<QTextDocument> initial = description->document();
+        QVERIFY(initial);
+        open();
+        // The browser owns and destroys its initial document synchronously.
+        // Accessing the old raw pointer after setDocument() is a use-after-free.
+        QVERIFY(initial.isNull());
+        QTRY_VERIFY(install()->isEnabled());
+        for (int i = 0; i < 4; ++i) {
+            QPointer<QTextDocument> previous = description->document();
+            QVERIFY(previous);
+            QCOMPARE(previous->parent(), description);
+            open();
+            QVERIFY(description->document() != previous.data());
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QVERIFY(previous.isNull());
+            QTRY_COMPARE(choices()->count(), 3);
+            QTRY_VERIFY(install()->isEnabled());
+        }
+        QCOMPARE(description->findChildren<QTextDocument *>(QString(), Qt::FindDirectChildrenOnly)
+                     .count(),
+                 1);
     }
 
     void rowInstallsItsExactVersion() {
@@ -183,6 +213,28 @@ class ProjectViewTest final : public QObject {
         QCOMPARE(loader->currentData().toString(), s("vanilla"));
         QCOMPARE(choices()->count(), 0);
         QVERIFY(!install()->isEnabled());
+    }
+
+    void rebuildingRowsUsesTheCurrentInstallButton() {
+        open();
+        QTRY_COMPARE(choices()->count(), 3);
+        QTRY_VERIFY(install()->isEnabled());
+        versionsTab();
+        QPointer<QPushButton> retired = rowButton(s("pv-new"));
+        QVERIFY(retired);
+        auto *loader = view->findChild<QComboBox *>(s("project-loader"));
+        loader->setCurrentIndex(loader->findData(s("fabric")));
+        QCOMPARE(choices()->count(), 2);
+        auto *current = rowButton(s("pv-new"));
+        QVERIFY(current);
+        QVERIFY(current != retired.data());
+        QCOMPARE(current->parentWidget(), table()->cellWidget(row(s("pv-new")), 1));
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QVERIFY(retired.isNull());
+        QSignalSpy requested(view, &ProjectView::installRequested);
+        QTest::mouseClick(current, Qt::LeftButton);
+        QCOMPARE(requested.count(), 1);
+        QCOMPARE(requested.takeFirst()[1].toString(), s("pv-new"));
     }
 
     void busyAndFailureRemainCoherent() {
