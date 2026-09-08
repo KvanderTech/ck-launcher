@@ -573,6 +573,17 @@ pub trait RuntimeArchiveFetcher: Send + Sync {
         max_bytes: usize,
         cancel: &DownloadCancellationToken,
     ) -> Result<Vec<u8>, LauncherError>;
+    async fn fetch_with_progress(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        cancel: &DownloadCancellationToken,
+        progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<Vec<u8>, LauncherError> {
+        let bytes = self.fetch(url, max_bytes, cancel).await?;
+        progress(bytes.len() as u64, bytes.len() as u64);
+        Ok(bytes)
+    }
 }
 
 pub struct BoundedReqwestRuntimeArchiveFetcher {
@@ -595,8 +606,18 @@ impl RuntimeArchiveFetcher for BoundedReqwestRuntimeArchiveFetcher {
         max_bytes: usize,
         cancel: &DownloadCancellationToken,
     ) -> Result<Vec<u8>, LauncherError> {
+        self.fetch_with_progress(url, max_bytes, cancel, &|_, _| {})
+            .await
+    }
+    async fn fetch_with_progress(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        cancel: &DownloadCancellationToken,
+        progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<Vec<u8>, LauncherError> {
         self.client
-            .fetch_bytes_bounded_cancellable(url, max_bytes, cancel)
+            .fetch_bytes_with_progress(url, max_bytes, cancel, progress)
             .await
             .map_err(|error| {
                 if error.code() == "download_cancelled" {
@@ -614,6 +635,7 @@ pub struct RuntimeInstaller {
     fetcher: Arc<dyn RuntimeArchiveFetcher>,
     manifest: RuntimeArchiveManifest,
     swap_files: Arc<dyn RuntimeSwapFileSystem>,
+    events: crate::events::EventBus,
 }
 
 impl RuntimeInstaller {
@@ -629,7 +651,13 @@ impl RuntimeInstaller {
             fetcher,
             manifest,
             swap_files: Arc::new(StandardRuntimeSwapFileSystem),
+            events: crate::events::EventBus::default(),
         }
+    }
+
+    pub fn with_events(mut self, events: crate::events::EventBus) -> Self {
+        self.events = events;
+        self
     }
 
     #[cfg(test)]
@@ -646,6 +674,7 @@ impl RuntimeInstaller {
             fetcher,
             manifest,
             swap_files,
+            events: crate::events::EventBus::default(),
         }
     }
 
@@ -669,11 +698,22 @@ impl RuntimeInstaller {
             .entry(requirement.major())
             .ok_or_else(invalid_manifest)?
             .clone();
+        let label = format!("Java {}", requirement.major());
+        self.events.progress("runtime-download", &label, 0, 0, 0, 0);
         let bytes = self
             .fetcher
-            .fetch(&entry.url, MAX_RUNTIME_ARCHIVE_BYTES, &cancel)
+            .fetch_with_progress(
+                &entry.url,
+                MAX_RUNTIME_ARCHIVE_BYTES,
+                &cancel,
+                &|done, total| {
+                    self.events
+                        .progress("runtime-download", &label, done, total, 0, 0)
+                },
+            )
             .await?;
         ensure_not_cancelled(&cancel)?;
+        self.events.progress("runtime-verify", &label, 0, 0, 0, 0);
         verify_archive_checksum(&bytes, &entry.sha256)?;
         fs::create_dir_all(&self.runtime_root).map_err(|_| install_error())?;
         let nonce = rand::random::<u64>();
@@ -681,6 +721,7 @@ impl RuntimeInstaller {
         let temp = safe_child(&self.runtime_root, &temp_name)?;
         fs::create_dir(&temp).map_err(|_| install_error())?;
 
+        self.events.progress("runtime-install", &label, 0, 0, 0, 0);
         let extraction = extract_zip_archive_cancellable(&bytes, &temp, &cancel);
         if let Err(error) = extraction {
             let _ = fs::remove_dir_all(&temp);

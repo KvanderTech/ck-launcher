@@ -410,7 +410,7 @@ void CardGrid::arrange() {
 ImagePool::ImagePool(Backend *core, QObject *parent)
     : QObject(parent), backend(core), cache(48 * 1024) {}
 QImage ImagePool::decode(const QByteArray &bytes) {
-    if (bytes.isEmpty() || bytes.size() > 2 * 1024 * 1024)
+    if (bytes.isEmpty() || bytes.size() > 4 * 1024 * 1024)
         return {};
     QBuffer buffer;
     buffer.setData(bytes);
@@ -418,7 +418,8 @@ QImage ImagePool::decode(const QByteArray &bytes) {
     QImageReader reader(&buffer);
     auto size = reader.size();
     auto format = reader.format();
-    if (!size.isValid() || size.width() > 2048 || size.height() > 2048 ||
+    if (!size.isValid() || size.width() > 8192 || size.height() > 8192 ||
+        qint64(size.width()) * size.height() > 16 * 1024 * 1024 ||
         !(format == "png" || format == "jpeg" || format == "webp" || format == "gif"))
         return {};
     return reader.read();
@@ -447,7 +448,7 @@ void ImagePool::load(const QString &url, QObject *owner, std::function<void(cons
         done({});
         return;
     }
-    if (waiting.size() > 80 && !waiting.contains(url)) {
+    if (waiting.size() >= 2048 && !waiting.contains(url)) {
         done({});
         return;
     }
@@ -458,8 +459,16 @@ void ImagePool::load(const QString &url, QObject *owner, std::function<void(cons
     }
 }
 QUrl ImagePool::remoteUrl(const QString &text) {
-    const QStringList hosts{s("cdn.modrinth.com"), s("textures.minecraft.net"),
-                            s("www.minecraft.net"), s("minecraft.net"), s("mc-heads.net")};
+    const QStringList hosts{s("gitlab.com"),
+                            s("raw.githubusercontent.com"),
+                            s("i.imgur.com"),
+                            s("i.ibb.co"),
+                            s("img.youtube.com"),
+                            s("cdn.modrinth.com"),
+                            s("textures.minecraft.net"),
+                            s("www.minecraft.net"),
+                            s("minecraft.net"),
+                            s("mc-heads.net")};
     QUrl url(text, QUrl::StrictMode);
     if (!url.isValid() || text.size() > 2048 || !hosts.contains(url.host().toLower()) ||
         !url.userInfo().isEmpty() || url.hasFragment())
@@ -475,6 +484,12 @@ QUrl ImagePool::remoteUrl(const QString &text) {
 void ImagePool::pump() {
     while (activeRequests < 4 && !queue.isEmpty()) {
         const auto key = queue.dequeue();
+        const auto listeners = waiting.value(key);
+        if (std::none_of(listeners.cbegin(), listeners.cend(),
+                         [](const auto &listener) { return !listener.owner.isNull(); })) {
+            waiting.remove(key);
+            continue;
+        }
         const auto url = remoteUrl(key);
         if (url.isEmpty()) {
             complete(key, {});
@@ -489,7 +504,7 @@ void ImagePool::pump() {
                              --guard->activeRequests;
                              QImage image;
                              if (error.isEmpty() && value.isString() &&
-                                 value.toString().size() <= 3 * 1024 * 1024)
+                                 value.toString().size() <= 6 * 1024 * 1024)
                                  image =
                                      decode(QByteArray::fromBase64(value.toString().toLatin1()));
                              guard->complete(key, image);

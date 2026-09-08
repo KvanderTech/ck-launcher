@@ -42,13 +42,16 @@ impl AppContext {
         let metadata = Arc::new(metadata::resolver::MetadataService::production(
             paths.root.join("metadata-cache"),
         )?);
-        let runtimes = Arc::new(runtime::RuntimeManager::production(paths.runtime.clone())?);
+        let runtimes = Arc::new(
+            runtime::RuntimeManager::production(paths.runtime.clone())?.with_events(events.clone()),
+        );
         let content = commands::content::ContentService::new(
             paths.clone(),
             storage.clone(),
             metadata.clone(),
             runtimes.clone(),
-        )?;
+        )?
+        .with_events(events.clone());
         let physical_memory: Arc<dyn profiles::PhysicalMemory> =
             Arc::new(profiles::SystemPhysicalMemory);
         let profiles = profiles::ProfileService::new(

@@ -339,7 +339,7 @@ impl ContentService {
             .prefix(".ck-forge-")
             .tempdir_in(game_root)
             .map_err(|_| LauncherError::storage_unavailable())?;
-        let archive = security::download(
+        let archive = security::download_with_progress(
             &self.client,
             staging.path(),
             &url,
@@ -349,6 +349,10 @@ impl ContentService {
             },
             None,
             &token,
+            &|done, total| {
+                self.events
+                    .progress("loader-download", "Forge", done, total, 0, 1)
+            },
         )
         .await?;
         let installer = staging.path().join("installer.jar");
@@ -397,6 +401,7 @@ impl ContentService {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
+        self.events.progress("loader-install", "Forge", 0, 0, 0, 0);
         let mut child = command.spawn().map_err(|_| invalid_install())?;
         let status = tokio::select! {
             result = child.wait() => result.map_err(|_| invalid_install())?,

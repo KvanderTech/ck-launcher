@@ -5,13 +5,18 @@ use base64::Engine;
 use futures_util::StreamExt;
 use std::{sync::OnceLock, time::Duration};
 use url::Url;
-const MAX_IMAGE: usize = 2 * 1024 * 1024;
+const MAX_IMAGE: usize = 4 * 1024 * 1024;
 const HOSTS: &[&str] = &[
     "cdn.modrinth.com",
     "textures.minecraft.net",
     "mc-heads.net",
     "minecraft.net",
     "www.minecraft.net",
+    "gitlab.com",
+    "raw.githubusercontent.com",
+    "i.imgur.com",
+    "i.ibb.co",
+    "img.youtube.com",
 ];
 fn denied() -> LauncherError {
     LauncherError::new(

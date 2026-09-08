@@ -1,6 +1,6 @@
 [package]
 name = "ck-launcher-core"
-version = "0.2.4-beta.1"
+version = "1.0.0"
 edition = "2021"
 license.workspace = true
 rust-version = "1.90"
@@ -19,6 +19,8 @@ tokio = { version = "1", features = ["macros", "io-util", "io-std", "net", "proc
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+ammonia = "4.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
 url = "2"
 winreg = "0.55"

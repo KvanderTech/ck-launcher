@@ -67,7 +67,7 @@ fn run() -> Result<(), LauncherError> {
     let event_tx = tx.clone();
     let events = EventBus::new(move |event, data| {
         let frame = json!({"event":event,"data":data});
-        if event == "launcher://progress" {
+        if matches!(event, "launcher://progress" | "launcher://content-progress") {
             let _ = event_tx.try_send(frame);
         } else {
             let _ = event_tx.send(frame);

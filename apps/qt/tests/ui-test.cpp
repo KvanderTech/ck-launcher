@@ -241,12 +241,29 @@ class UiTest final : public QObject {
         QTRY_VERIFY(!row()->isEnabled());
         QVERIFY(!window->findChild<QPushButton *>(s("project-install"))->isEnabled());
         QVERIFY(!window->findChild<QComboBox *>(s("project-game"))->isEnabled());
+        backend->event(s("launcher://content-progress"),
+                       QJsonObject{{s("stage"), s("content-download")},
+                                   {s("message"), s("sodium.jar")},
+                                   {s("completedBytes"), 5 * 1024 * 1024},
+                                   {s("totalBytes"), 10 * 1024 * 1024},
+                                   {s("completedFiles"), 2},
+                                   {s("totalFiles"), 10}});
+        QCOMPARE(window->findChild<QLabel *>(s("operation-percent"))->text(), s("50%"));
+        QCOMPARE(window->findChild<QLabel *>(s("operation-stage"))->text(),
+                 QString::fromUtf8("Загрузка файлов"));
+        QVERIFY(
+            window->findChild<QLabel *>(s("operation-details"))->text().contains(s("sodium.jar")));
         snapshot(s("project-installing"));
+        backend->event(s("launcher://content-progress"),
+                       QJsonObject{{s("stage"), s("loader-install")}});
+        QCOMPARE(window->findChild<QProgressBar *>(s("operation-bar"))->maximum(), 0);
+        QCOMPARE(window->findChild<QLabel *>(s("operation-percent"))->text(), s("…"));
         const QString error =
             QString::fromUtf8("Проверка: соединение прервано. Повторите установку.");
         backend->request(s("test_finish_install"), {{s("error"), error}});
         QTRY_VERIFY(row()->isEnabled());
         QCOMPARE(window->findChild<QLabel *>(s("project-status"))->text(), error);
+        QVERIFY(window->findChild<QLabel *>(s("operation-percent"))->text().isEmpty());
         snapshot(s("project-install-error"));
         QTest::mouseClick(row(), Qt::LeftButton);
         QTRY_VERIFY(!window->findChild<QWidget *>(s("project-page"))->isVisible());
@@ -346,6 +363,34 @@ class UiTest final : public QObject {
             }
         QVERIFY2(colourful > 50, "Home artwork is missing or clipped off-screen");
         window->resize(1280, 720);
+        auto *artwork = window->findChild<QWidget *>(s("home-artwork"));
+        auto *socials = artwork->findChild<QWidget *>(s("home-socials"));
+        QVERIFY(socials);
+        for (const auto &size : {QSize(980, 620), QSize(1280, 720), QSize(1920, 1080)}) {
+            window->resize(size);
+            QTest::qWait(60);
+            QCOMPARE(socials->x(), qRound(artwork->width() * .055) - 4);
+            QCOMPARE(socials->y(), 174);
+        }
+        window->resize(1280, 720);
+    }
+    void capesAreCompactAndHoverHintsAreSuppressed() {
+        window->showPage(s("skins"));
+        QTRY_VERIFY(window->findChild<QPushButton *>(s("cape-none")));
+        auto *cape = window->findChild<QPushButton *>(s("cape-none"));
+        QCOMPARE(cape->size(), QSize(72, 116));
+        QTest::mouseClick(cape, Qt::LeftButton);
+        QTRY_VERIFY([&] {
+            for (const auto &entry : state().value(s("requests")).toArray())
+                if (value(entry.toObject(), "method") == s("activate_minecraft_cape"))
+                    return true;
+            return false;
+        }());
+        QWidget hint;
+        hint.setToolTip(s("A hover hint must never open"));
+        QHelpEvent tooltip(QEvent::ToolTip, QPoint(), QPoint());
+        QApplication::sendEvent(&hint, &tooltip);
+        QVERIFY(!QToolTip::isVisible());
     }
     void exactKeyframesAndJointBends() {
         const auto yes = EmoteClip::load(s(":/assets/emotes/yes.json"));
@@ -433,6 +478,20 @@ class UiTest final : public QObject {
               s("http://127.0.0.1/icon.png"), s("https://user:secret@cdn.modrinth.com/icon.png"),
               s("https://textures.minecraft.net:8080/texture/a")})
             QVERIFY(ImagePool::remoteUrl(url).isEmpty());
+    }
+    void largeLibrariesDoNotDropIconsAfterEightyRequests() {
+        ImagePool pool(backend);
+        QObject owner;
+        int completed = 0;
+        bool failed = false;
+        for (int i = 0; i < 160; ++i)
+            pool.load(s("https://cdn.modrinth.com/data/qa-icon-") + QString::number(i) + s(".png"),
+                      &owner, [&](const QImage &image) {
+                          failed |= image.isNull();
+                          ++completed;
+                      });
+        QTRY_COMPARE_WITH_TIMEOUT(completed, 160, 10000);
+        QVERIFY(!failed);
     }
     void earlyFailureAndNonterminalWarningPreserveLaunchState() {
         window->showPage(s("home"));

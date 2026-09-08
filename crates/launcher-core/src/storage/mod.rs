@@ -611,11 +611,52 @@ impl Storage {
         row.map(content_from_row).transpose()
     }
 
+    pub async fn update_content_identity(
+        &self,
+        id: &str,
+        project_id: &str,
+        title: &str,
+        icon: Option<&str>,
+    ) -> Result<(), LauncherError> {
+        sqlx::query("UPDATE installed_content SET title=?, icon_url=? WHERE id=? AND project_id=?")
+            .bind(title)
+            .bind(icon)
+            .bind(id)
+            .bind(project_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        Ok(())
+    }
+
+    pub async fn relocate_offline_skin(
+        &self,
+        account_id: &str,
+        skin_id: &str,
+        path: &str,
+    ) -> Result<(), LauncherError> {
+        let changed = sqlx::query("UPDATE offline_skins SET file_path=? WHERE id=? AND owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?)")
+            .bind(path).bind(skin_id).bind(account_id).execute(&self.pool).await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        if changed.rows_affected() != 1 {
+            return Err(LauncherError::storage_unavailable());
+        }
+        Ok(())
+    }
+
+    pub async fn skin_id_exists(&self, skin_id: &str) -> Result<bool, LauncherError> {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM offline_skins WHERE id=?)")
+            .bind(skin_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())
+    }
+
     pub async fn list_offline_skins(
         &self,
         account_id: &str,
     ) -> Result<Vec<OfflineSkin>, LauncherError> {
-        let rows = sqlx::query("SELECT id,account_id,name,file_path,is_active,is_favorite FROM offline_skins WHERE account_id=? ORDER BY is_active DESC,created_at DESC")
+        let rows = sqlx::query("SELECT id,account_id,name,file_path,is_active,is_favorite FROM offline_skins WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?) ORDER BY is_active DESC,created_at DESC")
             .bind(account_id).fetch_all(&self.pool).await.map_err(|_| LauncherError::storage_unavailable())?;
         rows.into_iter().map(skin_from_row).collect()
     }
@@ -626,13 +667,14 @@ impl Storage {
             .begin()
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
-        sqlx::query("UPDATE offline_skins SET is_active=0 WHERE account_id=?")
+        sqlx::query("UPDATE offline_skins SET is_active=0 WHERE ? AND owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?)")
+            .bind(skin.is_active)
             .bind(&skin.account_id)
             .execute(&mut *tx)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
-        sqlx::query("INSERT INTO offline_skins (id,account_id,name,file_path,is_active,is_favorite,created_at) VALUES (?,?,?,?,1,?,?)")
-            .bind(&skin.id).bind(&skin.account_id).bind(&skin.name).bind(&skin.file_path).bind(skin.is_favorite).bind(now_timestamp()).execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
+        sqlx::query("INSERT INTO offline_skins (id,account_id,name,file_path,is_active,is_favorite,created_at,owner_uuid) VALUES (?,?,?,?,?,?,?,(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?))")
+            .bind(&skin.id).bind(&skin.account_id).bind(&skin.name).bind(&skin.file_path).bind(skin.is_active).bind(skin.is_favorite).bind(now_timestamp()).bind(&skin.account_id).execute(&mut *tx).await.map_err(|_| LauncherError::storage_unavailable())?;
         tx.commit()
             .await
             .map_err(|_| LauncherError::storage_unavailable())
@@ -648,7 +690,7 @@ impl Storage {
             .begin()
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
-        let row = sqlx::query("DELETE FROM offline_skins WHERE account_id=? AND id=? RETURNING id,account_id,name,file_path,is_active,is_favorite")
+        let row = sqlx::query("DELETE FROM offline_skins WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?) AND id=? RETURNING id,account_id,name,file_path,is_active,is_favorite")
             .bind(account_id)
             .bind(skin_id)
             .fetch_optional(&mut *transaction)
@@ -656,7 +698,7 @@ impl Storage {
             .map_err(|_| LauncherError::storage_unavailable())?;
         let removed = row.map(skin_from_row).transpose()?;
         if removed.as_ref().is_some_and(|skin| skin.is_active) {
-            sqlx::query("UPDATE offline_skins SET is_active=1 WHERE id=(SELECT id FROM offline_skins WHERE account_id=? ORDER BY created_at DESC,id LIMIT 1)")
+            sqlx::query("UPDATE offline_skins SET is_active=1 WHERE id=(SELECT id FROM offline_skins WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?) ORDER BY created_at DESC,id LIMIT 1)")
                 .bind(account_id).execute(&mut *transaction).await
                 .map_err(|_| LauncherError::storage_unavailable())?;
         }
@@ -675,7 +717,7 @@ impl Storage {
         is_favorite: Option<bool>,
     ) -> Result<OfflineSkin, LauncherError> {
         if let Some(name) = name {
-            sqlx::query("UPDATE offline_skins SET name=? WHERE account_id=? AND id=?")
+            sqlx::query("UPDATE offline_skins SET name=? WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?) AND id=?")
                 .bind(name)
                 .bind(account_id)
                 .bind(skin_id)
@@ -684,7 +726,7 @@ impl Storage {
                 .map_err(|_| LauncherError::storage_unavailable())?;
         }
         if let Some(is_favorite) = is_favorite {
-            sqlx::query("UPDATE offline_skins SET is_favorite=? WHERE account_id=? AND id=?")
+            sqlx::query("UPDATE offline_skins SET is_favorite=? WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?) AND id=?")
                 .bind(is_favorite)
                 .bind(account_id)
                 .bind(skin_id)
@@ -692,7 +734,7 @@ impl Storage {
                 .await
                 .map_err(|_| LauncherError::storage_unavailable())?;
         }
-        let row = sqlx::query("SELECT id,account_id,name,file_path,is_active,is_favorite FROM offline_skins WHERE account_id=? AND id=?")
+        let row = sqlx::query("SELECT id,account_id,name,file_path,is_active,is_favorite FROM offline_skins WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?) AND id=?")
             .bind(account_id).bind(skin_id).fetch_optional(&self.pool).await
             .map_err(|_| LauncherError::storage_unavailable())?
             .ok_or_else(|| LauncherError::new("skin_not_found", "Скин не найден в библиотеке.", None, true))?;
@@ -709,13 +751,13 @@ impl Storage {
             .begin()
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
-        sqlx::query("UPDATE offline_skins SET is_active=0 WHERE account_id=?")
+        sqlx::query("UPDATE offline_skins SET is_active=0 WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?)")
             .bind(account_id)
             .execute(&mut *tx)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
         let changed =
-            sqlx::query("UPDATE offline_skins SET is_active=1 WHERE account_id=? AND id=?")
+            sqlx::query("UPDATE offline_skins SET is_active=1 WHERE owner_uuid=(SELECT lower(replace(minecraft_uuid,'-','')) FROM accounts WHERE id=?) AND id=?")
                 .bind(account_id)
                 .bind(skin_id)
                 .execute(&mut *tx)
@@ -911,7 +953,10 @@ fn account_from_row(row: sqlx::sqlite::SqliteRow) -> Result<AccountSummary, Laun
 
 #[cfg(test)]
 mod tests {
-    use super::{AccountSummary, BuildSummary, LauncherProfile, OfflineSkin, Storage};
+    use super::{
+        AccountSummary, BuildSummary, LauncherProfile, OfflineSkin, SqliteConnectOptions,
+        SqlitePoolOptions, Storage, MIGRATOR,
+    };
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -949,6 +994,57 @@ mod tests {
                 .is_none());
             drop(storage);
             fs::remove_dir_all(root).expect("cleanup");
+        });
+    }
+
+    #[test]
+    fn upgrading_schema_four_backs_up_and_detaches_skin_library_from_login_lifetime() {
+        crate::tasks::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let database = temp.path().join("launcher.sqlite3");
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    SqliteConnectOptions::new()
+                        .filename(&database)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            let previous = sqlx::migrate::Migrator {
+                migrations: std::borrow::Cow::Owned(
+                    MIGRATOR.iter().filter(|m| m.version < 5).cloned().collect(),
+                ),
+                ..sqlx::migrate::Migrator::DEFAULT
+            };
+            previous.run(&pool).await.unwrap();
+            let old = Storage { pool: pool.clone() };
+            let mut player = account("old-login", "Before", true);
+            player.minecraft_uuid = "12345678-90AB-CDEF-1234-567890ABCDEF".into();
+            old.upsert_account(&player).await.unwrap();
+            sqlx::query("INSERT INTO offline_skins(id,account_id,name,file_path,is_active,is_favorite,created_at) VALUES('skin-test','old-login','Winter','old-skin.png',1,1,'now')").execute(&pool).await.unwrap();
+            pool.close().await;
+            let upgraded = Storage::connect_file(&database).await.unwrap();
+            assert!(fs::read_dir(temp.path()).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("launcher-before-schema-5-")));
+            upgraded.delete_account("old-login").await.unwrap();
+            player.id = "new-login".into();
+            player.minecraft_name = "After".into();
+            player.minecraft_uuid = "1234567890abcdef1234567890abcdef".into();
+            upgraded.upsert_account(&player).await.unwrap();
+            let skins = upgraded.list_offline_skins("new-login").await.unwrap();
+            assert_eq!(skins.len(), 1);
+            assert_eq!(skins[0].name, "Winter");
+            assert!(skins[0].is_active && skins[0].is_favorite);
+            let fk_count: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM pragma_foreign_key_list('offline_skins')")
+                    .fetch_one(&upgraded.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(fk_count, 0);
         });
     }
 

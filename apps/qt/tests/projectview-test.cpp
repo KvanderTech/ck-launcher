@@ -157,6 +157,39 @@ class ProjectViewTest final : public QObject {
         QCOMPARE(requested.count(), 0);
     }
 
+    void richDescriptionKeepsMixedHtmlTextAndFitsTheViewport() {
+        open();
+        auto *body = view->findChild<QTextBrowser *>(s("project-description"));
+        QTRY_VERIFY(body->toPlainText().contains(QString::fromUtf8("Pokémon & friends")));
+        for (const auto &text :
+             {s("Included"), s("Familiar graphics"), s("Text after the banner"), s("Optimization")})
+            QVERIFY(body->toPlainText().contains(text));
+        for (const auto &size : {QSize(1180, 650), QSize(780, 620), QSize(1500, 780)}) {
+            view->resize(size);
+            QTest::qWait(80);
+            QCOMPARE(body->horizontalScrollBar()->maximum(), 0);
+        }
+        snapshot(s("project-rich-description"));
+    }
+
+    void recordedPublicDescription() {
+        if (qEnvironmentVariableIsEmpty("CK_QA_PROJECT_DIR"))
+            QSKIP("Optional release QA using recorded public Modrinth responses");
+        open();
+        auto *body = view->findChild<QTextBrowser *>(s("project-description"));
+        QTRY_VERIFY(body->toPlainText().contains(s("Cobblemon")));
+        QTRY_VERIFY(body->toPlainText().size() > 3000);
+        QTest::qWait(2000);
+        QCOMPARE(body->horizontalScrollBar()->maximum(), 0);
+        snapshot(s("project-cobblemon-public"));
+        body->verticalScrollBar()->setValue(body->verticalScrollBar()->maximum() / 3);
+        snapshot(s("project-cobblemon-middle"));
+        view->resize(900, 640);
+        QTest::qWait(120);
+        QCOMPARE(body->horizontalScrollBar()->maximum(), 0);
+        snapshot(s("project-cobblemon-small"));
+    }
+
     void filtersAndTableKeepSelectionById() {
         open();
         QTRY_COMPARE(choices()->count(), 3);

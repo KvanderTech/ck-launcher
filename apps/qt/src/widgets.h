@@ -70,7 +70,8 @@ class MotionButton : public QPushButton {
             focus.setPen(QPen(QColor(141, 223, 255), 1.5));
             focus.drawRoundedRect(QRectF(rect()).adjusted(2, 2, -2, -2), 9, 9);
         }
-        if (!isEnabled() || (hover < .01 && press < .01))
+        if (property("textButton").toBool() || property("capeCard").toBool() || !isEnabled() ||
+            (hover < .01 && press < .01))
             return;
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);

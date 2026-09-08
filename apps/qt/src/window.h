@@ -35,7 +35,7 @@ class LauncherWindow final : public QMainWindow {
     CardGrid *libraryCards, *skinCards;
     QFrame *activity = nullptr;
     QLabel *status, *activityTitle, *libraryHint, *catalogStatus, *skinStatus, *previewName,
-        *detailName, *gameDirectory, *updateStatus;
+        *detailName, *gameDirectory, *updateStatus, *progressPercent, *progressDetails;
     QPushButton *accountButton, *play, *stop, *detailPlay, *addSkinButton;
     QProgressBar *progress;
     QLineEdit *searchText, *skinSearch, *filePath;
@@ -51,7 +51,7 @@ class LauncherWindow final : public QMainWindow {
     Picture *detailIcon;
     QJsonArray builds, installed, catalog, accounts, skins, versions;
     QJsonObject profile, cosmetics;
-    QString selectedBuild, selectedAccount, selectedSkin, operationId,
+    QString selectedBuild, selectedAccount, selectedSkin, operationId, activeMethod,
         catalogKind = QStringLiteral("modpack"), contentKind;
     bool running = false, closing = false, busy = false, ready = false, signingIn = false,
          cosmeticPending = false, contentInstalling = false;
@@ -63,6 +63,7 @@ class LauncherWindow final : public QMainWindow {
               std::function<void(const QJsonValue &)> = {}, bool mutation = false);
     void navigate(int page);
     void message(const QString &, bool error = false);
+    void showProgress(const QJsonObject &data);
     void refreshLibrary();
     void renderLibrary();
     void refreshContent();

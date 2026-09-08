@@ -12,6 +12,24 @@ impl EventBus {
         (self.0)(name, serde_json::to_value(event)?);
         Ok(())
     }
+    pub fn progress(
+        &self,
+        stage: &str,
+        message: &str,
+        done: u64,
+        total: u64,
+        files: u64,
+        file_total: u64,
+    ) {
+        let _ = self.emit(
+            "launcher://content-progress",
+            serde_json::json!({
+                "stage": stage, "message": message,
+                "completedBytes": done, "totalBytes": total,
+                "completedFiles": files, "totalFiles": file_total,
+            }),
+        );
+    }
 }
 impl Default for EventBus {
     fn default() -> Self {
