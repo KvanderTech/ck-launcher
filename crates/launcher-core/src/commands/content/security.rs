@@ -24,6 +24,7 @@ const DOWNLOAD_HOSTS: &[&str] = &[
     "release-assets.githubusercontent.com",
     "edge.forgecdn.net",
     "mediafilez.forgecdn.net",
+    "maven.minecraftforge.net",
 ];
 pub(super) fn validate_url(value: &str) -> Result<url::Url, LauncherError> {
     let url = url::Url::parse(value).map_err(|_| denied_url())?;
@@ -44,8 +45,13 @@ fn denied_url() -> LauncherError {
 pub(super) fn redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         let url = attempt.url();
-        let metadata = ["api.modrinth.com", "meta.fabricmc.net", "meta.quiltmc.org"]
-            .contains(&url.host_str().unwrap_or(""));
+        let metadata = [
+            "api.modrinth.com",
+            "meta.fabricmc.net",
+            "meta.quiltmc.org",
+            "files.minecraftforge.net",
+        ]
+        .contains(&url.host_str().unwrap_or(""));
         if attempt.previous().len() >= 5
             || !(validate_url(url.as_str()).is_ok()
                 || (metadata
@@ -188,11 +194,14 @@ pub(super) fn inspect_archive<R: Read + Seek>(
     if index
         .dependencies
         .keys()
-        .any(|k| !["minecraft", "fabric-loader", "quilt-loader"].contains(&k.as_str()))
-        || (index.dependencies.contains_key("fabric-loader")
-            && index.dependencies.contains_key("quilt-loader"))
+        .any(|k| !["minecraft", "fabric-loader", "quilt-loader", "forge"].contains(&k.as_str()))
+        || ["fabric-loader", "quilt-loader", "forge"]
+            .iter()
+            .filter(|key| index.dependencies.contains_key(**key))
+            .count()
+            > 1
     {
-        return Err(input_error("loader_not_supported", "Эта сборка требует неподдерживаемый загрузчик. Доступны Vanilla, Fabric и Quilt; подмена на Vanilla запрещена."));
+        return Err(input_error("loader_not_supported", "Эта сборка требует неподдерживаемый загрузчик или несколько загрузчиков одновременно. Доступны Vanilla, Fabric, Quilt и Forge; подмена на Vanilla запрещена."));
     }
     if !index.dependencies.contains_key("minecraft") {
         return Err(invalid_archive());
@@ -429,13 +438,30 @@ mod tests {
     #[test]
     fn rejects_an_unsupported_loader_before_any_install() {
         let mut data = index();
-        data["dependencies"]["forge"] = serde_json::json!("47.0.0");
+        data["dependencies"]["neoforge"] = serde_json::json!("21.0.0");
         assert_eq!(
             inspect_archive(&mut archive(data, None))
                 .unwrap_err()
                 .code(),
             "loader_not_supported"
         );
+    }
+    #[test]
+    fn accepts_forge_but_never_combines_or_substitutes_loaders() {
+        let mut data = index();
+        data["dependencies"]["forge"] = serde_json::json!("47.4.10");
+        let parsed = inspect_archive(&mut archive(data.clone(), None)).unwrap();
+        assert_eq!(parsed.dependencies["forge"], "47.4.10");
+        for loader in ["fabric-loader", "quilt-loader"] {
+            let mut mixed = data.clone();
+            mixed["dependencies"][loader] = serde_json::json!("0.18.0");
+            assert_eq!(
+                inspect_archive(&mut archive(mixed, None))
+                    .unwrap_err()
+                    .code(),
+                "loader_not_supported"
+            );
+        }
     }
     #[test]
     fn rejects_compression_bombs_and_override_traversal() {

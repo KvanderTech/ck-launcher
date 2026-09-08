@@ -20,8 +20,12 @@ class EmoteClip {
     bool valid() const {
         return !tracks.isEmpty() && endTick > 0;
     }
-    static QVector3D bendVertex(QVector3D point, float pivot, float bend, float axis,
-                                bool upper = false);
+    static QMatrix4x4 modelTransform(const EmotePart &part, float weight = 1);
+    static QMatrix4x4 bodyTransform(const EmotePart &part, float weight = 1);
+    static QMatrix4x4 bendTransform(const QVector3D &center, float bend, float axis,
+                                    bool upper = false);
+    static QVector3D bendVertex(QVector3D point, const QVector3D &center, float halfLength,
+                                float bend, float axis, bool upper = false);
 
   private:
     struct Frame {
@@ -29,7 +33,8 @@ class EmoteClip {
         QString easing;
     };
     QMap<QString, QMap<QString, QVector<Frame>>> tracks;
-    double endTick = 0;
-    bool easingBefore = true;
-    double channel(const QString &part, const QString &axis, double tick, double initial) const;
+    double beginTick = 0, endTick = 0, stopTick = 0, returnTick = 0;
+    bool easingBefore = false, loop = false;
+    double channel(const QString &part, const QString &axis, double tick, double initial,
+                   bool loopStarted) const;
 };

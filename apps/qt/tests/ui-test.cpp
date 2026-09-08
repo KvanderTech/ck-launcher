@@ -224,10 +224,11 @@ class UiTest final : public QObject {
         QVERIFY(wave.valid());
         QVERIFY(std::abs(wave.sample(s("rightArm"), 20, {-5, 2, 0}).bend) > .1);
         const QVector3D hand(0, -10, 0), shoulder(0, 2, 0);
-        const auto bent = EmoteClip::bendVertex(hand, -4, float(-3.141592653589793 / 2), 0);
+        const auto bent =
+            EmoteClip::bendVertex(hand, {0, -4, 0}, 6, float(-3.141592653589793 / 2), 0);
         QVERIFY(std::abs(bent.z()) > 5.9);
-        QCOMPARE(EmoteClip::bendVertex(shoulder, -4, 1, 0), shoulder);
-        QCOMPARE(EmoteClip::bendVertex(hand, -4, 0, 0), hand);
+        QCOMPARE(EmoteClip::bendVertex(shoulder, {0, -4, 0}, 6, 1, 0), shoulder);
+        QCOMPARE(EmoteClip::bendVertex(hand, {0, -4, 0}, 6, 0, 0), hand);
         const auto rest = yes.sample(s("rightArm"), 15, {-5, 2, 0});
         QCOMPARE(rest.position, QVector3D(-5, 2, 0));
     }

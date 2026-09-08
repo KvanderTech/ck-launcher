@@ -1,5 +1,6 @@
 mod arguments;
 mod classpath;
+mod forge;
 pub(crate) mod process;
 
 use crate::{
@@ -720,6 +721,10 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
     let natives_argument = natives.to_string_lossy().into_owned();
     let launcher_name = "CKLauncher";
     let launcher_version = env!("CARGO_PKG_VERSION");
+    let library_directory =
+        crate::paths::strip_verbatim_prefix(request.game_root.join("libraries"))
+            .to_string_lossy()
+            .into_owned();
     let mut variables = BTreeMap::from([
         ("auth_player_name", request.account.player_name.clone()),
         ("auth_uuid", request.account.uuid.clone()),
@@ -730,6 +735,8 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         ("assets_index_name", asset_index),
         ("natives_directory", natives_argument.clone()),
         ("classpath", classpath.clone()),
+        ("library_directory", library_directory.clone()),
+        ("classpath_separator", ";".to_owned()),
         ("launcher_name", launcher_name.to_owned()),
         ("launcher_version", launcher_version.to_owned()),
         (
@@ -744,7 +751,26 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         ("auth_xuid", String::new()),
         ("clientid", String::new()),
     ]);
-    let modern_jvm = resolve_modern(&request.version.arguments.jvm, &variables)?;
+    let mut modern_jvm = resolve_modern(&request.version.arguments.jvm, &variables)?;
+    let forge_jvm = if request.version.id.starts_with("forge-loader-")
+        && matches!(
+            request.version.main_class.as_deref(),
+            Some(
+                "cpw.mods.bootstraplauncher.BootstrapLauncher"
+                    | "cpw.mods.modlauncher.Launcher"
+                    | "net.minecraft.launchwrapper.Launch"
+            )
+        ) {
+        forge::extract_options(
+            &mut modern_jvm,
+            &request.game_root,
+            &validated_paths,
+            &library_directory,
+            &classpath,
+        )?
+    } else {
+        Vec::new()
+    };
     let mut args = safe_metadata_jvm(
         modern_jvm,
         &classpath,
@@ -752,6 +778,7 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         launcher_name,
         launcher_version,
     )?;
+    args.extend(forge_jvm);
     args.push("-Xms512M".to_owned());
     args.push(format!(
         "-Xmx{}M",

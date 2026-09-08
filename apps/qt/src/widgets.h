@@ -104,7 +104,8 @@ inline QString value(const QJsonObject &object, const char *key) {
 inline QString baseGameVersion(const QJsonObject &build) {
     const auto version = value(build, "gameVersion"), loader = value(build, "loader"),
                loaderVersion = value(build, "loaderVersion");
-    if ((loader == s("fabric") || loader == s("quilt")) && !loaderVersion.isEmpty()) {
+    if ((loader == s("fabric") || loader == s("quilt") || loader == s("forge")) &&
+        !loaderVersion.isEmpty()) {
         const auto prefix = loader + s("-loader-") + loaderVersion + s("-");
         if (version.startsWith(prefix))
             return version.mid(prefix.size());

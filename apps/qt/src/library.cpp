@@ -399,7 +399,7 @@ void LauncherWindow::createBuild() {
         version->addItem(s("1.20.1"));
     form->addRow(tr("Minecraft"), version);
     auto *loader = new QComboBox;
-    loader->addItems({s("vanilla"), s("fabric"), s("quilt")});
+    loader->addItems({s("vanilla"), s("fabric"), s("quilt"), s("forge")});
     form->addRow(tr("Загрузчик"), loader);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
