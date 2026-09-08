@@ -115,8 +115,17 @@ void SkinView::paintEvent(QPaintEvent *) {
             faces.append({screen, source, &image, depth / 4, shade});
         }
     };
-    double phase = std::fmod(t, 15.0);
-    double wave = phase > 5 && phase < 10 ? std::sin((phase - 5) * 3.141592653589793 / 5) : 0;
+    // A calm idle loop periodically blends into the three bundled SPEmotes previews:
+    // yes, extend-arms and bow. Drag rotation remains independent from the pose timeline.
+    const double phase = std::fmod(t, 24.0);
+    const auto pulse = [](double value, double begin, double end) {
+        if (value <= begin || value >= end) return 0.0;
+        return std::sin((value - begin) * 3.141592653589793 / (end - begin));
+    };
+    const double nod = pulse(phase, 6, 9);
+    const double extend = pulse(phase, 11, 15);
+    const double bow = pulse(phase, 17, 21);
+    const double wave = pulse(phase, 2, 5);
     auto body = [&](float x, float y, float z, float rx = 0, float ry = 0, float rz = 0) {
         QMatrix4x4 m;
         m.translate(x, y, z);
@@ -125,19 +134,23 @@ void SkinView::paintEvent(QPaintEvent *) {
         m.rotate(rz, 0, 0, 1);
         return m;
     };
-    auto torso = body(0, 18 + float(std::sin(t * 1.8) * .08), 0);
+    auto torso = body(0, 18 + float(std::sin(t * 1.8) * .08 - bow * 1.5), 0,
+                      float(bow * 48));
     box(8, 12, 4, 16, 16, torso, texture);
-    auto head = body(0, 24, 0, float(std::sin(t * 1.4) * 3), float(std::sin(t * .8) * 5));
+    auto head = body(0, 24 - float(bow * 2), float(bow * 1.5),
+                     float(std::sin(t * 1.4) * 3 + nod * std::sin(t * 15) * 18 + bow * 25),
+                     float(std::sin(t * .8) * 5));
     head.translate(0, 4, 0);
     box(8, 8, 8, 0, 0, head, texture);
     box(8, 8, 8, 32, 0, head, texture, .25);
     const float arm = slim ? 3 : 4;
-    auto right = body(-(4 + arm / 2), 22, 0, float(-wave * 145), 0,
-                      float(-3 - std::sin(t * 1.5) * 2 - wave * std::sin(t * 6) * 10));
+    auto right = body(-(4 + arm / 2), 22, 0, float(-wave * 145 - bow * 20), 0,
+                      float(-3 - std::sin(t * 1.5) * 2 - wave * std::sin(t * 6) * 10 - extend * 88));
     right.translate(0, -4, 0);
     box(arm, 12, 4, 40, 16, right, texture);
     auto left =
-        body(4 + arm / 2, 22, 0, float(std::sin(t * 1.6) * 2), 0, float(3 + std::sin(t * 1.5) * 2));
+        body(4 + arm / 2, 22, 0, float(std::sin(t * 1.6) * 2 - bow * 20), 0,
+             float(3 + std::sin(t * 1.5) * 2 + extend * 88));
     left.translate(0, -4, 0);
     if (texture.height() < texture.width())
         left.scale(-1, 1, 1);

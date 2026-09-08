@@ -12,6 +12,14 @@ void clearLayout(QLayout *layout);
 QWidget *scrollPage(QWidget *content);
 void polish(QWidget *widget);
 
+class AudioFeedback final : public QObject {
+  public:
+    explicit AudioFeedback(QObject *parent = nullptr);
+    static void play(const QString &name);
+  protected:
+    bool eventFilter(QObject *, QEvent *) override;
+};
+
 class Backdrop final : public QWidget {
   public:
     explicit Backdrop(QWidget *parent = nullptr);

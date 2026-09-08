@@ -1,4 +1,33 @@
 #include "ui.h"
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <mmsystem.h>
+#endif
+
+AudioFeedback::AudioFeedback(QObject *parent) : QObject(parent) {}
+void AudioFeedback::play(const QString &name) {
+#ifdef Q_OS_WIN
+    static QMap<QString, QByteArray> sounds;
+    if (sounds.isEmpty()) {
+        for (const auto &id : {s("click"), s("build-switch"), s("skin-select"), s("launch"),
+                               s("install-complete"), s("game-ready"), s("game-exit")}) {
+            QFile file(s(":/assets/sounds/") + id + s(".wav"));
+            if (file.open(QIODevice::ReadOnly)) sounds.insert(id, file.readAll());
+        }
+    }
+    const auto found = sounds.constFind(name);
+    if (found != sounds.cend())
+        PlaySoundW(reinterpret_cast<LPCWSTR>(found.value().constData()), nullptr,
+                   SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+#else
+    Q_UNUSED(name)
+#endif
+}
+bool AudioFeedback::eventFilter(QObject *object, QEvent *event) {
+    if (event->type() == QEvent::MouseButtonRelease && qobject_cast<QAbstractButton *>(object))
+        play(object->property("soundName").toString().isEmpty() ? s("click") : object->property("soundName").toString());
+    return QObject::eventFilter(object, event);
+}
 #include <QBuffer>
 #include <QImageReader>
 

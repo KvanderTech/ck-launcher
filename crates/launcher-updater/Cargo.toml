@@ -1,0 +1,7 @@
+[package]
+name = "ck-launcher-updater"
+version = "0.2.1-beta.1"
+edition = "2021"
+license.workspace = true
+
+[dependencies]

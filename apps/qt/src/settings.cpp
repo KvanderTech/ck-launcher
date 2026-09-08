@@ -107,11 +107,21 @@ QWidget *LauncherWindow::settingsPage() {
                 QMessageBox info(this);
                 info.setWindowTitle(tr("Доступно обновление"));
                 info.setTextFormat(Qt::PlainText);
-                info.setText(tr("Версия %1\n%2\n\nОткрыть страницу выпуска?")
+                info.setText(tr("Версия %1\n%2\n\nСкачать и установить обновление?")
                                  .arg(value(update, "version"), value(update, "notes")));
                 info.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-                if (info.exec() == QMessageBox::Yes)
-                    call(s("open_release_page"), {{s("url"), value(update, "url")}});
+                if (info.exec() == QMessageBox::Yes) {
+                    updateStatus->setText(tr("Скачиваем и проверяем подпись…"));
+                    call(s("install_update"),
+                         {{s("assetUrl"), value(update, "assetUrl")},
+                          {s("signatureUrl"), value(update, "signatureUrl")},
+                          {s("installDir"), QCoreApplication::applicationDirPath()},
+                          {s("launcherPid"), qint64(QCoreApplication::applicationPid())}},
+                         [this](const QJsonValue &) {
+                             updateStatus->setText(tr("Обновление готово. Перезапускаем…"));
+                             QTimer::singleShot(250, qApp, &QCoreApplication::quit);
+                         }, true);
+                }
             });
         },
         this);

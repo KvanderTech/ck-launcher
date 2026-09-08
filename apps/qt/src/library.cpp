@@ -166,6 +166,7 @@ void LauncherWindow::renderLibrary() {
     updatePlayState();
 }
 void LauncherWindow::openBuild(const QString &id) {
+    AudioFeedback::play(s("build-switch"));
     selectedBuild = id;
     renderLibrary();
     refreshContent();
@@ -262,6 +263,7 @@ void LauncherWindow::renderContent() {
     contentRows->addStretch();
 }
 void LauncherWindow::launch() {
+    AudioFeedback::play(s("launch"));
     if (!ready)
         return;
     if (selectedBuild.isEmpty()) {
