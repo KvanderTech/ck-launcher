@@ -111,8 +111,11 @@ BOOL CALLBACK styleControl(HWND window, LPARAM) {
     if (lstrcmpiW(className, L"Button") == 0) {
         const auto style = GetWindowLongPtrW(window, GWL_STYLE);
         const auto kind = style & BS_TYPEMASK;
-        if (kind != BS_PUSHBUTTON && kind != BS_DEFPUSHBUTTON && kind != BS_OWNERDRAW)
+        if (kind != BS_PUSHBUTTON && kind != BS_DEFPUSHBUTTON && kind != BS_OWNERDRAW) {
+            // Visual Styles paints checkbox captions black despite NSIS SetCtlColors.
+            SetWindowTheme(window, L"", L"");
             return TRUE;
+        }
         SetWindowLongPtrW(window, GWL_STYLE, (style & ~BS_TYPEMASK) | BS_OWNERDRAW);
         SetWindowSubclass(GetParent(window), dialogProc, 1, 0);
         SetWindowSubclass(window, buttonProc, 1, 0);
@@ -121,6 +124,11 @@ BOOL CALLBACK styleControl(HWND window, LPARAM) {
         SetWindowTheme(window, L"", L"");
         SetWindowLongPtrW(window, GWL_STYLE,
                           (GetWindowLongPtrW(window, GWL_STYLE) & ~WS_BORDER) | PBS_SMOOTH);
+        SetWindowLongPtrW(window, GWL_EXSTYLE,
+                          GetWindowLongPtrW(window, GWL_EXSTYLE) &
+                              ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
+        SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         SendMessageW(window, PBM_SETBARCOLOR, 0, RGB(19, 164, 237));
         SendMessageW(window, PBM_SETBKCOLOR, 0, RGB(16, 46, 70));
     } else if (lstrcmpiW(className, L"Edit") == 0) {
