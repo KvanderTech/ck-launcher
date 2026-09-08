@@ -1,3 +1,4 @@
+pub(crate) mod forge;
 mod security;
 use crate::downloads::DownloadCancellationToken;
 use crate::{
@@ -39,6 +40,7 @@ pub struct ContentService {
     paths: AppPaths,
     storage: Storage,
     metadata: Arc<MetadataService>,
+    runtimes: Arc<crate::runtime::RuntimeManager>,
     cancellation: Arc<Mutex<DownloadCancellationToken>>,
     previews: Arc<
         Mutex<std::collections::HashMap<String, (tempfile::NamedTempFile, std::time::Instant)>>,
@@ -231,6 +233,7 @@ impl ContentService {
         paths: AppPaths,
         storage: Storage,
         metadata: Arc<MetadataService>,
+        runtimes: Arc<crate::runtime::RuntimeManager>,
     ) -> Result<Self, LauncherError> {
         let client = Client::builder()
             .redirect(security::redirect_policy())
@@ -255,6 +258,7 @@ impl ContentService {
             paths,
             storage,
             metadata,
+            runtimes,
             cancellation: Arc::new(Mutex::new(DownloadCancellationToken::new())),
             previews: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
@@ -353,10 +357,10 @@ impl ContentService {
                 "Введите название сборки до 48 символов.",
             ));
         }
-        if !["vanilla", "fabric", "quilt"].contains(&loader.as_str()) {
+        if !["vanilla", "fabric", "quilt", "forge"].contains(&loader.as_str()) {
             return Err(input_error(
                 "loader_not_supported",
-                "Сейчас поддерживаются Vanilla, Fabric и Quilt.",
+                "Сейчас поддерживаются Vanilla, Fabric, Quilt и Forge.",
             ));
         }
         let id = format!(
@@ -374,6 +378,10 @@ impl ContentService {
         let loader_version = match loader.as_str() {
             "fabric" => Some(self.install_fabric_profile(&game_version, None).await?),
             "quilt" => Some(self.install_quilt_profile(&game_version, None).await?),
+            "forge" => Some(
+                self.install_forge_profile(&game_version, None, &game_dir)
+                    .await?,
+            ),
             _ => None,
         };
         let version_id = loader_version
@@ -548,7 +556,7 @@ impl ContentService {
             if build.loader == "vanilla"
                 || !version.loaders.iter().any(|loader| loader == &build.loader)
             {
-                return Err(input_error("loader_not_supported", "Этот мод не совместим с загрузчиком сборки. Выберите сборку Fabric или Quilt и подходящую версию мода."));
+                return Err(input_error("loader_not_supported", "Этот мод не совместим с загрузчиком сборки. Выберите сборку с нужным загрузчиком и подходящую версию мода."));
             }
         }
         let installed = self.storage.list_installed_content(&build.id).await?;
@@ -704,6 +712,14 @@ impl ContentService {
             "quilt" => {
                 self.install_quilt_profile(&minecraft, build.loader_version.as_deref())
                     .await?;
+            }
+            "forge" => {
+                self.install_forge_profile(
+                    &minecraft,
+                    build.loader_version.as_deref(),
+                    Path::new(&build.game_dir),
+                )
+                .await?;
             }
             _ => {}
         }
@@ -947,6 +963,18 @@ impl ContentService {
                     "quilt",
                     Some(self.install_quilt_profile(minecraft, Some(version)).await?),
                 )
+            } else if let Some(version) = index.dependencies.get("forge") {
+                (
+                    "forge",
+                    Some(
+                        self.install_forge_profile(
+                            minecraft,
+                            Some(version),
+                            Path::new(&build.game_dir),
+                        )
+                        .await?,
+                    ),
+                )
             } else {
                 ("vanilla", None)
             };
@@ -1187,7 +1215,7 @@ impl ContentService {
                 })
             })
             .count();
-        let preview = MrpackPreview { sha256: fingerprint.clone(), name: index.name, minecraft: index.dependencies["minecraft"].clone(), loader: if index.dependencies.contains_key("fabric-loader") { "Fabric" } else if index.dependencies.contains_key("quilt-loader") { "Quilt" } else { "Vanilla" }.to_owned(), download_files: index.files.len(), total_download_bytes: index.files.iter().map(|f| f.file_size).sum(), overrides, hosts, warning: "Моды исполняют код с правами вашей учётной записи Windows. Контрольная сумма подтверждает целостность, но не безопасность. Продолжайте, только если доверяете автору сборки.".to_owned() };
+        let preview = MrpackPreview { sha256: fingerprint.clone(), name: index.name, minecraft: index.dependencies["minecraft"].clone(), loader: if index.dependencies.contains_key("fabric-loader") { "Fabric" } else if index.dependencies.contains_key("quilt-loader") { "Quilt" } else if index.dependencies.contains_key("forge") { "Forge" } else { "Vanilla" }.to_owned(), download_files: index.files.len(), total_download_bytes: index.files.iter().map(|f| f.file_size).sum(), overrides, hosts, warning: "Моды исполняют код с правами вашей учётной записи Windows. Контрольная сумма подтверждает целостность, но не безопасность. Продолжайте, только если доверяете автору сборки.".to_owned() };
         let mut pending = self
             .previews
             .lock()
@@ -1293,7 +1321,7 @@ fn modrinth_ids_from_download(download: &str) -> Option<(String, String)> {
 }
 
 fn base_game_version(build: &BuildSummary) -> &str {
-    if build.loader == "fabric" || build.loader == "quilt" {
+    if ["fabric", "quilt", "forge"].contains(&build.loader.as_str()) {
         if let Some(loader_version) = build.loader_version.as_deref() {
             let prefix = format!("{}-loader-{}-", build.loader, loader_version);
             return build

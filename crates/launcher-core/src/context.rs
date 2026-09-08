@@ -42,10 +42,12 @@ impl AppContext {
         let metadata = Arc::new(metadata::resolver::MetadataService::production(
             paths.root.join("metadata-cache"),
         )?);
+        let runtimes = Arc::new(runtime::RuntimeManager::production(paths.runtime.clone())?);
         let content = commands::content::ContentService::new(
             paths.clone(),
             storage.clone(),
             metadata.clone(),
+            runtimes.clone(),
         )?;
         let physical_memory: Arc<dyn profiles::PhysicalMemory> =
             Arc::new(profiles::SystemPhysicalMemory);
@@ -54,7 +56,6 @@ impl AppContext {
             physical_memory.clone(),
             paths.game.to_string_lossy(),
         );
-        let runtimes = Arc::new(runtime::RuntimeManager::production(paths.runtime.clone())?);
         let downloads = Arc::new(downloads::DownloadService::new(paths.game.clone())?);
         let installer = installer::Installer::production(
             &paths,

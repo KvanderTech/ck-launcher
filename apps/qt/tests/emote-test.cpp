@@ -8,7 +8,7 @@ constexpr float pi = 3.14159265358979323846f;
 EmoteClip json(const QByteArray &source) {
     return EmoteClip(QJsonDocument::fromJson(source).object());
 }
-bool near(const QVector3D &a, const QVector3D &b, float tolerance = .001f) {
+bool vectorsNear(const QVector3D &a, const QVector3D &b, float tolerance = .001f) {
     return (a - b).length() < tolerance;
 }
 QImage testSkin() {
@@ -60,14 +60,14 @@ class EmoteTest final : public QObject {
     void rootUnitsPivotAndCoordinateSystems() {
         EmotePart p;
         p.position = {1, 1, 1};
-        QVERIFY(near(EmoteClip::bodyTransform(p).map(QVector3D()), {-16, 16, -16}));
+        QVERIFY(vectorsNear(EmoteClip::bodyTransform(p).map(QVector3D()), {-16, 16, -16}));
         p.position = {};
         p.rotation = {-pi / 2, 0, 0};
         const auto root = EmoteClip::bodyTransform(p);
-        QVERIFY(near(root.map({0, 11.2f, 0}), {0, 11.2f, 0}));
-        QVERIFY(near(root.map({0, 24, 0}), {0, 11.2f, 12.8f}));
+        QVERIFY(vectorsNear(root.map({0, 11.2f, 0}), {0, 11.2f, 0}));
+        QVERIFY(vectorsNear(root.map({0, 24, 0}), {0, 11.2f, 12.8f}));
         const auto arm = EmoteClip::modelTransform(p);
-        QVERIFY(near(arm.map({0, -6, 0}), {0, 24, 6}));
+        QVERIFY(vectorsNear(arm.map({0, -6, 0}), {0, 24, 6}));
     }
     void easingDegreesLoopAndStop() {
         const auto make = [](bool before) {
@@ -86,8 +86,8 @@ class EmoteTest final : public QObject {
         const auto loop = json(R"({"emote":{"endTick":20,"isLoop":"true","returnTick":10,
           "moves":[{"tick":10,"head":{"x":5}},{"tick":20,"head":{"x":7}}]}})");
         QVERIFY(std::abs(loop.sample(QStringLiteral("head"), 20.5).position.x() - 6) < .001);
-        QVERIFY(near(loop.sample(QStringLiteral("head"), 14).position,
-                     loop.sample(QStringLiteral("head"), 25).position));
+        QVERIFY(vectorsNear(loop.sample(QStringLiteral("head"), 14).position,
+                            loop.sample(QStringLiteral("head"), 25).position));
         const auto stop = json(R"({"emote":{"endTick":10,"stopTick":20,"moves":[
           {"tick":10,"head":{"x":10}}]}})");
         QCOMPARE(stop.sample(QStringLiteral("head"), 15).position.x(), 5.f);
@@ -107,15 +107,16 @@ class EmoteTest final : public QObject {
                         for (const float x : {-2.f, 2.f})
                             for (const float z : {-2.f, 2.f}) {
                                 const auto atJoint = center + QVector3D(x, 0, z);
-                                QVERIFY(near(bend(atJoint + direction * .00001f),
-                                             bend(atJoint - direction * .00001f)));
+                                QVERIFY(vectorsNear(bend(atJoint + direction * .00001f),
+                                                    bend(atJoint - direction * .00001f)));
                                 const auto fixed = atJoint - direction * 6;
                                 const auto tip = atJoint + direction * 6;
-                                QVERIFY(near(bend(fixed), fixed));
-                                QVERIFY(near(bend(tip), rotation.map(tip)));
+                                QVERIFY(vectorsNear(bend(fixed), fixed));
+                                QVERIFY(vectorsNear(bend(tip), rotation.map(tip)));
                             }
                     }
-        QVERIFY(near(EmoteClip::bendVertex({1, -4, 2}, {-1, -4, 0}, 6, pi / 2, 0), {1, -6, 2}));
+        QVERIFY(
+            vectorsNear(EmoteClip::bendVertex({1, -4, 2}, {-1, -4, 0}, 6, pi / 2, 0), {1, -6, 2}));
     }
     void upperBodyAndFadeDoNotTwistLimbs() {
         const auto upper = EmoteClip::bendTransform({0, 18, 0}, .8f, .6f, true);

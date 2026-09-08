@@ -508,6 +508,11 @@ impl Installer {
         version: &ResolvedVersion,
     ) -> Result<bool, LauncherError> {
         validate_version_id(&version.id)?;
+        if crate::commands::content::forge::verify_installation(&self.game_root, &version.id)
+            .is_err()
+        {
+            return Ok(false);
+        }
         if !self.installations.is_verified(&version.id).await? {
             return Ok(false);
         }
@@ -624,6 +629,7 @@ impl Installer {
         }
         let version_id = version.id.clone();
         let base = plan_installation_internal(&self.game_root, &version, false)?;
+        crate::commands::content::forge::verify_installation(&self.game_root, &version.id)?;
         persist_resolved_version(&self.game_root, &version, cancel)?;
         let base_specs = self.resolve_download_specs(&base, cancel, None).await?;
         let base_total = total_download_bytes(&base_specs)?;
@@ -1121,7 +1127,7 @@ fn safe_destination(
     AppPaths::new(game_root.to_path_buf()).safe_join(game_root, relative.as_ref())
 }
 
-fn validate_version_id(id: &str) -> Result<(), LauncherError> {
+pub(crate) fn validate_version_id(id: &str) -> Result<(), LauncherError> {
     let lowercase = id.to_ascii_lowercase();
     if id.is_empty()
         || id == "."
