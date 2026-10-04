@@ -12,6 +12,7 @@ use std::{
 };
 pub(super) const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const DOWNLOAD_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 const MAX_INDEX: u64 = 4 * 1024 * 1024;
 const MAX_FILE: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED: u64 = 4 * 1024 * 1024 * 1024;
@@ -326,7 +327,11 @@ pub(super) async fn download_with_progress(
     let mut sha512 = Sha512::new();
     let mut sha1 = Sha1::new();
     loop {
-        let chunk = tokio::select! { _ = token.cancelled() => return Err(cancelled()), c = stream.next() => c };
+        let chunk = tokio::select! {
+            _ = token.cancelled() => return Err(cancelled()),
+            c = tokio::time::timeout(DOWNLOAD_IDLE_TIMEOUT, stream.next()) =>
+                c.map_err(|_| download_network_error())?,
+        };
         let Some(chunk) = chunk else {
             break;
         };

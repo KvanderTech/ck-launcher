@@ -347,6 +347,21 @@ export default function App({ api = appApi }: AppProps) {
       api.onLauncherError((event) => {
         receiveOperationEvent({ kind: "error", value: event });
       }),
+      ...(api.onContentProgress ? [api.onContentProgress((event) => {
+        setContentInstallTask((task) => {
+          if (!task || task.error) return task;
+          const stages: Record<string, [string, number]> = {
+            "archive-download": ["Загрузка архива сборки", 1],
+            "loader-prepare": [event.message || "Подготовка загрузчика", 2],
+            "loader-download": ["Загрузка Forge", 2],
+            "loader-install": ["Установка Forge", 2],
+            "content-download": [event.totalFiles ? `Загрузка файлов · ${event.completedFiles}/${event.totalFiles}` : "Загрузка файлов сборки", 2],
+            "content-install": ["Добавление файлов в сборку", 3],
+          };
+          const stage = stages[event.stage];
+          return stage ? { ...task, stage: stage[0], step: stage[1] } : task;
+        });
+      })] : []),
     ];
     void Promise.all(registrations).then((unlisten) => {
       if (!active) unlisten.forEach((stop) => stop());

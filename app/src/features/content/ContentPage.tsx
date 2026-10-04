@@ -249,11 +249,6 @@ export function ContentPage({ api, versions, onBuildSelected, installTask, onIns
     setBusy(project.project_id); setError(undefined);
     onInstallTaskChange({ project, stage: "Загрузка контента", step: 1 });
     let succeeded = false;
-    let installStep = 1;
-    const phaseTimer = window.setInterval(() => {
-      installStep = Math.min(3, installStep + 1);
-      onInstallTaskChange({ project, stage: installStep === 2 ? "Подготовка Minecraft" : "Настройка загрузчика", step: installStep });
-    }, 6500);
     try {
       if (project.project_type === "modpack") {
         await api.installModrinthModpack(project.project_id, versionId);
@@ -266,7 +261,7 @@ export function ContentPage({ api, versions, onBuildSelected, installTask, onIns
       succeeded = true; setPendingInstall(undefined);
     }
     catch (reason) { const message = errorMessage(reason); setError(message); onInstallTaskChange({ project, stage: "Установка не завершена", step: 0, error: message }); }
-    finally { window.clearInterval(phaseTimer); setBusy(undefined); if (succeeded) onInstallTaskChange(undefined); }
+    finally { setBusy(undefined); if (succeeded) onInstallTaskChange(undefined); }
   }
 
   async function importMrpack() {

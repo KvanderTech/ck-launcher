@@ -92,6 +92,7 @@ export interface OperationApi {
 }
 
 export interface ContentApi {
+  onContentProgress?(handler: (event: ContentProgressEvent) => void): Promise<UnlistenFn>;
   listBuilds(): Promise<BuildSummary[]>;
   buildPreferences(buildId: string): Promise<BuildPreferences>;
   updateBuildPreferences(buildId: string, preferences: BuildPreferences): Promise<BuildPreferences>;
@@ -141,6 +142,15 @@ export interface ContentApi {
 
 export interface AppApi extends LauncherApi, RuntimeApi, SettingsApi, ProfileApi, OperationApi, ContentApi {}
 
+export interface ContentProgressEvent {
+  stage: string;
+  message: string;
+  completedBytes: number;
+  totalBytes: number;
+  completedFiles: number;
+  totalFiles: number;
+}
+
 type LaunchInvoke = (command: string, args?: Record<string, unknown>) => Promise<OperationId>;
 
 export function invokeLaunchOrInstall(
@@ -173,6 +183,7 @@ export const appApi: AppApi = {
   onGameStarted: (handler) => listenPayload("launcher://game-started", handler),
   onGameExited: (handler) => listenPayload("launcher://game-exited", handler),
   onLauncherError: (handler) => listenPayload("launcher://error", handler),
+  onContentProgress: (handler) => listenPayload("launcher://content-progress", handler),
   listBuilds: () => invoke<BuildSummary[]>("list_builds"),
   buildPreferences: (buildId) => invoke<BuildPreferences>("build_preferences", { buildId }),
   updateBuildPreferences: (buildId, preferences) => invoke<BuildPreferences>("update_build_preferences", { buildId, preferences }),

@@ -1052,6 +1052,14 @@ impl ContentService {
         if token.is_cancelled() {
             return Err(security::cancelled());
         }
+        self.events.progress(
+            "loader-prepare",
+            "Подготовка загрузчика Minecraft",
+            0,
+            0,
+            0,
+            0,
+        );
         let (loader, loader_version) =
             if let Some(version) = index.dependencies.get("fabric-loader") {
                 (
@@ -1114,6 +1122,14 @@ impl ContentService {
             .sum();
         let mut completed_bytes = 0;
         let mut completed_files = 0;
+        self.events.progress(
+            "content-download",
+            &build.name,
+            0,
+            total_bytes,
+            0,
+            total_files,
+        );
         for entry in &index.files {
             if token.is_cancelled() {
                 return Err(security::cancelled());
