@@ -1,0 +1,11 @@
+{
+  "version": "1.0.1",
+  "notes": "Kvanth Launcher 1.0.1: реальные этапы установки сборок Modrinth и обработка остановившейся загрузки.",
+  "pub_date": "2026-10-04T19:41:43+03:00",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWkdBRXRHNGRrNk5RSHQ1MmpBM3NlWkVyT2hkOHAxbU82T2xGOCttQzJBZ29ITnJEazhnOFlwQ1BQalphTVVhV0owZTVpdG9scklRZDdmbmlNVkVnYko3b29naWdjTEF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMTMyMDUwCWZpbGU6S3ZhbnRoIExhdW5jaGVyXzEuMC4xX3g2NC1zZXR1cC5leGUKNXdNbmhCSlNkNU94bENMSG5uTzFMSC9rQ1FKL05IZlA0VEo4V3dYNDEzTlZTTUVWcHp3SkFOSXNsMWdlZHpDS2c1cWJNdUhOS3NMTnJCVi9mcFk1Qmc9PQo=",
+      "url": "https://github.com/KvanderTech/ck-launcher/releases/download/kvanth-v1.0.1/Kvanth.Launcher_1.0.1_x64-setup.exe"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 [package]
 name = "ck-launcher"
-version = "1.0.0"
+version = "1.0.1"
 description = "Kvanth Launcher for Minecraft: Java Edition on Windows 10 and 11"
 license = "AGPL-3.0-only"
 authors = ["Kvanth"]
