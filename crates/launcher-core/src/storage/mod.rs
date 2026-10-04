@@ -47,6 +47,14 @@ pub struct BuildSummary {
     pub is_active: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildPreferences {
+    pub group_name: String,
+    pub java_override: Option<String>,
+    pub account_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledContent {
@@ -377,12 +385,104 @@ impl Storage {
         rows.into_iter().map(build_from_row).collect()
     }
 
+    pub async fn build_preferences(
+        &self,
+        build_id: &str,
+    ) -> Result<BuildPreferences, LauncherError> {
+        let row = sqlx::query(
+            "SELECT group_name, java_override, account_id FROM build_preferences WHERE build_id=?",
+        )
+        .bind(build_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| LauncherError::storage_unavailable())?;
+        Ok(row
+            .map(|row| BuildPreferences {
+                group_name: row.get("group_name"),
+                java_override: row.get("java_override"),
+                account_id: row.get("account_id"),
+            })
+            .unwrap_or_default())
+    }
+
+    pub async fn update_build_preferences(
+        &self,
+        build_id: &str,
+        value: &BuildPreferences,
+    ) -> Result<BuildPreferences, LauncherError> {
+        if value.group_name.chars().count() > 60
+            || value
+                .java_override
+                .as_deref()
+                .is_some_and(|path| path.chars().count() > 1024)
+        {
+            return Err(LauncherError::new(
+                "invalid_build_preferences",
+                "Некорректные настройки сборки.",
+                None,
+                true,
+            ));
+        }
+        if let Some(account_id) = &value.account_id {
+            let account: Option<String> = sqlx::query_scalar("SELECT id FROM accounts WHERE id=?")
+                .bind(account_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+            if account.is_none() {
+                return Err(LauncherError::new(
+                    "account_not_found",
+                    "Аккаунт не найден.",
+                    None,
+                    true,
+                ));
+            }
+        }
+        let exists: Option<String> = sqlx::query_scalar("SELECT id FROM builds WHERE id=?")
+            .bind(build_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        if exists.is_none() {
+            return Err(LauncherError::new(
+                "build_not_found",
+                "Сборка не найдена.",
+                None,
+                true,
+            ));
+        }
+        sqlx::query("INSERT INTO build_preferences(build_id,group_name,java_override,account_id) VALUES(?,?,?,?) ON CONFLICT(build_id) DO UPDATE SET group_name=excluded.group_name,java_override=excluded.java_override,account_id=excluded.account_id")
+            .bind(build_id).bind(&value.group_name).bind(&value.java_override).bind(&value.account_id)
+            .execute(&self.pool).await.map_err(|_| LauncherError::storage_unavailable())?;
+        if self
+            .list_builds()
+            .await?
+            .iter()
+            .any(|build| build.id == build_id && build.is_active)
+        {
+            sqlx::query("UPDATE profiles SET java_override=? WHERE id='default'")
+                .bind(&value.java_override)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+            if let Some(account_id) = &value.account_id {
+                self.set_active_account(account_id).await?;
+            }
+        }
+        Ok(value.clone())
+    }
+
     pub async fn pack_source(&self, build_id: &str) -> Result<Option<String>, LauncherError> {
         sqlx::query_scalar("SELECT source_json FROM pack_sources WHERE build_id=?")
             .bind(build_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|_| LauncherError::storage_unavailable())
+    }
+    pub async fn set_pack_source(&self, build_id: &str, source: &str) -> Result<(), LauncherError> {
+        sqlx::query("INSERT INTO pack_sources(build_id,source_json) VALUES(?,?) ON CONFLICT(build_id) DO UPDATE SET source_json=excluded.source_json")
+            .bind(build_id).bind(source).execute(&self.pool).await
+            .map(|_| ()).map_err(|_| LauncherError::storage_unavailable())
     }
     pub async fn commit_pack(
         &self,
@@ -463,13 +563,29 @@ impl Storage {
             .execute(&mut *tx)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
-        sqlx::query("UPDATE profiles SET name=?, version_id=?, game_dir=? WHERE id='default'")
+        let preferences =
+            sqlx::query("SELECT java_override, account_id FROM build_preferences WHERE build_id=?")
+                .bind(build_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        let java_override: Option<String> = preferences
+            .as_ref()
+            .and_then(|row| row.get("java_override"));
+        let account_id: Option<String> = preferences.as_ref().and_then(|row| row.get("account_id"));
+        sqlx::query("UPDATE profiles SET name=?, version_id=?, game_dir=?, java_override=? WHERE id='default'")
             .bind(&build.name)
             .bind(&build.game_version)
             .bind(&build.game_dir)
+            .bind(java_override)
             .execute(&mut *tx)
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
+        if let Some(account_id) = account_id {
+            sqlx::query("UPDATE accounts SET is_active=CASE WHEN id=? THEN 1 ELSE 0 END WHERE EXISTS (SELECT 1 FROM accounts WHERE id=?)")
+                .bind(&account_id).bind(&account_id).execute(&mut *tx).await
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
         tx.commit()
             .await
             .map_err(|_| LauncherError::storage_unavailable())?;
@@ -954,8 +1070,8 @@ fn account_from_row(row: sqlx::sqlite::SqliteRow) -> Result<AccountSummary, Laun
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountSummary, BuildSummary, LauncherProfile, OfflineSkin, SqliteConnectOptions,
-        SqlitePoolOptions, Storage, MIGRATOR,
+        AccountSummary, BuildPreferences, BuildSummary, LauncherProfile, OfflineSkin,
+        SqliteConnectOptions, SqlitePoolOptions, Storage, MIGRATOR,
     };
     use std::{
         fs,
@@ -1025,11 +1141,19 @@ mod tests {
             sqlx::query("INSERT INTO offline_skins(id,account_id,name,file_path,is_active,is_favorite,created_at) VALUES('skin-test','old-login','Winter','old-skin.png',1,1,'now')").execute(&pool).await.unwrap();
             pool.close().await;
             let upgraded = Storage::connect_file(&database).await.unwrap();
+            let backup_prefix = format!(
+                "launcher-before-schema-{}-",
+                MIGRATOR
+                    .iter()
+                    .map(|migration| migration.version)
+                    .max()
+                    .unwrap()
+            );
             assert!(fs::read_dir(temp.path()).unwrap().any(|entry| entry
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with("launcher-before-schema-5-")));
+                .starts_with(&backup_prefix)));
             upgraded.delete_account("old-login").await.unwrap();
             player.id = "new-login".into();
             player.minecraft_name = "After".into();
@@ -1103,6 +1227,81 @@ mod tests {
                 Some("data:image/png;base64,AA==")
             );
             assert_eq!(changed.game_version, "1.21.1");
+        });
+    }
+
+    #[test]
+    fn selecting_build_applies_its_java_and_account_preferences() {
+        crate::tasks::block_on(async {
+            let storage = Storage::connect("sqlite::memory:").await.expect("storage");
+            storage
+                .upsert_profile(&LauncherProfile {
+                    id: "default".into(),
+                    name: "Default".into(),
+                    version_id: None,
+                    memory_mb: 4096,
+                    game_dir: "game".into(),
+                    java_override: None,
+                })
+                .await
+                .unwrap();
+            storage
+                .upsert_account(&account("one", "One", true))
+                .await
+                .unwrap();
+            storage
+                .upsert_account(&account("two", "Two", false))
+                .await
+                .unwrap();
+            let build = BuildSummary {
+                id: "custom".into(),
+                name: "Custom".into(),
+                game_version: "1.21.1".into(),
+                loader: "vanilla".into(),
+                loader_version: None,
+                game_dir: "custom-game".into(),
+                icon_url: None,
+                is_active: false,
+            };
+            storage.upsert_build(&build).await.unwrap();
+            let preferences = BuildPreferences {
+                group_name: "Тест".into(),
+                java_override: Some("C:/Java/bin/javaw.exe".into()),
+                account_id: Some("two".into()),
+            };
+            storage
+                .update_build_preferences(&build.id, &preferences)
+                .await
+                .unwrap();
+            storage.select_build(&build.id).await.unwrap();
+            assert_eq!(
+                storage
+                    .build_preferences(&build.id)
+                    .await
+                    .unwrap()
+                    .group_name,
+                "Тест"
+            );
+            assert_eq!(
+                storage
+                    .active_profile()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .java_override
+                    .as_deref(),
+                Some("C:/Java/bin/javaw.exe")
+            );
+            assert!(
+                storage
+                    .list_accounts()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|account| account.id == "two")
+                    .unwrap()
+                    .is_active
+            );
         });
     }
 

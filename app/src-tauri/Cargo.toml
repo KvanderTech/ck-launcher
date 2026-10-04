@@ -1,10 +1,15 @@
 [package]
 name = "ck-launcher"
-version = "0.1.62-beta.1"
-description = "Windows launcher for licensed Minecraft: Java Edition"
+version = "1.0.0"
+description = "Kvanth Launcher for Minecraft: Java Edition on Windows 10 and 11"
 license = "AGPL-3.0-only"
-authors = ["CK Launcher"]
+authors = ["Kvanth"]
 edition = "2021"
+autobins = false
+
+[[bin]]
+name = "kvanth-launcher"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

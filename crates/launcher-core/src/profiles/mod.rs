@@ -16,6 +16,7 @@ const MAX_MEMORY_MB: u64 = 32_768;
 #[serde(rename_all = "camelCase")]
 pub struct MemorySettingsStatus {
     pub memory_mb: u32,
+    pub physical_memory_mb: u64,
     pub min_memory_mb: u32,
     pub max_memory_mb: u32,
     pub step_memory_mb: u32,
@@ -149,6 +150,7 @@ impl ProfileService {
         let physical_mb = self.memory.physical_memory_mb();
         Ok(MemorySettingsStatus {
             memory_mb: clamp_memory(profile.memory_mb, physical_mb),
+            physical_memory_mb: physical_mb,
             min_memory_mb: MEMORY_STEP_MB,
             max_memory_mb: clamp_memory(u32::MAX, physical_mb),
             step_memory_mb: MEMORY_STEP_MB,
@@ -348,6 +350,7 @@ mod tests {
             let status = service.memory_status().await.expect("memory status");
 
             assert_eq!(status.memory_mb, 4_096);
+            assert_eq!(status.physical_memory_mb, 16_384);
             assert_eq!(status.min_memory_mb, 512);
             assert_eq!(status.max_memory_mb, 12_288);
             assert_eq!(status.step_memory_mb, 512);

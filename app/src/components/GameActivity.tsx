@@ -1,3 +1,4 @@
+import { KvanthIcon } from "./KvanthIcon";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -62,7 +63,7 @@ export function GameActivity({ api, game, iconUrl, name }: GameActivityProps) {
     <>
       <section className="game-activity" aria-label={`Запущена сборка ${name}`}>
         <span className="game-activity-dot" aria-hidden="true" />
-        {iconUrl ? <img alt="" src={iconUrl} /> : <span className="game-activity-mark">ЦК</span>}
+        {iconUrl ? <img alt="" src={iconUrl} /> : <span className="game-activity-mark"><KvanthIcon name="custom-pack" size={20} /></span>}
         <strong title={name}>{name}</strong>
         <button
           aria-label="Открыть консоль Minecraft"
@@ -71,7 +72,7 @@ export function GameActivity({ api, game, iconUrl, name }: GameActivityProps) {
           title="Консоль Minecraft"
           type="button"
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 8 4 4-4 4M13 16h4" /></svg>
+          <KvanthIcon name="console" size={18} />
         </button>
         <button
           aria-label="Принудительно остановить Minecraft"
@@ -81,7 +82,7 @@ export function GameActivity({ api, game, iconUrl, name }: GameActivityProps) {
           title="Остановить Minecraft"
           type="button"
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24"><rect height="8" rx="1" width="8" x="8" y="8" /></svg>
+          <KvanthIcon name="stop" size={18} />
         </button>
       </section>
 
@@ -95,11 +96,11 @@ export function GameActivity({ api, game, iconUrl, name }: GameActivityProps) {
               </div>
               <div className="game-console-actions">
                 <button className="game-console-stop" disabled={stopping} onClick={() => void stopGame()} type="button">
-                  <svg aria-hidden="true" viewBox="0 0 24 24"><rect height="8" rx="1" width="8" x="8" y="8" /></svg>
+                  <KvanthIcon name="stop" size={18} />
                   {stopping ? "Останавливаем…" : "Остановить игру"}
                 </button>
                 <button aria-label="Закрыть консоль" className="game-console-close" onClick={() => setConsoleOpen(false)} type="button">
-                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" /></svg>
+                  <KvanthIcon name="close" size={18} />
                 </button>
               </div>
             </header>

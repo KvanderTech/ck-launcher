@@ -177,7 +177,7 @@ fn modern_arguments_substitute_every_required_launch_value_and_owned_jvm_setting
     assert!(args
         .iter()
         .any(|arg| { arg.starts_with("-Dio.netty.native.workdir=") && arg.ends_with("natives") }));
-    assert!(args.contains(&"-Dminecraft.launcher.brand=CKLauncher".to_owned()));
+    assert!(args.contains(&"-Dminecraft.launcher.brand=KvanthLauncher".to_owned()));
     assert!(args.contains(&format!(
         "-Dminecraft.launcher.version={}",
         env!("CARGO_PKG_VERSION")

@@ -2,14 +2,18 @@
   "name": "app",
   "private": true,
   "license": "AGPL-3.0-only",
-  "version": "0.1.62-beta.1",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:win11": "vite --mode win11",
     "build": "tsc && vite build",
+    "build:win11": "tsc && vite build --mode win11",
     "preview": "vite preview",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:win11:dev": "tauri dev --config src-tauri/tauri.win11.conf.json",
+    "tauri:win11:build": "tauri build --config src-tauri/tauri.win11.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -78,7 +78,7 @@ pub async fn load_public_image(value: String) -> Result<String, LauncherError> {
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(12))
                 .pool_max_idle_per_host(2)
-                .user_agent(concat!("CKLauncher/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("KvanthLauncher/", env!("CARGO_PKG_VERSION")))
                 .redirect(reqwest::redirect::Policy::custom(|attempt| {
                     if attempt.previous().len() >= 4 || !allowed(attempt.url()) {
                         attempt.error("Image redirect denied")

@@ -1,11 +1,14 @@
+import { KvanthIcon } from "../../components/KvanthIcon";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { launcherApi, type LauncherApi } from "../../app/tauri";
-import type { AccountSummary } from "../../app/types";
+import type { AccountSummary, MinecraftCosmetics } from "../../app/types";
+import { AccountAvatar } from "./AccountAvatar";
 import { MicrosoftLogin } from "./MicrosoftLogin";
 
 interface AccountMenuProps {
   accounts: AccountSummary[];
+  cosmeticsByAccount?: Record<string, MinecraftCosmetics>;
   api?: LauncherApi;
   closeSignal?: string;
   onActiveAccountChange?: (account: AccountSummary) => void;
@@ -15,6 +18,7 @@ interface AccountMenuProps {
 
 export function AccountMenu({
   accounts,
+  cosmeticsByAccount = {},
   api = launcherApi,
   closeSignal,
   onActiveAccountChange,
@@ -80,6 +84,10 @@ export function AccountMenu({
     return null;
   }
 
+  function activeSkin(accountId: string) {
+    return cosmeticsByAccount[accountId]?.skins.find(skin => skin.state === 'ACTIVE')?.url;
+  }
+
   return (
     <section aria-label="Аккаунты Minecraft" className="account-switcher" ref={switcherRef}>
       {open ? (
@@ -95,9 +103,9 @@ export function AccountMenu({
               role="menuitemradio"
               type="button"
             >
-              <AccountAvatar account={account} />
+              <AccountAvatar key={`${account.id}:${activeSkin(account.id)}`} account={account} skinUrl={activeSkin(account.id)} />
               <span><strong>{account.minecraftName}</strong><small>{account.id === activeId ? "Основной профиль" : "Microsoft"}</small></span>
-              {account.id === activeId ? <span aria-hidden="true" className="account-check">✓</span> : null}
+              {account.id === activeId ? <span aria-hidden="true" className="account-check"><KvanthIcon name="confirm" size={16} /></span> : null}
             </button>
           ))}
           <MicrosoftLogin
@@ -110,7 +118,7 @@ export function AccountMenu({
             }}
           />
           <button className="account-logout" disabled={removing} onClick={() => void removeActiveAccount()} role="menuitem" type="button">
-            <span aria-hidden="true">↪</span>{removing ? "Выходим…" : "Выйти из аккаунта"}
+            <KvanthIcon name="logout" size={18} />{removing ? "Выходим…" : "Выйти из аккаунта"}
           </button>
         </div>
       ) : null}
@@ -122,23 +130,13 @@ export function AccountMenu({
         onClick={() => setOpen((current) => !current)}
         type="button"
       >
-        <AccountAvatar account={activeAccount} />
+        <AccountAvatar key={`${activeAccount.id}:${activeSkin(activeAccount.id)}`} account={activeAccount} skinUrl={activeSkin(activeAccount.id)} />
         <span className="account-copy">
           <strong>{activeAccount.minecraftName}</strong>
           <small>Minecraft account</small>
         </span>
-        <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>
+        <KvanthIcon name="dropdown" size={18} />
       </button>
     </section>
-  );
-}
-
-function AccountAvatar({ account }: { account: AccountSummary }) {
-  return account.headUrl ? (
-    <img alt="" height={40} src={account.headUrl} width={40} />
-  ) : (
-    <span aria-hidden="true" className="avatar-fallback">
-      {account.minecraftName.slice(0, 1).toUpperCase()}
-    </span>
   );
 }

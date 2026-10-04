@@ -7,6 +7,7 @@ import type {
   GameExitedEvent,
   GameStartedEvent,
   GameVersionSummary,
+  LoaderVersionSummary,
   JavaMajor,
   JavaRuntimeStatus,
   LauncherErrorEvent,
@@ -15,6 +16,7 @@ import type {
   OperationId,
   ProgressEvent,
   BuildSummary,
+  BuildPreferences,
   BuildFileEntry,
   BuildWorldSummary,
   BuildLogSummary,
@@ -91,13 +93,22 @@ export interface OperationApi {
 
 export interface ContentApi {
   listBuilds(): Promise<BuildSummary[]>;
+  buildPreferences(buildId: string): Promise<BuildPreferences>;
+  updateBuildPreferences(buildId: string, preferences: BuildPreferences): Promise<BuildPreferences>;
+  copyBuild(buildId: string): Promise<BuildSummary>;
+  exportBuild(buildId: string): Promise<string>;
   repairBuild(buildId: string): Promise<BuildSummary>;
-  createBuild(name: string, gameVersion: string, loader: string): Promise<BuildSummary>;
+  createBuild(name: string, gameVersion: string, loader: string, iconDataUrl?: string, loaderVersion?: string): Promise<BuildSummary>;
+  listLoaderVersions(gameVersion: string, loader: string): Promise<LoaderVersionSummary[]>;
   selectBuild(buildId: string): Promise<BuildSummary>;
   renameBuild(buildId: string, name: string): Promise<BuildSummary>;
   chooseBuildIcon(buildId: string): Promise<BuildSummary | null>;
   deleteBuild(buildId: string): Promise<void>;
   searchModrinth(query: string, projectType: ModrinthProjectType, gameVersion?: string, loader?: string, offset?: number, category?: string, environment?: string, index?: string): Promise<ModrinthSearchResult>;
+  searchCurseForge(query: string, projectType: ModrinthProjectType, gameVersion?: string, loader?: string, offset?: number): Promise<ModrinthSearchResult>;
+  curseForgeVersions(projectId: number, gameVersion?: string, loader?: string): Promise<ModrinthVersion[]>;
+  installCurseForgeProject(projectId: number, buildId: string, projectType: ModrinthProjectType, versionId?: number): Promise<InstalledContent>;
+  installCurseForgeModpack(projectId: number, versionId?: number): Promise<InstalledContent>;
   modrinthProject(projectId: string): Promise<ModrinthProjectDetails>;
   modrinthProjectVersions(projectId: string): Promise<ModrinthVersion[]>;
   installModrinthProject(projectId: string, buildId: string, versionId?: string): Promise<InstalledContent>;
@@ -114,6 +125,8 @@ export interface ContentApi {
   listBuildWorlds(buildId: string): Promise<BuildWorldSummary[]>;
   listBuildLogs(buildId: string): Promise<BuildLogSummary[]>;
   readBuildLog(buildId: string, relativePath: string): Promise<string>;
+  readBuildScreenshot(buildId: string, relativePath: string): Promise<string>;
+  trashBuildScreenshot(buildId: string, relativePath: string): Promise<void>;
   openBuildPath(buildId: string, relativePath?: string): Promise<void>;
   listOfflineSkins(accountId: string): Promise<OfflineSkin[]>;
   addOfflineSkin(accountId: string): Promise<OfflineSkin | null>;
@@ -161,13 +174,22 @@ export const appApi: AppApi = {
   onGameExited: (handler) => listenPayload("launcher://game-exited", handler),
   onLauncherError: (handler) => listenPayload("launcher://error", handler),
   listBuilds: () => invoke<BuildSummary[]>("list_builds"),
+  buildPreferences: (buildId) => invoke<BuildPreferences>("build_preferences", { buildId }),
+  updateBuildPreferences: (buildId, preferences) => invoke<BuildPreferences>("update_build_preferences", { buildId, preferences }),
+  copyBuild: (buildId) => invoke<BuildSummary>("copy_build", { buildId }),
+  exportBuild: (buildId) => invoke<string>("export_build", { buildId }),
   repairBuild: (buildId) => invoke<BuildSummary>("repair_build", { buildId }),
-  createBuild: (name, gameVersion, loader) => invoke<BuildSummary>("create_build", { name, gameVersion, loader }),
+  createBuild: (name, gameVersion, loader, iconDataUrl, loaderVersion) => invoke<BuildSummary>("create_build", { name, gameVersion, loader, iconDataUrl, loaderVersion }),
+  listLoaderVersions: (gameVersion, loader) => invoke<LoaderVersionSummary[]>("list_loader_versions", { gameVersion, loader }),
   selectBuild: (buildId) => invoke<BuildSummary>("select_build", { buildId }),
   renameBuild: (buildId, name) => invoke<BuildSummary>("rename_build", { buildId, name }),
   chooseBuildIcon: (buildId) => invoke<BuildSummary | null>("choose_build_icon", { buildId }),
   deleteBuild: (buildId) => invoke<void>("delete_build", { buildId }),
   searchModrinth: (query, projectType, gameVersion, loader, offset = 0, category, environment, index) => invoke<ModrinthSearchResult>("search_modrinth", { query, projectType, gameVersion, loader, offset, category, environment, index }),
+  searchCurseForge: (query, projectType, gameVersion, loader, offset = 0) => invoke<ModrinthSearchResult>("search_curseforge", { query, projectType, gameVersion, loader, offset }),
+  curseForgeVersions: (projectId, gameVersion, loader) => invoke<ModrinthVersion[]>("curseforge_versions", { projectId, gameVersion, loader }),
+  installCurseForgeProject: (projectId, buildId, projectType, versionId) => invoke<InstalledContent>("install_curseforge_project", { projectId, buildId, projectType, versionId }),
+  installCurseForgeModpack: (projectId, versionId) => invoke<InstalledContent>("install_curseforge_modpack", { projectId, versionId }),
   modrinthProject: (projectId) => invoke<ModrinthProjectDetails>("modrinth_project", { projectId }),
   modrinthProjectVersions: (projectId) => invoke<ModrinthVersion[]>("modrinth_project_versions", { projectId }),
   installModrinthProject: (projectId, buildId, versionId) => invoke<InstalledContent>("install_modrinth_project", { projectId, buildId, versionId }),
@@ -184,6 +206,8 @@ export const appApi: AppApi = {
   listBuildWorlds: (buildId) => invoke<BuildWorldSummary[]>("list_build_worlds", { buildId }),
   listBuildLogs: (buildId) => invoke<BuildLogSummary[]>("list_build_logs", { buildId }),
   readBuildLog: (buildId, relativePath) => invoke<string>("read_build_log", { buildId, relativePath }),
+  readBuildScreenshot: (buildId, relativePath) => invoke<string>("read_build_screenshot", { buildId, relativePath }),
+  trashBuildScreenshot: (buildId, relativePath) => invoke<void>("trash_build_screenshot", { buildId, relativePath }),
   openBuildPath: (buildId, relativePath = "") => invoke<void>("open_build_path", { buildId, relativePath }),
   listOfflineSkins: (accountId) => invoke<OfflineSkin[]>("list_offline_skins", { accountId }),
   addOfflineSkin: (accountId) => invoke<OfflineSkin | null>("add_offline_skin", { accountId }),

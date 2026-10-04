@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(super) const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 const MAX_INDEX: u64 = 4 * 1024 * 1024;
 const MAX_FILE: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED: u64 = 4 * 1024 * 1024 * 1024;
@@ -24,6 +25,7 @@ const DOWNLOAD_HOSTS: &[&str] = &[
     "release-assets.githubusercontent.com",
     "edge.forgecdn.net",
     "mediafilez.forgecdn.net",
+    "media.forgecdn.net",
     "maven.minecraftforge.net",
 ];
 pub(super) fn validate_url(value: &str) -> Result<url::Url, LauncherError> {
@@ -33,11 +35,22 @@ pub(super) fn validate_url(value: &str) -> Result<url::Url, LauncherError> {
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
-        || !DOWNLOAD_HOSTS.contains(&url.host_str().unwrap_or(""))
+        || !(DOWNLOAD_HOSTS.contains(&url.host_str().unwrap_or(""))
+            || is_curseforge_cdn(url.host_str().unwrap_or("")))
     {
         return Err(denied_url());
     }
     Ok(url)
+}
+pub(super) fn is_curseforge_cdn(host: &str) -> bool {
+    matches!(
+        host,
+        "edge.forgecdn.net" | "mediafilez.forgecdn.net" | "media.forgecdn.net"
+    ) || host
+        .strip_suffix(".mediafilez.forgecdn.net")
+        .is_some_and(|prefix| {
+            !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 fn denied_url() -> LauncherError {
     input_error("download_url_denied", "Сборка содержит ссылку на неразрешённый источник. Разрешены проверяемые HTTPS-источники модов.")
@@ -269,6 +282,14 @@ pub(super) fn limit_error() -> LauncherError {
 pub(super) fn cancelled() -> LauncherError {
     input_error("operation_cancelled", "Операция отменена.")
 }
+fn download_network_error() -> LauncherError {
+    LauncherError::new(
+        "content_download_unavailable",
+        "Не удалось скачать файл сборки. Проверьте соединение и повторите установку.",
+        None,
+        true,
+    )
+}
 pub(super) async fn download_with_progress(
     client: &reqwest::Client,
     root: &Path,
@@ -283,7 +304,9 @@ pub(super) async fn download_with_progress(
     if size.is_some_and(|s| s > MAX_FILE) {
         return Err(limit_error());
     }
-    let response = tokio::select! { _ = token.cancelled() => return Err(cancelled()), r = client.get(url).send() => r.map_err(|_| super::network_error())? }.error_for_status().map_err(|_| super::network_error())?;
+    // Metadata requests use a short timeout, but a large modpack needs enough
+    // time to finish streaming on slower connections.
+    let response = tokio::select! { _ = token.cancelled() => return Err(cancelled()), r = client.get(url).timeout(DOWNLOAD_TIMEOUT).send() => r.map_err(|_| download_network_error())? }.error_for_status().map_err(|_| download_network_error())?;
     validate_url(response.url().as_str())?;
     if response
         .content_length()
@@ -307,7 +330,7 @@ pub(super) async fn download_with_progress(
         let Some(chunk) = chunk else {
             break;
         };
-        let chunk = chunk.map_err(|_| super::network_error())?;
+        let chunk = chunk.map_err(|_| download_network_error())?;
         count = count
             .checked_add(chunk.len() as u64)
             .ok_or_else(limit_error)?;

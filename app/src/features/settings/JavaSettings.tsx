@@ -1,3 +1,4 @@
+import { KvanthIcon } from "../../components/KvanthIcon";
 import type { JavaMajor, JavaRuntimeStatus } from "../../app/types";
 
 interface JavaSettingsProps {
@@ -31,9 +32,9 @@ export function JavaSettings({ statuses, onInstall, onDetect, onChoose }: JavaSe
             <span className={`runtime-status runtime-${status.state}`}>{labels[status.state]}</span>
             <p>{status.source ? sourceLabels[status.source] : "Путь не выбран"}{status.version ? ` · ${status.version}` : ""}</p>
             <div className="runtime-actions">
-              <button aria-label={`Найти Java ${status.requirement}`} disabled={busy} onClick={() => onDetect(status.requirement)} type="button">Найти</button>
-              <button aria-label={`Выбрать Java ${status.requirement}`} disabled={busy} onClick={() => onChoose(status.requirement)} type="button">Выбрать</button>
-              <button aria-label={`Установить Java ${status.requirement}`} disabled={busy} onClick={() => onInstall(status.requirement)} type="button">Установить</button>
+              <button aria-label={`Найти Java ${status.requirement}`} disabled={busy} onClick={() => onDetect(status.requirement)} type="button"><KvanthIcon name="search" size={18} /> Найти</button>
+              <button aria-label={`Выбрать Java ${status.requirement}`} disabled={busy} onClick={() => onChoose(status.requirement)} type="button"><KvanthIcon name="folder" size={18} /> Выбрать</button>
+              <button aria-label={`Установить Java ${status.requirement}`} disabled={busy} onClick={() => onInstall(status.requirement)} type="button"><KvanthIcon name="download" size={18} /> Установить</button>
             </div>
           </article>
         );

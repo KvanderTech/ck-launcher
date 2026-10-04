@@ -20,8 +20,31 @@ const sources: Record<SoundEffect, string> = {
   "skin-select": skinSelectUrl,
 };
 const audio = new Map<SoundEffect, HTMLAudioElement>();
+const SOUND_ENABLED_KEY = "kvanth.sound.enabled";
+let enabledInSession: boolean | undefined;
+
+export function soundEnabled(): boolean {
+  if (enabledInSession !== undefined) return enabledInSession;
+  try {
+    enabledInSession = window.localStorage.getItem(SOUND_ENABLED_KEY) !== "false";
+  } catch {
+    enabledInSession = true;
+  }
+  return enabledInSession;
+}
+
+export function setSoundEnabled(enabled: boolean): void {
+  enabledInSession = enabled;
+  try {
+    window.localStorage.setItem(SOUND_ENABLED_KEY, String(enabled));
+  } catch {
+    // The setting still applies to the current session if storage is unavailable.
+  }
+  if (!enabled) audio.forEach((player) => player.pause());
+}
 
 export function playSound(effect: SoundEffect) {
+  if (!soundEnabled()) return;
   let base = audio.get(effect);
   if (!base) {
     base = new Audio(sources[effect]);

@@ -37,6 +37,20 @@ function mockApi(overrides: Partial<LauncherApi> = {}): LauncherApi {
 }
 
 describe("AccountMenu", () => {
+  it("uses each account's ACTIVE skin and refreshes the avatar after a skin change", async () => {
+    const api = mockApi();
+    const cosmetics = {
+      one: { id:'uuid-one', name:'Alex', skins:[{id:'old',state:'INACTIVE',url:'https://textures.minecraft.net/old',variant:'CLASSIC'},{id:'current',state:'ACTIVE',url:'https://textures.minecraft.net/alex',variant:'CLASSIC'}],capes:[] },
+      two: { id:'uuid-two', name:'Steve', skins:[{id:'current',state:'ACTIVE',url:'https://textures.minecraft.net/steve',variant:'CLASSIC'}],capes:[] },
+    };
+    const {rerender} = render(<AccountMenu accounts={accounts} api={api} cosmeticsByAccount={cosmetics} />);
+    expect(screen.getByTestId('active-account-panel').querySelector('canvas')?.getAttribute('data-skin-url')).toContain('/alex');
+    fireEvent.click(screen.getByTestId('active-account-panel'));
+    await act(async () => { fireEvent.click(screen.getByRole('menuitemradio',{name:/Steve/})); });
+    expect(screen.getByTestId('active-account-panel').querySelector('canvas')?.getAttribute('data-skin-url')).toContain('/steve');
+    rerender(<AccountMenu accounts={accounts.map(a=>({...a,isActive:a.id==='two'}))} api={api} cosmeticsByAccount={{...cosmetics,two:{...cosmetics.two,skins:[{...cosmetics.two.skins[0],url:'https://textures.minecraft.net/new-skin'}]}}} />);
+    expect(screen.getByTestId('active-account-panel').querySelector('canvas')?.getAttribute('data-skin-url')).toContain('/new-skin');
+  });
   it("switches to the clicked account and updates the lower account panel", async () => {
     const api = mockApi();
     render(<AccountMenu accounts={accounts} api={api} />);

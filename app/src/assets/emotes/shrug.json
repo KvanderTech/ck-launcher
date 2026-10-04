@@ -1,0 +1,15 @@
+{
+  "name": "Shrug",
+  "author": "Kvanth Launcher",
+  "emote": {
+    "beginTick": 0,
+    "endTick": 50,
+    "degrees": false,
+    "moves": [
+      { "tick": 10, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 0.7, "bend": -0.45 }, "leftArm": { "roll": -0.7, "bend": 0.45 }, "head": { "roll": 0.12 } },
+      { "tick": 22, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 0.7, "bend": -0.45 }, "leftArm": { "roll": -0.7, "bend": 0.45 }, "head": { "roll": 0.12 } },
+      { "tick": 33, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 0.7, "bend": -0.45 }, "leftArm": { "roll": -0.7, "bend": 0.45 }, "head": { "roll": -0.12 } },
+      { "tick": 45, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 0, "bend": 0 }, "leftArm": { "roll": 0, "bend": 0 }, "head": { "roll": 0 } }
+    ]
+  }
+}

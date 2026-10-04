@@ -5,7 +5,7 @@ const WEBVIEW2_CLIENT_KEY: &str =
     r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
 const WEBVIEW2_CURRENT_USER_CLIENT_KEY: &str =
     r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-const WEBVIEW2_MISSING_TITLE: &str = "ЦК Лаунчер";
+const WEBVIEW2_MISSING_TITLE: &str = "Kvanth Launcher";
 const WEBVIEW2_MISSING_INSTRUCTION: &str =
     "Microsoft Edge WebView2 Runtime не найден. Установите Evergreen Runtime и запустите приложение снова.";
 

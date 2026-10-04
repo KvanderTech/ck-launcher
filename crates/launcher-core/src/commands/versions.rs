@@ -10,7 +10,7 @@ use std::{path::PathBuf, sync::Arc};
 pub async fn list_game_versions(
     metadata: &Arc<MetadataService>,
 ) -> Result<Vec<GameVersionSummary>, LauncherError> {
-    metadata.stable_releases().await
+    metadata.game_versions().await
 }
 
 pub async fn required_java_for_version(

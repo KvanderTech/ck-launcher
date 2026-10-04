@@ -34,6 +34,7 @@ export function MemorySettings({
   return (
     <section aria-labelledby="memory-settings-title">
       <h2 id="memory-settings-title">Оперативная память</h2>
+      <p className="memory-scope">Для всех сборок</p>
       <output htmlFor="memory-slider">{memoryMb} МБ</output>
       <input
         aria-label="Оперативная память"
@@ -45,6 +46,8 @@ export function MemorySettings({
         type="range"
         value={memoryMb}
       />
+      <div className="memory-limits"><span>{status.minMemoryMb} МБ</span><span>{status.maxMemoryMb} МБ</span></div>
+      <p className="memory-system-total">На компьютере: {(status.physicalMemoryMb / 1024).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} ГБ</p>
       {saveState === "saving" ? <p aria-live="polite">Сохраняем…</p> : null}
       {saveState === "error" ? <p role="alert">Не удалось сохранить память. Значение восстановлено.</p> : null}
     </section>

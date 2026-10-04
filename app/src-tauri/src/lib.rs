@@ -53,5 +53,5 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("Could not start CK Launcher");
+        .expect("Could not start Kvanth Launcher");
 }

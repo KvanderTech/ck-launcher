@@ -37,10 +37,16 @@ pub async fn dispatch(
             | "repair_build"
             | "select_build"
             | "rename_build"
+            | "update_build_preferences"
+            | "copy_build"
+            | "export_build"
+            | "trash_build_screenshot"
             | "choose_build_icon"
             | "delete_build"
             | "install_modrinth_project"
             | "install_modrinth_modpack"
+            | "install_curseforge_project"
+            | "install_curseforge_modpack"
             | "confirm_mrpack"
             | "remove_installed_content"
             | "set_installed_content_enabled"
@@ -68,6 +74,8 @@ pub async fn dispatch(
         method,
         "install_modrinth_modpack"
             | "install_modrinth_project"
+            | "install_curseforge_project"
+            | "install_curseforge_modpack"
             | "confirm_mrpack"
             | "repair_build"
             | "create_build"
@@ -149,6 +157,26 @@ pub async fn dispatch(
             )
             .await?,
         ),
+        "search_curseforge" => result(
+            ctx.content
+                .search_curseforge(
+                    argument(&params, "query")?,
+                    argument(&params, "projectType")?,
+                    argument(&params, "gameVersion")?,
+                    argument(&params, "loader")?,
+                    argument(&params, "offset")?,
+                )
+                .await?,
+        ),
+        "curseforge_versions" => result(
+            ctx.content
+                .curseforge_versions(
+                    argument(&params, "projectId")?,
+                    argument(&params, "gameVersion")?,
+                    argument(&params, "loader")?,
+                )
+                .await?,
+        ),
         "modrinth_project" => result(
             commands::content::modrinth_project(
                 argument::<String>(&params, "projectId")?,
@@ -168,11 +196,46 @@ pub async fn dispatch(
                 argument::<String>(&params, "name")?,
                 argument::<String>(&params, "gameVersion")?,
                 argument::<String>(&params, "loader")?,
+                argument::<Option<String>>(&params, "iconDataUrl")?,
+                argument::<Option<String>>(&params, "loaderVersion")?,
                 &ctx.content,
             )
             .await?,
         ),
+        "list_loader_versions" => result(ctx.content.loader_versions(
+            &argument::<String>(&params, "gameVersion")?,
+            &argument::<String>(&params, "loader")?,
+        ).await?),
         "list_builds" => result(commands::content::list_builds(&ctx.storage).await?),
+        "build_preferences" => result(
+            ctx.storage
+                .build_preferences(&argument::<String>(&params, "buildId")?)
+                .await?,
+        ),
+        "update_build_preferences" => result(
+            ctx.storage
+                .update_build_preferences(
+                    &argument::<String>(&params, "buildId")?,
+                    &argument::<crate::storage::BuildPreferences>(&params, "preferences")?,
+                )
+                .await?,
+        ),
+        "copy_build" => result(
+            commands::content::copy_build(
+                argument::<String>(&params, "buildId")?,
+                &ctx.storage,
+                &ctx.paths,
+            )
+            .await?,
+        ),
+        "export_build" => result(
+            commands::content::export_build(
+                argument::<String>(&params, "buildId")?,
+                &ctx.storage,
+                &ctx.paths,
+            )
+            .await?,
+        ),
         "repair_build" => result(
             commands::content::repair_build(argument::<String>(&params, "buildId")?, &ctx.content)
                 .await?,
@@ -208,6 +271,24 @@ pub async fn dispatch(
                 &ctx.content,
             )
             .await?,
+        ),
+        "install_curseforge_project" => result(
+            ctx.content
+                .install_curseforge_project(
+                    argument(&params, "projectId")?,
+                    argument(&params, "buildId")?,
+                    argument(&params, "projectType")?,
+                    argument(&params, "versionId")?,
+                )
+                .await?,
+        ),
+        "install_curseforge_modpack" => result(
+            ctx.content
+                .install_curseforge_modpack(
+                    argument(&params, "projectId")?,
+                    argument(&params, "versionId")?,
+                )
+                .await?,
         ),
         "install_modrinth_modpack" => result(
             commands::content::install_modrinth_modpack(
@@ -291,6 +372,23 @@ pub async fn dispatch(
                 argument::<String>(&params, "buildId")?,
                 argument::<String>(&params, "relativePath")?,
                 &ctx.storage,
+            )
+            .await?,
+        ),
+        "read_build_screenshot" => result(
+            commands::content::read_build_screenshot(
+                argument::<String>(&params, "buildId")?,
+                argument::<String>(&params, "relativePath")?,
+                &ctx.storage,
+            )
+            .await?,
+        ),
+        "trash_build_screenshot" => result(
+            commands::content::trash_build_screenshot(
+                argument::<String>(&params, "buildId")?,
+                argument::<String>(&params, "relativePath")?,
+                &ctx.storage,
+                &ctx.paths,
             )
             .await?,
         ),

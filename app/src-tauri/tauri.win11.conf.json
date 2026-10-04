@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kvanth Launcher",
+  "mainBinaryName": "kvanth-launcher",
+  "identifier": "ru.cklauncher.win11",
+  "build": {
+    "beforeDevCommand": "npm run dev:win11",
+    "beforeBuildCommand": "npm run build:win11"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Kvanth Launcher",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "center": true,
+        "decorations": false,
+        "transparent": false
+      }
+    ]
+  },
+  "bundle": {
+    "publisher": "Kvanth",
+    "createUpdaterArtifacts": true,
+    "shortDescription": "Kvanth Launcher for Minecraft: Java Edition on Windows 10 and 11.",
+    "icon": ["icons/kvanth/32x32.png", "icons/kvanth/128x128.png", "icons/kvanth/128x128@2x.png", "icons/kvanth/icon.ico"],
+    "fileAssociations": [{ "ext": ["mrpack"], "mimeType": "application/x-modrinth-modpack+zip", "name": "Modrinth modpack", "description": "Сборка Modrinth для установки в Kvanth Launcher", "role": "Editor" }],
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller", "silent": true },
+      "nsis": {
+        "installerIcon": "icons/kvanth/icon.ico",
+        "uninstallerIcon": "icons/kvanth/icon.ico",
+        "headerImage": "installer/kvanth/header.bmp",
+        "uninstallerHeaderImage": "installer/kvanth/header.bmp",
+        "sidebarImage": "installer/kvanth/sidebar.bmp"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU4NjQ4NzFCMkQwMTE4RDkKUldUWkdBRXRHNGRrNk16WHBPZndDRjBrOVVWNzkwbW9zc2VJUUJoSGdiMEM0NTFyd1EzMTBEZW0K",
+      "endpoints": ["https://github.com/KvanderTech/ck-launcher/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

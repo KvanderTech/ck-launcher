@@ -1,3 +1,4 @@
+import { KvanthIcon } from "../../components/KvanthIcon";
 import { useState } from "react";
 
 import { launcherApi, type LauncherApi } from "../../app/tauri";
@@ -53,6 +54,7 @@ export function MicrosoftLogin({
         role={buttonRole}
         type="button"
       >
+        {buttonRole === "menuitem" ? <KvanthIcon name="add-account" size={18} /> : null}
         {state === "loading" || state === "cancelling"
           ? "Входим…"
           : state === "error"

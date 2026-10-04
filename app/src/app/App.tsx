@@ -1,9 +1,11 @@
+import { KvanthIcon } from "../components/KvanthIcon";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { BackgroundCarousel } from "../components/BackgroundCarousel";
 import { GameActivity } from "../components/GameActivity";
+import { LauncherTopbar, type CompletedLauncherTask } from "../components/LauncherTopbar";
 import { Sidebar, type PageId } from "../components/Sidebar";
-import { playSound, SoundEffects } from "../components/SoundEffects";
+import { playSound, setSoundEnabled, soundEnabled, SoundEffects } from "../components/SoundEffects";
 import { WindowControls } from "../components/WindowControls";
 import { MicrosoftLogin } from "../features/accounts/MicrosoftLogin";
 import { ContentPage, type ContentInstallTask } from "../features/content/ContentPage";
@@ -18,7 +20,10 @@ import "../styles/launcher.css";
 import "../styles/instance-repair.css";
 import "../styles/home-redesign.css";
 import "../styles/interface-redesign.css";
+import "../styles/kvanth-icons.css";
 import { appApi, windowApi, type AppApi } from "./tauri";
+import { isWindows11Edition, launcherEdition } from "./edition";
+import kvanthWordmark from "../assets/kvanth-wordmark.png";
 import type {
   AccountSummary,
   BuildSummary,
@@ -79,10 +84,13 @@ export default function App({ api = appApi }: AppProps) {
   const [memorySaveState, setMemorySaveState] = useState<MemorySaveState>("idle");
   const [contentInstallTask, setContentInstallTask] = useState<ContentInstallTask>();
   const [libraryTarget, setLibraryTarget] = useState<{ id: string; nonce: number }>();
-  const [catalogForBuild, setCatalogForBuild] = useState(false);
+  const [catalogBuildId, setCatalogBuildId] = useState<string>();
   const [contentNonce, setContentNonce] = useState(0);
   const [createBuildOnOpen, setCreateBuildOnOpen] = useState(false);
   const [deleteTask, setDeleteTask] = useState<{ build: BuildSummary; deleting?: boolean; error?: string }>();
+  const [completedTasks, setCompletedTasks] = useState<CompletedLauncherTask[]>([]);
+  const [navigationHistory, setNavigationHistory] = useState<PageId[]>(["home"]);
+  const [navigationIndex, setNavigationIndex] = useState(0);
   const [skinLibraries, setSkinLibraries] = useState<Record<string, OfflineSkin[]>>({});
   const [cosmeticsByAccount, setCosmeticsByAccount] = useState<Record<string, MinecraftCosmetics>>({});
   const [cosmeticsErrors, setCosmeticsErrors] = useState<Record<string, string | undefined>>({});
@@ -98,6 +106,21 @@ export default function App({ api = appApi }: AppProps) {
   const memoryTimer = useRef<number | undefined>(undefined);
   const memoryPersistence = useRef<Promise<void> | undefined>(undefined);
   const memoryActive = useRef(true);
+  const completedContentTaskId = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!contentInstallTask || contentInstallTask.step !== 3 || contentInstallTask.error) return;
+    const id = `${contentInstallTask.project.project_id}:${contentInstallTask.stage}`;
+    if (completedContentTaskId.current === id) return;
+    completedContentTaskId.current = id;
+    setCompletedTasks((items) => [{
+      id: `content-${id}-${Date.now()}`,
+      title: contentInstallTask.project.title,
+      detail: contentInstallTask.stage,
+      completedAt: Date.now(),
+      iconUrl: contentInstallTask.project.icon_url,
+    }, ...items].slice(0, 20));
+  }, [contentInstallTask]);
 
   const warmCosmetics = useCallback((accountId: string) => {
     const pending = cosmeticsRequests.current.get(accountId);
@@ -130,10 +153,11 @@ export default function App({ api = appApi }: AppProps) {
   }, [api]);
 
   const syncBuildSelection = useCallback(async () => {
-    const [nextProfile, nextBuilds] = await Promise.all([api.getProfile(), api.listBuilds()]);
+    const [nextProfile, nextBuilds, nextAccounts] = await Promise.all([api.getProfile(), api.listBuilds(), api.listAccounts()]);
     profileRef.current = nextProfile;
     setProfile(nextProfile);
     setBuilds(nextBuilds);
+    setAccounts(nextAccounts);
   }, [api]);
 
   const importAssociatedMrpack = useCallback(async (sourcePath: string) => {
@@ -208,6 +232,7 @@ export default function App({ api = appApi }: AppProps) {
         setProgress(undefined);
         break;
       case "exited":
+        setCompletedTasks((items) => [{ id: `game-${event.value.operationId}`, title: runningBuildName(), detail: "Игровая сессия завершена", completedAt: Date.now() }, ...items].slice(0, 20));
         playSound("game-exit");
         setRunningGame(undefined);
         operationId.current = undefined;
@@ -233,6 +258,26 @@ export default function App({ api = appApi }: AppProps) {
     }
   }
 
+  function runningBuildName() {
+    return builds.find((build) => build.id === runningGame?.profileId)?.name ?? "Minecraft";
+  }
+
+  function navigate(page: PageId) {
+    if (page === activePage) return;
+    const next = [...navigationHistory.slice(0, navigationIndex + 1), page];
+    setNavigationHistory(next);
+    setNavigationIndex(next.length - 1);
+    setActivePage(page);
+  }
+
+  function moveInHistory(offset: -1 | 1) {
+    const nextIndex = navigationIndex + offset;
+    const page = navigationHistory[nextIndex];
+    if (!page) return;
+    setNavigationIndex(nextIndex);
+    setActivePage(page);
+  }
+
   function receiveOperationEvent(event: BufferedOperationEvent) {
     if (event.value.operationId === operationId.current) {
       applyOperationEvent(event);
@@ -244,7 +289,7 @@ export default function App({ api = appApi }: AppProps) {
   useEffect(() => {
     let active = true;
     void api.listGameVersions().then(
-      (items) => { if (active) { setVersions(items.filter(v => v.type === "release")); setVersionError(false); } },
+      (items) => { if (active) { setVersions(items); setVersionError(false); } },
       () => { if (active) setVersionError(true); },
     );
     void Promise.all([
@@ -474,13 +519,13 @@ export default function App({ api = appApi }: AppProps) {
   }
 
   if (bootState === "loading") {
-    return <main aria-live="polite" className="boot-screen"><span className="boot-mark">ЦК</span><p>Подготавливаем лаунчер…</p></main>;
+    return <main aria-live="polite" className="boot-screen">{isWindows11Edition ? <img className="boot-wordmark" alt="Kvanth Launcher" src={kvanthWordmark} /> : <span className="boot-mark">ЦК</span>}<p>Подготавливаем лаунчер…</p></main>;
   }
 
   if (bootState === "failed" || !profile) {
     return (
       <main className="boot-screen">
-        <span className="boot-mark">ЦК</span>
+        {isWindows11Edition ? <img className="boot-wordmark" alt="Kvanth Launcher" src={kvanthWordmark} /> : <span className="boot-mark">ЦК</span>}
         <h1>Не удалось подготовить лаунчер</h1>
         <p role="alert">Перезапустите приложение. Технические сведения не показываются в интерфейсе.</p>
       </main>
@@ -494,45 +539,58 @@ export default function App({ api = appApi }: AppProps) {
     : undefined;
 
   return (
-    <div className={`launcher-shell is-compact${activePage === "home" ? " is-home" : ""}`}>
+    <div
+      className={`launcher-shell edition-${launcherEdition} is-compact${activePage === "home" ? " is-home" : ""}`}
+      data-edition={launcherEdition}
+    >
       <SoundEffects />
       <BackgroundCarousel />
       <Sidebar
         accountApi={api}
         accounts={accounts}
+        cosmeticsByAccount={cosmeticsByAccount}
         activePage={activePage}
         builds={builds}
         onAccountAdded={accountAdded}
         onAccountRemoved={accountRemoved}
         onActiveAccountChange={activeAccountChanged}
-        onNavigate={(page) => { if (page === "content") { setCatalogForBuild(false); setCreateBuildOnOpen(false); setContentNonce((value) => value + 1); } setActivePage(page); }}
+        onNavigate={(page) => { if (page === "content") { setCatalogBuildId(undefined); setCreateBuildOnOpen(false); setContentNonce((value) => value + 1); } navigate(page); }}
         onOpenBuild={(buildId) => void openSidebarBuild(buildId)}
       />
       <main className="main-pane">
         <header
           className="topbar"
           onMouseDown={(event) => {
-            if (event.button !== 0 || (event.target as HTMLElement).closest(".window-controls, .game-activity, .game-console-backdrop")) return;
+            if (event.button !== 0 || (event.target as HTMLElement).closest("button, .window-controls, .game-activity, .game-console-backdrop, .task-manager-popover")) return;
             void windowApi.startDragging();
           }}
         >
-          <div
-            className="topbar-drag-region"
-            data-tauri-drag-region
-            onDoubleClick={() => void windowApi.toggleMaximize()}
-          >
-          </div>
-          {runningGame && viewState === "running" && (
-            <GameActivity
-              api={api}
-              game={runningGame}
-              iconUrl={runningBuild?.iconUrl}
-              name={runningBuild?.name ?? profile.name}
-            />
-          )}
-          {versionError && <div role="status" className="catalog-offline">Список версий недоступен. Установленные сборки доступны. <button type="button" onClick={() => { void api.listGameVersions().then(items => { setVersions(items.filter(v => v.type === "release")); setVersionError(false); }).catch(() => setVersionError(true)); }}>Повторить</button></div>}
-        <WindowControls />
+          {isWindows11Edition ? <LauncherTopbar
+            activeBuild={activeBuild}
+            api={api}
+            canGoBack={navigationIndex > 0}
+            canGoForward={navigationIndex < navigationHistory.length - 1}
+            cancelling={cancelling}
+            completedTasks={completedTasks}
+            contentTask={contentInstallTask}
+            onCancelProgress={() => {
+              const id = operationId.current;
+              if (!id || cancelling) return;
+              setCancelling(true);
+              void api.cancelOperation(id).catch((reason: LauncherErrorDto) => setOperationError(reason)).finally(() => setCancelling(false));
+            }}
+            onClearTasks={() => setCompletedTasks([])}
+            onGoBack={() => moveInHistory(-1)}
+            onGoForward={() => moveInHistory(1)}
+            progress={progress}
+            runningGame={runningGame && viewState === "running" ? runningGame : undefined}
+          /> : <>
+            <div className="topbar-drag-region" data-tauri-drag-region onDoubleClick={() => void windowApi.toggleMaximize()} />
+            {runningGame && viewState === "running" && <GameActivity api={api} game={runningGame} iconUrl={runningBuild?.iconUrl} name={runningBuild?.name ?? profile.name} />}
+            <WindowControls />
+          </>}
         </header>
+        {versionError && <div role="status" className="catalog-offline">Список версий недоступен. Установленные сборки доступны. <button type="button" onClick={() => { void api.listGameVersions().then(items => { setVersions(items); setVersionError(false); }).catch(() => setVersionError(true)); }}><KvanthIcon name="refresh" size={18} /> Повторить</button></div>}
         <div className="page-scroll">
           {signedOut ? (
             <section className="signed-out-panel">
@@ -543,14 +601,25 @@ export default function App({ api = appApi }: AppProps) {
             </section>
           ) : activePage === "home" ? (
             <HomePage
+              buildName={activeBuild?.name}
               error={operationError}
               logPath={operationLogPath}
               warning={operationWarning}
-              onPlay={() => builds.length ? void startPlay() : setActivePage("library")}
+              onPlay={() => isWindows11Edition ? navigate("library") : builds.length ? void startPlay() : navigate("library")}
               onOpenLog={() => void openLatestGameLog()}
-              onOpenExternal={(url) => void api.openExternalUrl(url)}
+              onOpenExternal={(url) => {
+                void api.openExternalUrl(url)
+                  .then(() => setOperationWarning(undefined))
+                  .catch(() => setOperationWarning({
+                    code: "browser_open_failed",
+                    message: "Не удалось открыть ссылку в браузере.",
+                    recoverable: true,
+                  }));
+              }}
               onRetry={() => void startPlay()}
+              onDismissError={() => setOperationError(undefined)}
               state={viewState}
+              versionLabel={activeBuild?.gameVersion ?? profile.versionId ?? undefined}
             />
           ) : activePage === "settings" ? (
             <SettingsPage
@@ -566,8 +635,10 @@ export default function App({ api = appApi }: AppProps) {
           ) : activePage === "content" ? (
             <ContentPage
               api={api}
-              forBuild={catalogForBuild}
-              key={`content-${contentNonce}-${catalogForBuild ? "build" : "root"}`}
+              forBuild={Boolean(catalogBuildId)}
+              targetBuildId={catalogBuildId}
+              onBackToBuild={() => { if (catalogBuildId) setLibraryTarget({ id: catalogBuildId, nonce: Date.now() }); navigate("library"); }}
+              key={`content-${contentNonce}-${catalogBuildId ?? "root"}`}
               versions={versions}
               installTask={contentInstallTask}
               startCreating={createBuildOnOpen}
@@ -580,8 +651,8 @@ export default function App({ api = appApi }: AppProps) {
               key={libraryTarget?.nonce ?? "library"}
               api={api}
               onBuildSelected={syncBuildSelection}
-              onOpenCatalog={() => { setCatalogForBuild(true); setActivePage("content"); }}
-              onCreateBuild={() => { setCatalogForBuild(false); setCreateBuildOnOpen(true); setContentNonce((value) => value + 1); setActivePage("content"); }}
+              onOpenCatalog={(build) => { setCatalogBuildId(build?.id); if (build) setLibraryTarget({ id: build.id, nonce: Date.now() }); navigate("content"); }}
+              onCreateBuild={() => { setCatalogBuildId(undefined); setCreateBuildOnOpen(true); setContentNonce((value) => value + 1); navigate("content"); }}
               onPlay={startPlay}
               onRequestDelete={(build) => setDeleteTask({ build })}
             />
@@ -600,13 +671,13 @@ export default function App({ api = appApi }: AppProps) {
           ) : null}
         </div>
       </main>
-      {contentInstallTask && <aside className={`content-install-toast global-install-toast${contentInstallTask.error ? " is-error" : ""}`} role={contentInstallTask.error ? "alert" : "status"}>{contentInstallTask.project.icon_url ? <img alt="" src={contentInstallTask.project.icon_url} /> : <span>{contentInstallTask.project.title[0]}</span>}<div><strong>{contentInstallTask.project.title}</strong><p>{contentInstallTask.error ?? contentInstallTask.stage}</p></div>{contentInstallTask.error ? <button aria-label="Закрыть сообщение об установке" onClick={() => setContentInstallTask(undefined)} type="button">×</button> : <><i /><small>{contentInstallTask.step}/3</small></>}</aside>}
-      {progress && (viewState === "installing" || viewState === "launching") && (() => { const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i /><small>{percent}%</small></aside>; })()}
-      {(viewState === "installing" || viewState === "launching") && progress && <button className="cancel-workflow" type="button" disabled={cancelling} onClick={() => {
+      {!isWindows11Edition && contentInstallTask && <aside className={`content-install-toast global-install-toast${contentInstallTask.error ? " is-error" : ""}`} role={contentInstallTask.error ? "alert" : "status"}>{contentInstallTask.project.icon_url ? <img alt="" src={contentInstallTask.project.icon_url} /> : <span>{contentInstallTask.project.title[0]}</span>}<div><strong>{contentInstallTask.project.title}</strong><p>{contentInstallTask.error ?? contentInstallTask.stage}</p></div>{contentInstallTask.error ? <button aria-label="Закрыть сообщение об установке" onClick={() => setContentInstallTask(undefined)} type="button">×</button> : <><i /><small>{contentInstallTask.step}/3</small></>}</aside>}
+      {!isWindows11Edition && progress && (viewState === "installing" || viewState === "launching") && (() => { const percent = progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.completedBytes / progress.totalBytes * 100)) : 0; return <aside className="content-install-toast global-install-toast game-install-toast" role="status">{activeBuild?.iconUrl ? <img alt="" src={activeBuild.iconUrl} /> : <span>ЦК</span>}<div><strong>{activeBuild?.name ?? profile.name}</strong><p>{progressLabel(progress.stage)}</p><span className="sr-only">{progress.currentFile ?? "Подготавливаем операцию…"}</span></div><i /><small>{percent}%</small></aside>; })()}
+      {!isWindows11Edition && (viewState === "installing" || viewState === "launching") && progress && <button className="cancel-workflow" type="button" disabled={cancelling} onClick={() => {
         const id = operationId.current; if (!id) return; setCancelling(true);
         void api.cancelOperation(id).catch((reason: LauncherErrorDto) => setOperationError(reason)).finally(() => setCancelling(false));
       }}>{cancelling ? "Отменяем…" : "Отменить"}</button>}
-      {deleteTask && <aside className={`delete-build-toast${deleteTask.error ? " is-error" : ""}`} role={deleteTask.error ? "alert" : "dialog"}>{deleteTask.build.iconUrl ? <img alt="" src={deleteTask.build.iconUrl} /> : <span>{deleteTask.build.name[0]}</span>}<div><strong>{deleteTask.deleting ? "Удаляем сборку…" : `Удалить «${deleteTask.build.name}»?`}</strong><p>{deleteTask.error ?? "Сборка будет перемещена во внутреннюю корзину."}</p><div className="delete-toast-actions"><button disabled={deleteTask.deleting} onClick={() => setDeleteTask(undefined)} type="button">Отмена</button><button disabled={deleteTask.deleting} onClick={() => void confirmBuildDelete()} type="button">{deleteTask.deleting ? "Удаление…" : "Удалить"}</button></div></div></aside>}
+      {deleteTask && <aside className={`delete-build-toast${deleteTask.error ? " is-error" : ""}`} role={deleteTask.error ? "alert" : "dialog"}>{deleteTask.build.iconUrl ? <img alt="" src={deleteTask.build.iconUrl} /> : <span>{deleteTask.build.name[0]}</span>}<div><strong>{deleteTask.deleting ? "Удаляем сборку…" : `Удалить «${deleteTask.build.name}»?`}</strong><p>{deleteTask.error ?? "Сборка будет перемещена во внутреннюю корзину."}</p><div className="delete-toast-actions"><button disabled={deleteTask.deleting} onClick={() => setDeleteTask(undefined)} type="button"><KvanthIcon name="close" size={18} /> Отмена</button><button disabled={deleteTask.deleting} onClick={() => void confirmBuildDelete()} type="button"><KvanthIcon name="delete" size={18} /> {deleteTask.deleting ? "Удаление…" : "Удалить"}</button></div></div></aside>}
     </div>
   );
 }
@@ -635,6 +706,7 @@ function SettingsPage({
   onRuntimeAction,
   runtimes,
 }: SettingsPageProps) {
+  const [soundsOn, setSoundsOn] = useState(soundEnabled);
   const [update, setUpdate] = useState<Update>();
   const [updateStatus, setUpdateStatus] = useState("Готово к проверке");
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -682,14 +754,24 @@ function SettingsPage({
             onChange={onMemoryChange}
             saveState={memorySaveState}
           />
+          <section className="settings-card sound-settings-card">
+            <h2>Звуки лаунчера</h2>
+            <label className="sound-settings-toggle">
+              <span>Включить звуки</span>
+              <input aria-label="Включить звуки лаунчера" checked={soundsOn} data-sound="none" onChange={(event) => {
+                setSoundEnabled(event.currentTarget.checked);
+                setSoundsOn(event.currentTarget.checked);
+              }} type="checkbox" />
+            </label>
+          </section>
           <section className="settings-card">
             <h2>Папка игры</h2>
             <code>{gameDir}</code>
-            <button onClick={onChooseGameDirectory} type="button">Выбрать папку игры</button>
+            <button onClick={onChooseGameDirectory} type="button"><KvanthIcon name="folder" size={18} /> Выбрать папку игры</button>
           </section>
           <section className="settings-card update-card">
             <div><h2>Обновление лаунчера</h2><p>{updateStatus}</p></div>
-            {update ? <button disabled={updateBusy} onClick={() => void installUpdate()} type="button">{updateBusy ? "Загрузка…" : `Обновить до ${update.version}`}</button> : <button disabled={updateBusy} onClick={() => void checkForUpdates()} type="button">{updateBusy ? "Проверяем…" : "Проверить обновления"}</button>}
+            {update ? <button disabled={updateBusy} onClick={() => void installUpdate()} type="button"><KvanthIcon name="download" size={18} /> {updateBusy ? "Загрузка…" : `Обновить до ${update.version}`}</button> : <button disabled={updateBusy} onClick={() => void checkForUpdates()} type="button"><KvanthIcon name="refresh" size={18} /> {updateBusy ? "Проверяем…" : "Проверить обновления"}</button>}
           </section>
         </div>
         <div className="settings-card java-card-group">

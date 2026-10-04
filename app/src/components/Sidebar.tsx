@@ -1,13 +1,17 @@
+import { KvanthIcon } from "./KvanthIcon";
 import { windowApi, type LauncherApi } from "../app/tauri";
-import type { AccountSummary, BuildSummary } from "../app/types";
+import type { AccountSummary, BuildSummary, MinecraftCosmetics } from "../app/types";
 import logo from "../assets/logo-transparent.png";
+import kvanthIcon from "../assets/kvanth-icon.png";
 import { AccountMenu } from "../features/accounts/AccountMenu";
+import { isWindows11Edition } from "../app/edition";
 
 export type PageId = "home" | "library" | "content" | "skins" | "settings";
 
 interface SidebarProps {
   activePage: PageId;
   accounts: AccountSummary[];
+  cosmeticsByAccount?: Record<string, MinecraftCosmetics>;
   accountApi: LauncherApi;
   builds: BuildSummary[];
   onAccountAdded(account: AccountSummary): void;
@@ -27,6 +31,7 @@ const navigation: Array<{ id: PageId; label: string; icon: IconName }> = [
 export function Sidebar({
   activePage,
   accounts,
+  cosmeticsByAccount,
   accountApi,
   builds,
   onAccountAdded,
@@ -38,8 +43,7 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand" onMouseDown={(event) => { if (event.button === 0) void windowApi.startDragging(); }}>
-        <img alt="Логотип ЦК" src={logo} />
-        <span><strong>ЦК Лаунчер</strong><small>Твой мир — твои правила</small></span>
+        {isWindows11Edition ? <img className="kvanth-icon" alt="Kvanth Launcher" src={kvanthIcon} /> : <><img alt="Логотип ЦК" src={logo} /><span><strong>ЦК Лаунчер</strong><small>Твой мир — твои правила</small></span></>}
       </div>
       <nav aria-label="Разделы лаунчера" className="sidebar-primary">
         {navigation.map((item) => (
@@ -60,11 +64,12 @@ export function Sidebar({
       <nav aria-label="Установленные сборки" className="sidebar-builds">
         {builds.map((build) => <button aria-label={build.name} aria-pressed={activePage === "library" && build.isActive} className={build.isActive ? "sidebar-build active" : "sidebar-build"} data-sound="none" key={build.id} onClick={() => onOpenBuild(build.id)} title={build.name} type="button">{build.iconUrl ? <img alt="" src={build.iconUrl} /> : <span>{build.name.slice(0, 1).toUpperCase()}</span>}</button>)}
       </nav>
-      <button aria-label="Добавить сборку" className="sidebar-add-build" onClick={() => onNavigate("content")} title="Добавить сборку" type="button">＋</button>
+      <button aria-label="Добавить сборку" className="sidebar-add-build" onClick={() => onNavigate("content")} title="Добавить сборку" type="button"><KvanthIcon name="add" tone="blue" size={22} /></button>
       <div className="sidebar-spacer" />
       <button aria-label="Настройки" aria-pressed={activePage === "settings"} className={activePage === "settings" ? "sidebar-bottom-button is-active" : "sidebar-bottom-button"} onClick={() => onNavigate("settings")} title="Настройки" type="button"><MenuIcon name="settings" /></button>
       <AccountMenu
         accounts={accounts}
+        cosmeticsByAccount={cosmeticsByAccount}
         api={accountApi}
         closeSignal={activePage}
         onActiveAccountChange={onActiveAccountChange}
@@ -78,6 +83,7 @@ export function Sidebar({
 type IconName = "home" | "library" | "blocks" | "shirt" | "settings";
 
 function MenuIcon({ name }: { name: IconName }) {
+  if (isWindows11Edition) return <KvanthIcon name={name === "blocks" ? "catalog" : name === "shirt" ? "skins" : name} tone="blue" size={26} />;
   const paths: Record<IconName, React.ReactNode> = {
     home: <><path d="m3.5 10.7 8.5-7 8.5 7" /><path d="M5.5 9.7v9.8h13V9.7M9.2 19.5v-6h5.6v6" /></>,
     library: <><rect x="3.5" y="4" width="5" height="16" rx="1.7" /><rect x="10.2" y="4" width="4.6" height="16" rx="1.7" /><path d="m17 5 3.3-.8 3.3 14.7-3.4.8L17 5Z" /></>,

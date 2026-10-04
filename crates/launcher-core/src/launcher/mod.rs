@@ -482,9 +482,14 @@ fn stop_was_requested(
 
 #[cfg(windows)]
 fn terminate_process(pid: u32) -> Result<(), LauncherError> {
-    let result = std::process::Command::new("taskkill.exe")
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut command = std::process::Command::new("taskkill.exe");
+    command
         .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status();
+        .creation_flags(CREATE_NO_WINDOW);
+    let result = command.status();
     if result.is_ok_and(|status| status.success()) {
         return Ok(());
     }
@@ -719,7 +724,7 @@ pub(crate) fn build_launch(request: LaunchBuildRequest) -> Result<PreparedLaunch
         .or_else(|| request.version.assets.clone())
         .unwrap_or_default();
     let natives_argument = natives.to_string_lossy().into_owned();
-    let launcher_name = "CKLauncher";
+    let launcher_name = "KvanthLauncher";
     let launcher_version = env!("CARGO_PKG_VERSION");
     let library_directory =
         crate::paths::strip_verbatim_prefix(request.game_root.join("libraries"))

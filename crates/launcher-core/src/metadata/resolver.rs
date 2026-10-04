@@ -224,12 +224,15 @@ impl MetadataService {
     }
 
     pub async fn stable_releases(&self) -> Result<Vec<GameVersionSummary>, LauncherError> {
+        Ok(self.game_versions().await?.into_iter().filter(|version| version.version_type == "release").collect())
+    }
+
+    pub async fn game_versions(&self) -> Result<Vec<GameVersionSummary>, LauncherError> {
         let mut releases: Vec<_> = self
             .manifest(DownloadCancellationToken::new())
             .await?
             .versions
             .into_iter()
-            .filter(|version| version.version_type == "release")
             .map(|version| GameVersionSummary {
                 id: version.id,
                 version_type: version.version_type,

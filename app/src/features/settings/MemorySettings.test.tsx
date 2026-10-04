@@ -15,6 +15,7 @@ describe("MemorySettings", () => {
     const api: SettingsApi = {
       memoryStatus: vi.fn(async () => ({
         memoryMb: 2048,
+        physicalMemoryMb: 16384,
         minMemoryMb: 512,
         maxMemoryMb: 12288,
         stepMemoryMb: 512,
@@ -34,6 +35,8 @@ describe("MemorySettings", () => {
     expect(slider.getAttribute("step")).toBe("512");
     expect(slider.getAttribute("max")).toBe("12288");
     expect(screen.getByText("2048 МБ")).toBeTruthy();
+    expect(screen.getByText("Для всех сборок")).toBeTruthy();
+    expect(screen.getByText("На компьютере: 16 ГБ")).toBeTruthy();
     fireEvent.change(slider, { target: { value: "3584" } });
     expect(api.updateMemory).not.toHaveBeenCalled();
     expect(onChange).toHaveBeenCalledWith(3584);
@@ -43,6 +46,7 @@ describe("MemorySettings", () => {
     const api: SettingsApi = {
       memoryStatus: vi.fn(async () => ({
         memoryMb: 4096,
+        physicalMemoryMb: 16384,
         minMemoryMb: 512,
         maxMemoryMb: 12288,
         stepMemoryMb: 512,

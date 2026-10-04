@@ -3,6 +3,7 @@ import { StrictMode, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import RootApp from "../App";
+import { setSoundEnabled } from "../components/SoundEffects";
 import type {
   AccountSummary,
   JavaRuntimeStatus,
@@ -93,6 +94,7 @@ function createApi(handlers: EventHandlers) {
     })),
     memoryStatus: vi.fn(async () => ({
       memoryMb: 4096,
+      physicalMemoryMb: 16384,
       minMemoryMb: 512,
       maxMemoryMb: 12_288,
       stepMemoryMb: 512,
@@ -145,9 +147,23 @@ function renderApp(api: ReturnType<typeof createApi>) {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  setSoundEnabled(true);
 });
 
 describe("launcher application", () => {
+  it("persists the launcher sound switch in settings", async () => {
+    const api = createApi({});
+    renderApp(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Настройки" }));
+    const toggle = screen.getByRole("checkbox", { name: "Включить звуки лаунчера" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    expect(window.localStorage.getItem("kvanth.sound.enabled")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "Главная" }));
+    fireEvent.click(screen.getByRole("button", { name: "Настройки" }));
+    expect((screen.getByRole("checkbox", { name: "Включить звуки лаунчера" }) as HTMLInputElement).checked).toBe(false);
+  });
   it("opens the local library while metadata is still pending", async () => {
     const handlers: EventHandlers = {};
     const api = createApi(handlers);

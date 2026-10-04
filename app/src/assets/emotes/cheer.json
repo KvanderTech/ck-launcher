@@ -1,0 +1,16 @@
+{
+  "name": "Cheer",
+  "author": "Kvanth Launcher",
+  "emote": {
+    "beginTick": 0,
+    "endTick": 48,
+    "degrees": false,
+    "moves": [
+      { "tick": 8, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 2.25 }, "leftArm": { "roll": -2.25 }, "head": { "pitch": -0.18 } },
+      { "tick": 17, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 2.25 }, "leftArm": { "roll": -2.25 }, "head": { "pitch": -0.18 }, "torso": { "y": 0.06 } },
+      { "tick": 25, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 2.0 }, "leftArm": { "roll": -2.0 }, "torso": { "y": 0 } },
+      { "tick": 33, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 2.25 }, "leftArm": { "roll": -2.25 }, "torso": { "y": 0.06 } },
+      { "tick": 43, "easing": "EASEINOUTQUAD", "rightArm": { "roll": 0 }, "leftArm": { "roll": 0 }, "head": { "pitch": 0 }, "torso": { "y": 0 } }
+    ]
+  }
+}

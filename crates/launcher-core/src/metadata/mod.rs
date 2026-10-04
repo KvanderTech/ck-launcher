@@ -24,6 +24,14 @@ mod tests {
     }
 
     #[test]
+    fn full_version_list_includes_snapshots() {
+        let service = MetadataService::from_manifest_fixture(include_str!("../tests/fixtures/version_manifest_v2.json"));
+        let versions = crate::tasks::block_on(service.game_versions()).expect("manifest is resolved");
+        assert_eq!(versions.first().map(|version| version.id.as_str()), Some("26.1-snapshot"));
+        assert!(versions.iter().any(|version| version.version_type == "snapshot"));
+    }
+
+    #[test]
     fn game_version_dto_exposes_the_documented_type_field() {
         let value = serde_json::to_value(super::models::GameVersionSummary {
             id: "1.21.6".to_owned(),

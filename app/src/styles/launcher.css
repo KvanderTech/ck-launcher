@@ -7,6 +7,126 @@
   position: relative;
 }
 
+/* Windows 11 edition: the feature set stays shared; only the shell adopts
+   the softer Mica-like hierarchy and geometry of the Windows 11 desktop. */
+.boot-wordmark { width:240px; height:auto; object-fit:contain; }
+.launcher-shell.edition-win11 {
+  --surface-sidebar: rgba(10, 18, 31, 0.78);
+  --surface: rgba(17, 28, 45, 0.76);
+  --surface-raised: rgba(34, 48, 69, 0.72);
+  --surface-hover: rgba(49, 68, 94, 0.78);
+  --line: rgba(183, 210, 240, 0.13);
+  --line-strong: rgba(183, 218, 255, 0.24);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  background:
+    radial-gradient(circle at 78% 12%, rgba(42, 145, 218, 0.18), transparent 32%),
+    #07101d;
+}
+
+.edition-win11 .sidebar {
+  backdrop-filter: blur(28px) saturate(1.25);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
+}
+
+.edition-win11 .sidebar nav button {
+  border-radius: 8px;
+}
+
+.edition-win11 .sidebar nav button.is-active {
+  background: rgba(51, 159, 235, 0.2);
+  box-shadow: inset 3px 0 #60cdff;
+  color: #f7fbff;
+}
+
+.edition-win11 .active-account-panel {
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.edition-win11 .topbar {
+  background: linear-gradient(180deg, rgba(7, 16, 29, .5), transparent);
+  flex-basis: 58px;
+  padding: 10px 12px 6px 22px;
+}
+
+.edition-win11.is-compact .window-controls { gap: 8px; margin-left: 8px; }
+.edition-win11.is-compact .window-controls button {
+  border-radius: 7px;
+  height: 34px;
+  width: 45px;
+}
+.edition-win11.is-compact .window-controls button:hover {
+  background: rgba(255, 255, 255, .08);
+  filter: none;
+}
+.edition-win11.is-compact .window-controls .window-close:hover {
+  background: #c42b1c;
+  color: white;
+  filter: none;
+}
+
+.edition-win11 .topbar-navigation,
+.edition-win11 .topbar-actions,
+.edition-win11 .topbar-build { align-items: center; display: flex; -webkit-app-region: no-drag; }
+.edition-win11 .topbar-navigation { gap: 3px; margin-right: 8px; }
+.edition-win11 .topbar-navigation button {
+  align-items: center; background: transparent; border: 0; border-radius: 7px; color: #aebdcb; display: flex; height: 32px; justify-content: center; padding: 0; width: 32px;
+}
+.edition-win11 .topbar-navigation button:hover:not(:disabled) { background: rgba(255,255,255,.07); color: #fff; }
+.edition-win11 .topbar-navigation button:disabled { opacity: .28; }
+.edition-win11 .topbar-navigation svg { fill: none; height: 18px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; width: 18px; }
+.edition-win11 .topbar-build { gap: 8px; max-width: 230px; min-width: 0; }
+.edition-win11 .topbar-build img,
+.edition-win11 .topbar-build > span { align-items: center; background: rgba(67,137,183,.16); border: 1px solid rgba(161,209,238,.16); border-radius: 7px; display: flex; flex: 0 0 28px; font-size: 9px; font-weight: 850; height: 28px; justify-content: center; object-fit: cover; width: 28px; }
+.edition-win11 .topbar-build strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edition-win11 .topbar-actions { gap: 8px; }
+.edition-win11 .task-manager-anchor { position: relative; }
+.edition-win11 .task-manager-controls { align-items: center; display: flex; gap: 3px; }
+.edition-win11 .task-manager-trigger {
+  align-items: center; background: rgba(15,27,43,.7); border: 1px solid rgba(163,196,224,.13); border-radius: 9px; color: #aebdcb; display: flex; gap: 7px; height: 34px; padding: 0 9px; position: relative;
+}
+.edition-win11 .task-manager-trigger:hover,
+.edition-win11 .task-manager-trigger.is-active { background: rgba(31,54,76,.78); color: #e9f6ff; }
+.edition-win11 .task-manager-trigger svg { fill: none; height: 17px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; width: 17px; }
+.edition-win11 .task-manager-trigger span { color: #9bdcff; font-size: 10px; white-space: nowrap; }
+.edition-win11 .task-manager-trigger b { align-items: center; background: rgba(35,193,116,.16); border: 1px solid rgba(55,220,139,.35); border-radius: 50%; color: #64e2a5; display: flex; font-size: 9px; height: 18px; justify-content: center; min-width: 18px; }
+.edition-win11 .topbar-cancel-task { align-items: center; background: rgba(112,35,47,.22); border: 1px solid rgba(245,104,124,.22); border-radius: 8px; color: #f09aaa; display: flex; height: 34px; justify-content: center; padding: 0; width: 32px; }
+.edition-win11 .topbar-cancel-task:hover:not(:disabled) { background: rgba(179,42,61,.3); border-color: rgba(255,119,139,.42); color: #ffc0c9; }
+.edition-win11 .topbar-cancel-task svg { fill: none; height: 14px; stroke: currentColor; stroke-linecap: round; stroke-width: 1.8; width: 14px; }
+.edition-win11 .topbar-game-idle { align-items: center; background: rgba(15,27,43,.6); border: 1px solid rgba(163,196,224,.12); border-radius: 9px; color: #8fa2b4; display: flex; font-size: 10px; gap: 7px; height: 34px; padding: 0 11px; white-space: nowrap; }
+.edition-win11 .topbar-game-idle i { background: #718293; border-radius: 50%; height: 6px; width: 6px; }
+.edition-win11 .game-activity { flex-basis: 300px; height: 34px; margin: 0; }
+.edition-win11 .game-activity > img,
+.edition-win11 .game-activity-mark { height: 26px; width: 26px; }
+.edition-win11 .game-activity button { height: 26px; width: 28px; }
+.edition-win11 .task-manager-popover {
+  background: rgba(28, 31, 38, .98); border: 1px solid rgba(255,255,255,.11); border-radius: 12px; box-shadow: 0 22px 70px rgba(0,0,0,.48); color: #eef4f8; min-height: 150px; overflow: hidden; position: absolute; right: 0; top: 41px; width: min(360px, calc(100vw - 130px)); z-index: 100; backdrop-filter: blur(28px) saturate(1.2);
+}
+.edition-win11 .task-manager-popover > header { align-items: center; border-bottom: 1px solid rgba(255,255,255,.08); display: flex; justify-content: space-between; padding: 14px 15px; }
+.edition-win11 .task-manager-popover > header strong { font-size: 14px; }
+.edition-win11 .task-manager-popover > header span { color: #8999a7; font-size: 10px; }
+.edition-win11 .task-manager-section { border-top: 1px solid rgba(255,255,255,.07); padding-top: 4px; }
+.edition-win11 .task-manager-section > div:first-child { align-items: center; color: #aeb9c3; display: flex; font-size: 11px; justify-content: space-between; padding: 9px 14px 5px; }
+.edition-win11 .task-manager-section > div:first-child button { background: transparent; color: #aeb9c3; font-size: 10px; padding: 3px; }
+.edition-win11 .task-manager-row { align-items: center; display: grid; gap: 10px; grid-template-columns: 36px minmax(0,1fr); padding: 9px 14px; }
+.edition-win11 .task-manager-row:hover { background: rgba(255,255,255,.045); }
+.edition-win11 .task-manager-row > img,
+.edition-win11 .task-manager-row > span { align-items: center; background: rgba(77,92,110,.28); border: 1px solid rgba(255,255,255,.08); border-radius: 9px; display: flex; height: 36px; justify-content: center; object-fit: cover; width: 36px; }
+.edition-win11 .task-manager-row > span.is-complete { color: #55d696; }
+.edition-win11 .task-manager-row > div { min-width: 0; }
+.edition-win11 .task-manager-row strong,
+.edition-win11 .task-manager-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edition-win11 .task-manager-row strong { font-size: 12px; }
+.edition-win11 .task-manager-row small { color: #8e9eac; font-size: 10px; margin-top: 3px; }
+.edition-win11 .task-manager-row i { background: rgba(255,255,255,.09); border-radius: 3px; display: block; height: 3px; margin-top: 7px; overflow: hidden; }
+.edition-win11 .task-manager-row i b { background: linear-gradient(90deg,#36aeeb,#61d2ff); display: block; height: 100%; transition: width .2s ease; }
+.edition-win11 .task-manager-empty { align-items: center; color: #8494a2; display: flex; flex-direction: column; padding: 24px 16px 26px; text-align: center; }
+.edition-win11 .task-manager-empty > span { align-items: center; background: rgba(58,196,126,.12); border-radius: 50%; color: #58d99a; display: flex; height: 34px; justify-content: center; margin-bottom: 9px; width: 34px; }
+.edition-win11 .task-manager-empty strong { color: #cfdae2; font-size: 12px; }
+.edition-win11 .task-manager-empty p { font-size: 10px; margin: 4px 0 0; }
+
 .background-carousel {
   inset: 0 0 0 var(--sidebar-width);
   overflow: hidden;
@@ -397,7 +517,9 @@
 .page-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 20px 5.5vw 52px;
   scrollbar-color: rgba(149, 174, 204, 0.45) transparent;
   scrollbar-width: thin;
@@ -907,10 +1029,10 @@
 .content-heading-actions { align-items:center; display:flex; flex-wrap:wrap; gap:10px; }
 .content-heading h1 { font-size:clamp(2rem,4vw,3rem); letter-spacing:-.04em; margin:6px 0 7px; }
 .content-heading p { color:var(--ink-soft); margin:0; }
-.primary-small, .secondary-small, .create-build-card button, .catalog-search button { border:1px solid transparent; border-radius:13px; font-weight:800; min-height:42px; padding:0 17px; transition:filter .18s ease,transform .18s ease,box-shadow .18s ease; }
-.primary-small, .create-build-card button, .catalog-search button { background:linear-gradient(135deg,#25bcf4,#167ce8); box-shadow:0 10px 25px rgba(18,126,226,.24); color:#fff; }
+.primary-small, .secondary-small, .create-build-card > button, .catalog-search button { border:1px solid transparent; border-radius:13px; font-weight:800; min-height:42px; padding:0 17px; transition:filter .18s ease,transform .18s ease,box-shadow .18s ease; }
+.primary-small, .create-build-card > button, .catalog-search button { background:linear-gradient(135deg,#25bcf4,#167ce8); box-shadow:0 10px 25px rgba(18,126,226,.24); color:#fff; }
 .secondary-small { background:linear-gradient(145deg,rgba(28,129,194,.3),rgba(12,67,116,.4)); border-color:rgba(91,200,250,.42); color:#aee8ff; }
-.primary-small:hover,.secondary-small:hover,.create-build-card button:hover,.catalog-search button:hover { filter:brightness(1.12); transform:translateY(-1px); }
+.primary-small:hover,.secondary-small:hover,.create-build-card > button:hover,.catalog-search button:hover { filter:brightness(1.12); transform:translateY(-1px); }
 .primary-small:disabled,.secondary-small:disabled { filter:none; opacity:.48; transform:none; }
 .build-strip { display:flex; gap:9px; margin:20px 0 14px; overflow:auto; padding-bottom:3px; }
 .build-chip { align-items:center; background:rgba(12,25,43,.84); border:1px solid var(--line); border-radius:11px; display:grid; flex:0 0 210px; grid-template-columns:40px 1fr; padding:8px; text-align:left; }
@@ -920,16 +1042,17 @@
 .build-chip b { font-size:.75rem; }.build-chip small { color:var(--ink-soft); font-size:.58rem; }
 .empty-inline { color:var(--ink-muted); font-size:.7rem; padding:14px; }
 .create-build-card { align-items:end; backdrop-filter:blur(18px); background:var(--surface); border:1px solid var(--line); border-radius:12px; display:grid; gap:10px; grid-template-columns:1fr .8fr .65fr auto; margin-bottom:14px; padding:13px; }
-.create-build-card label { color:var(--ink-soft); font-size:.62rem; }.create-build-card input,.create-build-card select { background:#14233a; border:1px solid var(--line); border-radius:8px; color:var(--ink); display:block; height:38px; margin-top:5px; padding:0 10px; width:100%; }
-.catalog-tabs { background:rgba(11,20,34,.9); border:1px solid var(--line); border-radius:12px; display:flex; gap:4px; padding:5px; width:max-content; }
+.create-build-card label,.create-build-card .form-field { color:var(--ink-soft); font-size:.69rem; }.create-build-card input { background:#14233a; border:1px solid var(--line); border-radius:8px; color:var(--ink); display:block; height:38px; margin-top:5px; padding:0 10px; width:100%; }
+.catalog-tabs { background:rgba(11,20,34,.9); border:1px solid var(--line); border-radius:12px; display:flex; flex-wrap:wrap; gap:4px; padding:5px; width:fit-content; max-width:100%; }
 .catalog-tabs button { background:transparent; border:1px solid transparent; border-radius:10px; color:var(--ink-soft); font-weight:750; min-height:37px; padding:0 15px; transition:background .18s ease,color .18s ease,transform .18s ease; }.catalog-tabs button:hover{background:rgba(31,135,199,.16);color:#ccefff}.catalog-tabs button.active { background:linear-gradient(135deg,#22b8ef,#1479e7);box-shadow:0 8px 20px rgba(18,126,226,.22);color:#fff; }
 .catalog-search { display:grid; gap:8px; grid-template-columns:minmax(220px,1fr) 150px 120px auto; margin:12px 0; }
-.catalog-search.is-simple { grid-template-columns:minmax(220px,1fr) auto; }
+.catalog-search.is-simple { grid-template-columns:minmax(0,1fr) auto; }
 .catalog-search input,.catalog-search select { background:rgba(22,34,52,.94); border:1px solid var(--line); border-radius:9px; color:var(--ink); min-height:42px; padding:0 12px; }
 .catalog-error { background:rgba(115,31,47,.8); border:1px solid rgba(255,114,138,.4); border-radius:9px; color:#ffd7de; font-size:.72rem; margin-bottom:10px; padding:10px 12px; }
 .content-layout { display:grid; gap:12px; grid-template-columns:minmax(0,1fr) 255px; }
 .project-list { display:grid; gap:9px; }
 .project-card { align-items:center; backdrop-filter:blur(18px); background:rgba(17,27,42,.9); border:1px solid var(--line); border-radius:12px; display:grid; gap:13px; grid-template-columns:64px minmax(0,1fr) auto; padding:13px; }
+.project-card > div { min-width:0; }
 .project-card>img,.project-icon { align-items:center; background:#22344d; border-radius:11px; display:flex; height:64px; justify-content:center; object-fit:cover; width:64px; }
 .project-card h2 { font-size:.9rem; margin:0 0 5px; }.project-card h2 small { color:var(--ink-muted); font-size:.65rem; font-weight:500; }.project-card p { color:var(--ink-soft); font-size:.7rem; line-height:1.4; margin:0; }
 .project-card>button { background:linear-gradient(145deg,rgba(27,139,207,.26),rgba(14,78,132,.34)); border:1px solid rgba(72,195,250,.48); border-radius:12px; color:#a9e7ff; font-weight:800; min-height:40px; padding:0 15px; transition:filter .18s ease,transform .18s ease,box-shadow .18s ease; }.project-card>button:hover:not(:disabled){box-shadow:0 9px 24px rgba(17,142,221,.22);filter:brightness(1.14);transform:translateY(-1px)}.project-card>button:disabled { background:rgba(29,49,67,.55);border-color:var(--line); color:var(--ink-muted); }
@@ -1031,6 +1154,7 @@
     flex-direction: column;
   }
   .catalog-search { grid-template-columns:1fr; }
+  .catalog-search.is-simple { grid-template-columns:minmax(0,1fr); }
   .project-card { grid-template-columns:52px 1fr; }.project-card>img,.project-icon { height:52px;width:52px; }.project-card>button { grid-column:1/-1; }
 }
 

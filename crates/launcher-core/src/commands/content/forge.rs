@@ -1,6 +1,6 @@
 //! Forge is installed by its checksum-verified official client installer, in a
 //! disposable directory. Only completed library/version files enter an instance.
-use super::{input_error, security, ContentService, FileHashes, FileTransaction};
+use super::{input_error, security, ContentService, FileHashes, FileTransaction, LoaderVersionSummary};
 use crate::{
     error::LauncherError,
     metadata::models::VersionJson,
@@ -275,6 +275,24 @@ fn read_profile(
 }
 
 impl ContentService {
+    pub(super) async fn forge_loader_versions(&self, minecraft: &str) -> Result<Vec<LoaderVersionSummary>, LauncherError> {
+        if !valid_number(minecraft) {
+            return Ok(vec![]);
+        }
+        let response = self.client.get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml")
+            .send().await.map_err(|_| super::network_error())?
+            .error_for_status().map_err(|_| super::network_error())?;
+        let body = response.text().await.map_err(|_| super::network_error())?;
+        let pattern = regex::Regex::new(r"<version>([^<]+)</version>").expect("valid Forge metadata expression");
+        let prefix = format!("{minecraft}-");
+        let versions = pattern.captures_iter(&body)
+            .filter_map(|capture| capture.get(1)?.as_str().strip_prefix(&prefix))
+            .filter(|version| valid_number(version))
+            .map(|version| LoaderVersionSummary { id: version.to_owned(), stable: !version.contains("beta") && !version.contains("pre") })
+            .collect::<Vec<_>>();
+        Ok(versions.into_iter().rev().collect())
+    }
+
     pub(super) async fn install_forge_profile(
         &self,
         minecraft: &str,

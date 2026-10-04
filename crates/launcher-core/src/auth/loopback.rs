@@ -16,7 +16,7 @@ const SUCCESS_HTML: &str = r##"<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#071a33">
-  <title>ЦК Лаунчер — вход выполнен</title>
+  <title>Kvanth Launcher — вход выполнен</title>
   <style>
     *{box-sizing:border-box}
     html,body{height:100%;margin:0}
@@ -36,24 +36,22 @@ const SUCCESS_HTML: &str = r##"<!doctype html>
     <h1>Авторизация завершена</h1>
     <p id="status">Microsoft подтвердил вход. Лаунчер завершает подключение аккаунта.</p>
     <button id="return" type="button">Вернуться в лаунчер</button>
-    <p><a href="ck-launcher://auth/complete" style="color:#80d9ff">Открыть установленный лаунчер</a></p>
   </main>
   <script>
     document.getElementById('return').onclick=async function(){
-      if (NATIVE_PROTOCOL_AVAILABLE) window.location.href='ck-launcher://auth/complete';
       this.disabled=true;
       try {
         const result=await fetch('/return',{cache:'no-store'});
         if(!result.ok) throw new Error();
         document.getElementById('status').textContent='Окно лаунчера открыто. Эту вкладку можно закрыть.';
       } catch {
-        document.getElementById('status').textContent='Нажмите «Открыть установленный лаунчер» ниже или выберите его на панели задач.';
+        document.getElementById('status').textContent='Выберите окно Kvanth Launcher на панели задач.';
       } finally { this.disabled=false; }
     };
   </script>
 </body>
 </html>"##;
-const ERROR_HTML: &str = "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>ЦК Лаунчер</title><body><h1>Вход не завершён</h1><p>Закройте эту страницу и повторите попытку.</p></body></html>";
+const ERROR_HTML: &str = "<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><title>Kvanth Launcher</title><body><h1>Вход не завершён</h1><p>Закройте эту страницу и повторите попытку.</p></body></html>";
 
 pub struct CallbackReceiver {
     listener: Option<TcpListener>,
@@ -228,18 +226,8 @@ fn read_request_target(stream: &mut TcpStream) -> Result<String, LauncherError> 
 }
 
 fn write_response(stream: &mut TcpStream, success: bool) {
-    #[cfg(windows)]
-    let has_protocol = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-        .open_subkey("Software\\Classes\\ck-launcher\\shell\\open\\command")
-        .is_ok();
-    #[cfg(not(windows))]
-    let has_protocol = false;
-    let success_body = SUCCESS_HTML.replace(
-        "NATIVE_PROTOCOL_AVAILABLE",
-        if has_protocol { "true" } else { "false" },
-    );
     let (status, body) = if success {
-        ("200 OK", success_body.as_str())
+        ("200 OK", SUCCESS_HTML)
     } else {
         ("400 Bad Request", ERROR_HTML)
     };
@@ -411,6 +399,8 @@ mod tests {
         let response = client.join().expect("client completes");
         assert!(response.contains("HTTP/1.1 200 OK"));
         assert!(response.contains("Авторизация завершена"));
+        assert!(response.contains("fetch('/return'"));
+        assert!(!response.contains("ck-launcher://"));
     }
 
     #[test]

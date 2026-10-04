@@ -1,3 +1,4 @@
+mod curseforge;
 mod description;
 pub(crate) mod forge;
 mod project_metadata;
@@ -175,6 +176,13 @@ struct QuiltLoaderVersion {
     version: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderVersionSummary {
+    pub id: String,
+    pub stable: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MrpackIndex {
@@ -255,7 +263,7 @@ impl ContentService {
                 let mut headers = header::HeaderMap::new();
                 headers.insert(
                     header::USER_AGENT,
-                    header::HeaderValue::from_static("CKLauncher/0.1.0 (desktop launcher)"),
+                    header::HeaderValue::from_static("KvanthLauncher/1.0.0 (desktop launcher)"),
                 );
                 headers
             })
@@ -364,6 +372,7 @@ impl ContentService {
         name: String,
         game_version: String,
         loader: String,
+        requested_loader_version: Option<String>,
     ) -> Result<BuildSummary, LauncherError> {
         let name = name.trim();
         if name.is_empty() || name.chars().count() > 48 {
@@ -389,12 +398,21 @@ impl ContentService {
             .paths
             .safe_join(&self.paths.root, Path::new("instances"))?
             .join(&id);
+        let available = self.loader_versions(&game_version, &loader).await?;
+        if let Some(requested) = requested_loader_version.as_deref() {
+            if !available.iter().any(|version| version.id == requested) {
+                return Err(input_error("loader_version_unavailable", "Эта версия загрузчика недоступна для выбранной версии Minecraft."));
+            }
+        }
+        if loader != "vanilla" && available.is_empty() {
+            return Err(input_error("loader_unavailable", "Для этой версии Minecraft загрузчик недоступен."));
+        }
         fs::create_dir_all(&game_dir).map_err(|_| LauncherError::storage_unavailable())?;
         let loader_version = match loader.as_str() {
-            "fabric" => Some(self.install_fabric_profile(&game_version, None).await?),
-            "quilt" => Some(self.install_quilt_profile(&game_version, None).await?),
+            "fabric" => Some(self.install_fabric_profile(&game_version, requested_loader_version.as_deref()).await?),
+            "quilt" => Some(self.install_quilt_profile(&game_version, requested_loader_version.as_deref()).await?),
             "forge" => Some(
-                self.install_forge_profile(&game_version, None, &game_dir)
+                self.install_forge_profile(&game_version, requested_loader_version.as_deref(), &game_dir)
                     .await?,
             ),
             _ => None,
@@ -417,6 +435,25 @@ impl ContentService {
         };
         self.storage.upsert_build(&build).await?;
         self.storage.select_build(&build.id).await
+    }
+
+    pub async fn loader_versions(&self, game_version: &str, loader: &str) -> Result<Vec<LoaderVersionSummary>, LauncherError> {
+        if !game_version.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c)) || game_version.len() > 80 {
+            return Err(input_error("game_version_invalid", "Недопустимая версия Minecraft."));
+        }
+        match loader {
+            "vanilla" => Ok(vec![]),
+            "fabric" => {
+                let entries: Vec<FabricLoaderEntry> = self.json(&format!("https://meta.fabricmc.net/v2/versions/loader/{game_version}")).await?;
+                Ok(entries.into_iter().map(|entry| LoaderVersionSummary { id: entry.loader.version, stable: entry.loader.stable }).collect())
+            }
+            "quilt" => {
+                let entries: Vec<QuiltLoaderEntry> = self.json(&format!("https://meta.quiltmc.org/v3/versions/loader/{game_version}")).await?;
+                Ok(entries.into_iter().map(|entry| LoaderVersionSummary { id: entry.loader.version, stable: true }).collect())
+            }
+            "forge" => self.forge_loader_versions(game_version).await,
+            _ => Err(input_error("loader_not_supported", "Неизвестный загрузчик.")),
+        }
     }
 
     async fn install_fabric_profile(
@@ -743,6 +780,30 @@ impl ContentService {
         let installed = self.storage.list_installed_content(&build.id).await?;
         if let Some(modpack) = installed.iter().find(|item| item.project_type == "modpack") {
             if let Some(source) = self.storage.pack_source(&build.id).await? {
+                if serde_json::from_str::<serde_json::Value>(&source)
+                    .ok()
+                    .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_owned))
+                    .as_deref()
+                    == Some("curseforge")
+                {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&source).map_err(|_| security::invalid_archive())?;
+                    let id = value
+                        .get("projectId")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(security::invalid_archive)?;
+                    let file_id = value
+                        .get("versionId")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(security::invalid_archive)?;
+                    let hash = value
+                        .get("sha256")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(security::invalid_archive)?;
+                    self.repair_curseforge_pack(id, file_id, hash, build.clone())
+                        .await?;
+                    return self.storage.select_build(&build.id).await;
+                }
                 let lock: PackSource =
                     serde_json::from_str(&source).map_err(|_| security::invalid_archive())?;
                 if lock.sha256.len() != 64 || !lock.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -793,6 +854,20 @@ impl ContentService {
                 .into_iter()
                 .filter(|item| item.version_id != "local")
             {
+                if let Some(id) = item
+                    .project_id
+                    .strip_prefix("curseforge:")
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    self.install_curseforge_project(
+                        id,
+                        build.id.clone(),
+                        item.project_type,
+                        item.version_id.parse::<u64>().ok(),
+                    )
+                    .await?;
+                    continue;
+                }
                 let project: ProjectDetails = self
                     .json(&format!("{MODRINTH_API}/project/{}", item.project_id))
                     .await?;
@@ -1501,12 +1576,187 @@ pub async fn create_build(
     name: String,
     game_version: String,
     loader: String,
+    icon_data_url: Option<String>,
+    loader_version: Option<String>,
     service: &ContentService,
 ) -> Result<BuildSummary, LauncherError> {
-    service.create_build(name, game_version, loader).await
+    if let Some(ref data_url) = icon_data_url {
+        validate_build_icon_data_url(data_url)?;
+    }
+    let build = service.create_build(name, game_version, loader, loader_version).await?;
+    if let Some(data_url) = icon_data_url {
+        return service.storage.update_build_identity(&build.id, None, Some(&data_url)).await;
+    }
+    Ok(build)
+}
+
+fn validate_build_icon_data_url(data_url: &str) -> Result<(), LauncherError> {
+    let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,"]
+        .iter()
+        .find_map(|prefix| data_url.strip_prefix(prefix))
+        .ok_or_else(|| input_error("build_icon_invalid", "Выберите изображение PNG, JPG или WebP."))?;
+    if encoded.len() > 2_700_000 {
+        return Err(input_error("build_icon_too_large", "Размер изображения не должен превышать 2 МБ."));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| input_error("build_icon_invalid", "Некорректный файл изображения."))?;
+    if bytes.len() > 2_000_000 {
+        return Err(input_error("build_icon_too_large", "Размер изображения не должен превышать 2 МБ."));
+    }
+    let valid = bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(&[0xff, 0xd8, 0xff])
+        || (bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP");
+    if !valid {
+        return Err(input_error("build_icon_invalid", "Некорректный файл изображения."));
+    }
+    Ok(())
 }
 pub async fn list_builds(storage: &Storage) -> Result<Vec<BuildSummary>, LauncherError> {
     storage.list_builds().await
+}
+
+fn safe_build_files(root: &Path) -> Result<Vec<PathBuf>, LauncherError> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    while let Some(folder) = pending.pop() {
+        for entry in fs::read_dir(&folder).map_err(|_| LauncherError::storage_unavailable())? {
+            let entry = entry.map_err(|_| LauncherError::storage_unavailable())?;
+            let path = entry.path();
+            let meta =
+                fs::symlink_metadata(&path).map_err(|_| LauncherError::storage_unavailable())?;
+            if crate::paths::is_reparse_point(&meta) || meta.file_type().is_symlink() {
+                return Err(input_error(
+                    "unsafe_build_file",
+                    "В сборке есть ссылка на файл вне её папки.",
+                ));
+            }
+            if meta.is_dir() {
+                pending.push(path);
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+                files.push(path);
+                if files.len() > 100_000 || total > 16 * 1024 * 1024 * 1024 {
+                    return Err(input_error(
+                        "build_too_large",
+                        "Сборка слишком велика для копирования или экспорта.",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+pub async fn copy_build(
+    build_id: String,
+    storage: &Storage,
+    paths: &AppPaths,
+) -> Result<BuildSummary, LauncherError> {
+    let source = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(&source.game_dir);
+    paths.validate_absolute_directory(&root)?;
+    let files = safe_build_files(&root)?;
+    let id = format!("build-{:032x}", rand::random::<u128>());
+    let instances = paths.safe_join(&paths.root, Path::new("instances"))?;
+    let target = paths.safe_join(&instances, Path::new(&id))?;
+    fs::create_dir(&target).map_err(|_| LauncherError::storage_unavailable())?;
+    let result = (|| -> Result<(), LauncherError> {
+        for file in files {
+            let relative = file
+                .strip_prefix(&root)
+                .map_err(|_| LauncherError::invalid_path())?;
+            let output = paths.safe_join(&target, relative)?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).map_err(|_| LauncherError::storage_unavailable())?;
+            }
+            fs::copy(&file, &output).map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&target);
+        return Err(error);
+    }
+    let mut copy = source.clone();
+    copy.id = id.clone();
+    copy.name = format!("{} — копия", source.name);
+    copy.game_dir = crate::paths::strip_verbatim_prefix(target.clone())
+        .to_string_lossy()
+        .into_owned();
+    copy.is_active = false;
+    if let Err(error) = storage.upsert_build(&copy).await {
+        let _ = fs::remove_dir_all(&target);
+        return Err(error);
+    }
+    let preferences = storage.build_preferences(&source.id).await?;
+    storage.update_build_preferences(&id, &preferences).await?;
+    if let Some(pack_source) = storage.pack_source(&source.id).await? {
+        storage.set_pack_source(&id, &pack_source).await?;
+    }
+    for mut item in storage.list_installed_content(&source.id).await? {
+        item.id = format!("content-{:032x}", rand::random::<u128>());
+        item.build_id = id.clone();
+        storage.upsert_installed_content(&item).await?;
+    }
+    Ok(copy)
+}
+
+pub async fn export_build(
+    build_id: String,
+    storage: &Storage,
+    paths: &AppPaths,
+) -> Result<String, LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(&build.game_dir);
+    paths.validate_absolute_directory(&root)?;
+    let files = safe_build_files(&root)?;
+    let exports = paths.safe_join(&paths.root, Path::new("exports"))?;
+    fs::create_dir_all(&exports).map_err(|_| LauncherError::storage_unavailable())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let output = paths.safe_join(
+        &exports,
+        Path::new(&format!(
+            "{}-{stamp}-{:08x}.zip",
+            build.id,
+            rand::random::<u32>()
+        )),
+    )?;
+    let result = (|| -> Result<(), LauncherError> {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for path in files {
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| LauncherError::invalid_path())?;
+            let name = relative.to_string_lossy().replace('\\', "/");
+            zip.start_file(name, options)
+                .map_err(|_| LauncherError::storage_unavailable())?;
+            let mut source =
+                fs::File::open(&path).map_err(|_| LauncherError::storage_unavailable())?;
+            std::io::copy(&mut source, &mut zip)
+                .map_err(|_| LauncherError::storage_unavailable())?;
+        }
+        zip.finish()
+            .map_err(|_| LauncherError::storage_unavailable())?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&output);
+        return Err(error);
+    }
+    crate::platform::show_in_folder(&output)?;
+    Ok(output.to_string_lossy().into_owned())
 }
 
 pub async fn repair_build(
@@ -2202,6 +2452,72 @@ pub async fn read_build_log(
         return Err(LauncherError::invalid_path());
     }
     crate::logs::read_tail(&target)
+}
+
+pub async fn read_build_screenshot(
+    build_id: String,
+    relative_path: String,
+    storage: &Storage,
+) -> Result<String, LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(build.game_dir);
+    let target = safe_relative(&root, &relative_path)?;
+    if target.parent() != Some(&root.join("screenshots")) || !target.is_file() {
+        return Err(LauncherError::invalid_path());
+    }
+    let metadata = fs::symlink_metadata(&target).map_err(|_| LauncherError::invalid_path())?;
+    if crate::paths::is_reparse_point(&metadata) || metadata.len() > 4_000_000 {
+        return Err(LauncherError::invalid_path());
+    }
+    let bytes = fs::read(target).map_err(|_| LauncherError::storage_unavailable())?;
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else {
+        return Err(LauncherError::invalid_path());
+    };
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+pub async fn trash_build_screenshot(
+    build_id: String,
+    relative_path: String,
+    storage: &Storage,
+    paths: &AppPaths,
+) -> Result<(), LauncherError> {
+    let build = find_build(storage.list_builds().await?, &build_id)?;
+    let root = PathBuf::from(build.game_dir);
+    paths.validate_absolute_directory(&root)?;
+    let target = safe_relative(&root, &relative_path)?;
+    if target.parent() != Some(&root.join("screenshots")) || !target.is_file() {
+        return Err(LauncherError::invalid_path());
+    }
+    let meta = fs::symlink_metadata(&target).map_err(|_| LauncherError::invalid_path())?;
+    if crate::paths::is_reparse_point(&meta) {
+        return Err(LauncherError::invalid_path());
+    }
+    let trash = paths.safe_join(&paths.root, Path::new("trash/screenshots"))?;
+    fs::create_dir_all(&trash).map_err(|_| LauncherError::storage_unavailable())?;
+    let extension = target
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if !["png", "jpg", "jpeg"].contains(&extension.to_ascii_lowercase().as_str()) {
+        return Err(LauncherError::invalid_path());
+    }
+    let destination = paths.safe_join(
+        &trash,
+        Path::new(&format!(
+            "{}-{:032x}.{extension}",
+            build.id,
+            rand::random::<u128>()
+        )),
+    )?;
+    fs::rename(target, destination).map_err(|_| LauncherError::storage_unavailable())
 }
 
 pub async fn open_build_path(

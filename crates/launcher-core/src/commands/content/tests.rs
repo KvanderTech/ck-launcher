@@ -1,6 +1,43 @@
 use super::*;
 use std::io::Write;
 
+#[test]
+fn copying_a_build_keeps_files_and_content_in_a_separate_instance() {
+    crate::tasks::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().to_path_buf());
+        paths.create_directories().unwrap();
+        let source_dir = temp.path().join("instances/source");
+        fs::create_dir_all(source_dir.join("mods")).unwrap();
+        fs::write(source_dir.join("mods/example.jar"), b"mod bytes").unwrap();
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        let source = BuildSummary {
+            id: "source".into(),
+            name: "Original".into(),
+            game_version: "1.21.1".into(),
+            loader: "fabric".into(),
+            loader_version: Some("0.16.0".into()),
+            game_dir: source_dir.to_string_lossy().into_owned(),
+            icon_url: None,
+            is_active: false,
+        };
+        storage.upsert_build(&source).await.unwrap();
+        let copy = copy_build(source.id.clone(), &storage, &paths)
+            .await
+            .unwrap();
+        assert_ne!(copy.id, source.id);
+        assert_eq!(
+            fs::read(Path::new(&copy.game_dir).join("mods/example.jar")).unwrap(),
+            b"mod bytes"
+        );
+        assert_eq!(
+            fs::read(source_dir.join("mods/example.jar")).unwrap(),
+            b"mod bytes"
+        );
+        assert!(!copy.is_active);
+    });
+}
+
 fn skin_account(id: &str, uuid: &str) -> crate::storage::AccountSummary {
     crate::storage::AccountSummary {
         id: id.into(),

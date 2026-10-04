@@ -49,6 +49,7 @@ export interface JavaRuntimeStatus {
 
 export interface MemorySettingsStatus {
   memoryMb: number;
+  physicalMemoryMb: number;
   minMemoryMb: number;
   maxMemoryMb: number;
   stepMemoryMb: number;
@@ -78,6 +79,14 @@ export interface BuildSummary {
   gameDir: string;
   iconUrl?: string;
   isActive: boolean;
+}
+
+export interface LoaderVersionSummary { id: string; stable: boolean; }
+
+export interface BuildPreferences {
+  groupName: string;
+  javaOverride: string | null;
+  accountId: string | null;
 }
 
 export interface BuildFileEntry {
